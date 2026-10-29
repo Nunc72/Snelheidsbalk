@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '4';
+const VERSION = '5';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -164,6 +164,19 @@ async function darkStyle() {
     const paint = DARK_PAINT[layer.id];
     if (paint) layer.paint = { ...layer.paint, ...paint };
     if (layer.id.startsWith('place_')) layer.paint = { ...layer.paint, 'text-color': '#B9BCC3', 'text-halo-color': 'rgba(35,38,43,0.85)' };
+  }
+  // Bos staat standaard als donker patroon op 40% dekking; vervang door egaal groen
+  const wood = style.layers.find(l => l.id === 'landcover_wood');
+  if (wood) {
+    delete wood.paint['fill-pattern'];
+    wood.paint['fill-opacity'] = 0.9;
+    // Gras en stadsparken tekent de donkere stijl niet; voeg ze toe onder de wegen
+    const at = style.layers.indexOf(wood) + 1;
+    style.layers.splice(at, 0,
+      { id: 'landcover_grass', type: 'fill', source: wood.source, 'source-layer': 'landcover',
+        filter: ['==', ['get', 'class'], 'grass'], paint: { 'fill-color': '#2A5436', 'fill-opacity': 0.85 } },
+      { id: 'park_area', type: 'fill', source: wood.source, 'source-layer': 'park',
+        paint: { 'fill-color': '#2F5E3E', 'fill-opacity': 0.75 } });
   }
   darkStyleCache = style;
   return style;
