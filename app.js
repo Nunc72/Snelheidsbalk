@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '5';
+const VERSION = '6';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -11,23 +11,26 @@ const darkQuery = matchMedia('(prefers-color-scheme: dark)');
 const theme = () => (darkQuery.matches ? 'dark' : 'light');
 const DEMO = new URLSearchParams(location.search).has('demo');
 
-// Kleurschaal: percentage van de maximumsnelheid -> kleur.
-// In dark mode zijn de uiteinden omgedraaid: 0% is zwart, 200% is wit.
-const STOPS_LIGHT = [[0, [255, 255, 255]], [80, [135, 206, 235]], [98, [0, 128, 0]], [100, [0, 128, 0]], [102, [255, 255, 0]],
-  [104, [255, 165, 0]], [106, [255, 0, 0]], [150, [178, 0, 255]], [200, [0, 0, 0]]];
-const STOPS_DARK = [[0, [0, 0, 0]], ...STOPS_LIGHT.slice(1, -1), [200, [255, 255, 255]]];
+// Kleurschaal op basis van km/u boven of onder de maximumsnelheid.
+// In dark mode zijn de uiteinden omgedraaid: stilstand is zwart, max+30 is wit.
+const SKY = [135, 206, 235], GREEN = [0, 128, 0], YELLOW = [255, 255, 0], ORANGE = [255, 165, 0],
+  RED = [255, 0, 0], PURPLE = [178, 0, 255], WHITE = [255, 255, 255], BLACK = [0, 0, 0];
 
-function scaleColor(p) {
-  const STOPS = theme() === 'dark' ? STOPS_DARK : STOPS_LIGHT;
-  p = Math.min(200, Math.max(0, p));
-  for (let i = 0; i < STOPS.length - 1; i++) {
-    const [a, ca] = STOPS[i], [b, cb] = STOPS[i + 1];
-    if (p >= a && p <= b) {
-      const f = (p - a) / (b - a);
+function scaleColor(speed, limit) {
+  const dark = theme() === 'dark';
+  const d = speed - limit;  // km/u te hard (positief) of te langzaam (negatief)
+  const stops = [[-limit, dark ? BLACK : WHITE]];
+  if (limit > 15) stops.push([-15, SKY]);
+  stops.push([0, GREEN], [2, YELLOW], [4, ORANGE], [6, RED], [20, PURPLE], [30, dark ? WHITE : BLACK]);
+  if (d <= stops[0][0]) return stops[0][1];
+  for (let i = 0; i < stops.length - 1; i++) {
+    const [a, ca] = stops[i], [b, cb] = stops[i + 1];
+    if (d <= b) {
+      const f = (d - a) / (b - a);
       return ca.map((c, j) => Math.round(c + (cb[j] - c) * f));
     }
   }
-  return [0, 0, 0];
+  return stops[stops.length - 1][1];
 }
 
 function luminance(c) {
@@ -275,7 +278,7 @@ function renderBar() {
   $('spd').textContent = state.fix ? Math.round(state.speedKmh) : '–';
   let bg = '#48484A', fg = '#fff';
   if (state.limit) {
-    const c = scaleColor(state.speedKmh / state.limit * 100);
+    const c = scaleColor(state.speedKmh, state.limit);
     bg = `rgb(${c})`;
     fg = luminance(c) > 0.35 ? '#111' : '#fff';
     lim.textContent = state.limit;
