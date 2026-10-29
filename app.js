@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '7';
+const VERSION = '8';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -203,19 +203,24 @@ const marker = new maplibregl.Marker({ element: markerEl, rotationAlignment: 'ma
 let routeCoords = [];
 const lineFeature = coords => ({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: {} });
 
-// Wordt ook opnieuw aangeroepen na een wissel tussen licht en donker
-map.on('style.load', () => {
+function addRouteLayers(m, coords) {
   const dark = theme() === 'dark';
-  map.addSource('route', { type: 'geojson', data: lineFeature(routeCoords) });
-  map.addLayer({ id: 'route-casing', type: 'line', source: 'route',
+  m.addSource('route', { type: 'geojson', data: lineFeature(coords) });
+  m.addLayer({ id: 'route-casing', type: 'line', source: 'route',
     layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': dark ? DARK_BG : '#ffffff', 'line-width': 13 } });
-  map.addLayer({ id: 'route-line', type: 'line', source: 'route',
+  m.addLayer({ id: 'route-line', type: 'line', source: 'route',
     layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': dark ? '#3D8BFF' : '#1F6FE0', 'line-width': 8 } });
-});
+}
+
+// Wordt ook opnieuw aangeroepen na een wissel tussen licht en donker
+map.on('style.load', () => addRouteLayers(map, routeCoords));
+
+const currentStyle = async () => (theme() === 'dark' ? darkStyle() : STYLES.light);
 
 async function applyTheme() {
-  const style = theme() === 'dark' ? await darkStyle() : STYLES.light;
+  const style = await currentStyle();
   map.setStyle(style, { diff: false });
+  if (pmap) pmap.setStyle(style, { diff: false });
   renderBar();
 }
 darkQuery.addEventListener('change', applyTheme);
@@ -290,6 +295,9 @@ function renderBar() {
   bar.style.color = fg;
   if (bg !== lastTheme) {
     document.querySelector('meta[name="theme-color"]').setAttribute('content', bg);
+    // iOS legt bovenin een doorschijnende laag in de paginakleur; maak die gelijk aan de balk
+    document.documentElement.style.background = bg;
+    document.body.style.background = bg;
     lastTheme = bg;
   }
 }
@@ -438,10 +446,11 @@ $('startbtn').addEventListener('click', () => {
 
 // ---------- Bestemming kiezen (Photon) ----------
 let searchTimer, searchSeq = 0;
-let pending = null;      // gekozen bestemming die nog met het vinkje bevestigd moet worden
+let pending = null;      // gekozen bestemming, wordt pas gestart met het vinkje
 let streetCtx = null;    // gekozen straat zonder huisnummer: { street, city }
-let firstResult = null;  // bovenste zoekresultaat, voor het vinkje of Enter
+let firstResult = null;  // bovenste zoekresultaat, voor Enter
 let modeAtOpen = 'auto';
+const MODE_LABEL = { auto: 'auto', bicycle: 'fiets', pedestrian: 'lopen' };
 
 let travelMode = 'auto';
 try { travelMode = localStorage.getItem('travelMode') || 'auto'; } catch (e) { /* geen opslag */ }
@@ -452,8 +461,8 @@ function setTravelMode(mode) {
   document.querySelectorAll('.modes button').forEach(b => b.setAttribute('aria-checked', String(b.dataset.mode === mode)));
 }
 
-function updateConfirm() {
-  $('qok').disabled = !(pending || firstResult);
+function updateClear() {
+  $('qclear').hidden = !$('q').value;
 }
 
 function openSearch() {
@@ -463,20 +472,22 @@ function openSearch() {
   $('q-postcode').value = '';
   $('q-city').value = '';
   $('results').innerHTML = '';
-  pending = navigating ? state.dest : null;
+  $('preview').hidden = true;
+  pending = null;
   streetCtx = null;
   firstResult = null;
   modeAtOpen = travelMode;
   setTravelMode(travelMode);
-  $('stopwrap').hidden = !navigating;
-  updateConfirm();
+  updateClear();
+  if (navigating) showPreview(state.dest);
   // Op iOS opent het toetsenbord alleen als focus direct binnen de tik gebeurt
-  if (!navigating) $('q').focus();
+  else $('q').focus();
 }
 
 function closeSearch() {
   $('q').blur();
   $('search').hidden = true;
+  previewSeq++;
 }
 
 function describe(props) {
@@ -487,37 +498,42 @@ function describe(props) {
   return { title, sub };
 }
 
-function confirmDest(dest) {
-  closeSearch();
-  startRoute(dest);
+const isStreet = p => !p.housenumber && p.name && (p.type === 'street' || p.osm_key === 'highway');
+
+// Dubbele resultaten samenvoegen (een straat met meerdere postcodes, of een gracht
+// met dezelfde naam als de straat); de straat krijgt voorrang.
+function dedupe(features) {
+  const byKey = new Map();
+  for (const f of features) {
+    const p = f.properties;
+    const key = (describe(p).title + '|' + (p.housenumber ? p.postcode : '') + '|' + (p.city || p.town || p.village || '')).toLowerCase();
+    const have = byKey.get(key);
+    if (!have) byKey.set(key, f);
+    else if (!isStreet(have.properties) && isStreet(p)) byKey.set(key, f);
+  }
+  return [...byKey.values()];
 }
 
-// Een straat zonder huisnummer wordt in het veld gezet zodat je het nummer kunt
-// toevoegen; adressen met nummer en andere plekken worden meteen de bestemming.
+// Kiezen uit de suggesties neemt de waarde over en toont het routeoverzicht;
+// bij een straat zonder huisnummer kun je het nummer er nog achter typen.
 function choose(f) {
   const p = f.properties;
   const { title, sub } = describe(p);
   const [lon, lat] = f.geometry.coordinates;
   const dest = { lat, lon, name: [title, sub].filter(Boolean).join(', ') };
-  if (p.type === 'street' && !p.housenumber && p.name) {
+  const q = $('q');
+  if (isStreet(p)) {
     streetCtx = { street: p.name, city: p.city || p.town || p.village || '' };
-    pending = dest;
-    firstResult = null;
-    const q = $('q');
     q.value = p.name + ' ';
-    $('results').innerHTML = '';
     q.focus();
     q.setSelectionRange(q.value.length, q.value.length);
-    updateConfirm();
-    return;
+  } else {
+    streetCtx = null;
+    q.value = dest.name;
+    q.blur();
   }
-  confirmDest(dest);
-}
-
-function submitSearch() {
-  const typedNumber = streetCtx && /\d/.test($('q').value.slice(streetCtx.street.length));
-  if (firstResult && (!pending || typedNumber)) choose(firstResult);
-  else if (pending) confirmDest(pending);
+  updateClear();
+  showPreview(dest);
 }
 
 function searchQuery() {
@@ -532,18 +548,19 @@ async function search() {
   const seq = ++searchSeq;
   const ul = $('results');
   const q = searchQuery();
-  if (q.length < 3) { ul.innerHTML = ''; firstResult = null; updateConfirm(); return; }
-  const params = new URLSearchParams({ q, limit: '8' });
+  if (q.length < 3) { ul.innerHTML = ''; firstResult = null; return; }
+  const params = new URLSearchParams({ q, limit: '12' });
   if (state.fix) { params.set('lat', state.fix.lat); params.set('lon', state.fix.lon); }
   try {
     const res = await fetch(`${PHOTON}?${params}`);
     const data = await res.json();
     if (seq !== searchSeq) return;
+    const features = dedupe(data.features).slice(0, 8);
     ul.innerHTML = '';
-    firstResult = data.features[0] || null;
-    updateConfirm();
-    if (!data.features.length) { ul.innerHTML = '<li class="empty">Niets gevonden</li>'; return; }
-    for (const f of data.features) {
+    firstResult = features[0] || null;
+    $('preview').hidden = true;
+    if (!features.length) { ul.innerHTML = '<li class="empty">Niets gevonden</li>'; return; }
+    for (const f of features) {
       const { title, sub } = describe(f.properties);
       const li = document.createElement('li');
       li.innerHTML = `<div class="r1"></div><div class="r2"></div>`;
@@ -559,25 +576,125 @@ async function search() {
 
 function onSearchInput() {
   const v = $('q').value;
-  if (streetCtx && !v.startsWith(streetCtx.street)) { streetCtx = null; pending = null; }
-  if (!streetCtx && pending && state.dest && pending === state.dest && v !== state.dest.name) pending = null;
+  if (streetCtx && !v.startsWith(streetCtx.street)) streetCtx = null;
   if (!v.trim()) { $('q-postcode').value = ''; $('q-city').value = ''; }
-  updateConfirm();
+  updateClear();
   clearTimeout(searchTimer);
   searchTimer = setTimeout(search, 300);
+}
+
+// ---------- Routeoverzicht in de dialoog ----------
+let pmap = null, previewNav = null, previewSeq = 0, previewData = null;
+
+function previewEnds(coords, dest) {
+  const pts = [];
+  if (state.fix) pts.push({ type: 'Feature', geometry: { type: 'Point', coordinates: coords[0] || [state.fix.lon, state.fix.lat] }, properties: { kind: 'start' } });
+  pts.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [dest.lon, dest.lat] }, properties: { kind: 'end' } });
+  return { type: 'FeatureCollection', features: pts };
+}
+
+function drawPreview() {
+  if (!pmap || !previewData || !pmap.getSource('route')) return;
+  const { coords, dest } = previewData;
+  pmap.getSource('route').setData(lineFeature(coords));
+  pmap.getSource('ends').setData(previewEnds(coords, dest));
+  const all = coords.length ? coords : [[dest.lon, dest.lat]];
+  const b = all.reduce((bb, c) => bb.extend(c), new maplibregl.LngLatBounds(all[0], all[0]));
+  pmap.resize();
+  pmap.fitBounds(b, { padding: 36, duration: 0, maxZoom: 16 });
+}
+
+async function ensurePreviewMap() {
+  if (pmap) { pmap.resize(); return; }
+  pmap = new maplibregl.Map({ container: 'pmap', style: await currentStyle(), interactive: false, attributionControl: false,
+    center: state.fix ? [state.fix.lon, state.fix.lat] : [5.1214, 52.0907], zoom: 12 });
+  pmap.on('style.load', () => {
+    addRouteLayers(pmap, []);
+    pmap.addSource('ends', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    pmap.addLayer({ id: 'ends', type: 'circle', source: 'ends', paint: {
+      'circle-radius': 8, 'circle-stroke-width': 3, 'circle-stroke-color': '#ffffff',
+      'circle-color': ['match', ['get', 'kind'], 'start', '#1F6FE0', '#E5484D'] } });
+    drawPreview();
+  });
+}
+
+async function showPreview(dest) {
+  pending = dest;
+  firstResult = null;
+  $('results').innerHTML = '';
+  $('preview').hidden = false;
+  $('stop').style.visibility = state.nav ? 'visible' : 'hidden';
+  $('qok').disabled = true;
+  $('psum').textContent = 'Route berekenen…';
+  previewNav = null;
+  const seq = ++previewSeq;
+  await ensurePreviewMap();
+  try {
+    const n = state.nav;
+    let coords, dist, time;
+    if (n && dest === state.dest && n.mode === travelMode) {
+      // Huidige route: alleen het stuk dat nog komt
+      coords = routeCoords.length ? routeCoords : n.shape;
+      dist = Math.max(0, n.total - n.along);
+      time = n.time * (n.total ? dist / n.total : 0);
+    } else {
+      if (!state.fix) throw new Error('Nog geen GPS-positie');
+      const r = await fetchRoute(dest);
+      if (seq !== previewSeq) return;
+      previewNav = r;
+      coords = r.shape; dist = r.total; time = r.time;
+    }
+    previewData = { coords, dest };
+    drawPreview();
+    $('psum').textContent = `${fmtDuration(time)} · ${fmtDist(dist)} · ${MODE_LABEL[travelMode]}`;
+    $('qok').disabled = false;
+  } catch (e) {
+    if (seq === previewSeq) $('psum').textContent = 'Route berekenen lukt niet: ' + e.message;
+  }
+}
+
+function confirmPreview() {
+  if (!pending) return;
+  const dest = pending;
+  closeSearch();
+  if (previewNav) {
+    state.dest = dest;
+    state.nav = previewNav;
+    previewNav = null;
+    state.lastRouteAt = Date.now();
+    if (DEMO) demo.along = 0;
+    setMode('nav');
+    if (state.fix) updateNav([state.fix.lon, state.fix.lat]);
+  } else if (!(state.nav && dest === state.dest)) {
+    startRoute(dest);
+  }
+}
+
+function submitSearch() {
+  if (firstResult && !$('results').hidden && $('results').children.length) choose(firstResult);
+  else if (pending && !$('qok').disabled) confirmPreview();
 }
 
 $('where').addEventListener('click', openSearch);
 $('bottom-nav').addEventListener('click', openSearch);
 $('qback').addEventListener('click', () => { setTravelMode(modeAtOpen); closeSearch(); });
 $('stop').addEventListener('click', () => { stopRoute(); closeSearch(); });
+$('qok').addEventListener('click', confirmPreview);
+$('qclear').addEventListener('click', () => {
+  $('q').value = '';
+  $('q-postcode').value = '';
+  $('q-city').value = '';
+  streetCtx = null;
+  firstResult = null;
+  $('results').innerHTML = '';
+  updateClear();
+  $('q').focus();
+});
 $('qform').addEventListener('submit', e => { e.preventDefault(); submitSearch(); });
 for (const id of ['q', 'q-postcode', 'q-city']) $(id).addEventListener('input', onSearchInput);
 document.querySelectorAll('.modes button').forEach(b => b.addEventListener('click', () => {
   setTravelMode(b.dataset.mode);
-  // Tijdens navigeren: met het vinkje dezelfde bestemming opnieuw plannen met het nieuwe vervoer
-  if (state.nav && !pending && !firstResult) pending = state.dest;
-  updateConfirm();
+  if (pending) showPreview(pending);
 }));
 
 // ---------- Route (Valhalla) ----------
@@ -598,7 +715,7 @@ async function fetchRoute(dest) {
   const shape = decodePolyline6(leg.shape);
   const cum = [0];
   for (let i = 1; i < shape.length; i++) cum.push(cum[i - 1] + dist(shape[i - 1], shape[i]));
-  return { shape, cum, maneuvers: leg.maneuvers, total: cum[cum.length - 1], time: data.trip.summary.time, idx: 0, along: 0, off: 0, arrivedAt: 0 };
+  return { shape, cum, maneuvers: leg.maneuvers, total: cum[cum.length - 1], time: data.trip.summary.time, mode: travelMode, idx: 0, along: 0, off: 0, arrivedAt: 0 };
 }
 
 async function startRoute(dest) {

@@ -15,7 +15,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
-<link rel="stylesheet" href="style.css?v=7">
+<link rel="stylesheet" href="style.css?v=8">
 </head>
 <body>
 <div id="map"></div>
@@ -54,22 +54,28 @@
 <div class="sheet" id="search" hidden>
   <form class="sheet-head" id="qform" autocomplete="on">
     <button type="button" class="icon-btn" id="qback" aria-label="Terug"><i class="ti ti-arrow-left" aria-hidden="true"></i></button>
-    <input id="q" name="address" type="text" placeholder="Zoek adres of plaats" autocomplete="street-address" autocorrect="off" autocapitalize="words" enterkeyhint="go">
+    <div class="qwrap">
+      <input id="q" name="address" type="text" placeholder="Zoek adres of plaats" autocomplete="street-address" autocorrect="off" autocapitalize="words" enterkeyhint="go">
+      <button type="button" class="qclear" id="qclear" aria-label="Veld leegmaken" hidden><i class="ti ti-x" aria-hidden="true"></i></button>
+    </div>
     <!-- Onzichtbare velden zodat iOS bij 'Thuis'/'Werk' ook postcode en plaats invult -->
     <input class="af" id="q-postcode" name="postal-code" autocomplete="postal-code" tabindex="-1" aria-hidden="true">
     <input class="af" id="q-city" name="city" autocomplete="address-level2" tabindex="-1" aria-hidden="true">
-    <button type="submit" class="icon-btn confirm" id="qok" aria-label="Bestemming bevestigen" disabled><i class="ti ti-check" aria-hidden="true"></i></button>
   </form>
   <div class="modes" role="radiogroup" aria-label="Vervoer">
     <button type="button" role="radio" data-mode="auto"><i class="ti ti-car" aria-hidden="true"></i>Auto</button>
     <button type="button" role="radio" data-mode="bicycle"><i class="ti ti-bike" aria-hidden="true"></i>Fiets</button>
     <button type="button" role="radio" data-mode="pedestrian"><i class="ti ti-walk" aria-hidden="true"></i>Lopen</button>
   </div>
-  <div class="stopwrap" id="stopwrap" hidden>
-    <button type="button" class="stopbig" id="stop" aria-label="Route stoppen"><i class="ti ti-x" aria-hidden="true"></i></button>
-    <div class="stoplbl">Route stoppen</div>
-  </div>
   <ul id="results"></ul>
+  <div class="preview" id="preview" hidden>
+    <div class="pmap" id="pmap"></div>
+    <div class="psum" id="psum"></div>
+    <div class="pbtns">
+      <button type="button" class="roundbtn stopbig" id="stop" aria-label="Route stoppen"><i class="ti ti-x" aria-hidden="true"></i></button>
+      <button type="button" class="roundbtn okbig" id="qok" aria-label="Route starten"><i class="ti ti-check" aria-hidden="true"></i></button>
+    </div>
+  </div>
 </div>
 
 <div class="start" id="start">
@@ -82,6 +88,6 @@
 </div>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-<script src="app.js?v=7"></script>
+<script src="app.js?v=8"></script>
 </body>
 </html>
