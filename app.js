@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '9';
+const VERSION = '10';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -560,7 +560,7 @@ function choose(f) {
   const dest = { lat, lon, name: [title, sub].filter(Boolean).join(', ') };
   const q = $('q');
   if (isStreet(p)) {
-    streetCtx = { street: p.name, city: p.city || p.town || p.village || '' };
+    streetCtx = { street: p.name, city: p.city || p.town || p.village || '', dest };
     q.value = p.name + ' ';
     q.focus();
     q.setSelectionRange(q.value.length, q.value.length);
@@ -581,9 +581,42 @@ function searchQuery() {
   return q;
 }
 
+// Huisnummer achter een gekozen straat: geen lijst, maar het overzicht en de
+// knoppen laten staan en de route bijwerken naar het juiste huisnummer.
+async function resolveHouse(num, seq) {
+  const { street, city, dest: streetDest } = streetCtx;
+  const params = new URLSearchParams({ q: `${street} ${num}, ${city}`, limit: '10' });
+  if (state.fix) { params.set('lat', state.fix.lat); params.set('lon', state.fix.lon); }
+  $('psum').textContent = 'Huisnummer zoeken…';
+  try {
+    const data = await (await fetch(`${PHOTON}?${params}`)).json();
+    if (seq !== searchSeq) return;
+    const want = num.toLowerCase().replace(/\s+/g, '');
+    const houses = data.features.filter(f => f.properties.housenumber && f.properties.street === street);
+    const norm = f => f.properties.housenumber.toLowerCase().replace(/\s+/g, '');
+    const f = houses.find(h => norm(h) === want) || houses.find(h => new RegExp('^' + want + '(\\D|$)').test(norm(h)));
+    if (f) {
+      const { title, sub } = describe(f.properties);
+      const [lon, lat] = f.geometry.coordinates;
+      showPreview({ lat, lon, name: [title, sub].filter(Boolean).join(', ') }, title);
+    } else {
+      showPreview(streetDest, `Nummer ${num} niet gevonden, route naar de straat`);
+    }
+  } catch (e) {
+    if (seq === searchSeq) $('psum').textContent = 'Zoeken lukt nu niet. Controleer je verbinding.';
+  }
+}
+
 async function search() {
   const seq = ++searchSeq;
   const ul = $('results');
+  const v = $('q').value;
+  if (streetCtx && v.startsWith(streetCtx.street)) {
+    const num = v.slice(streetCtx.street.length).trim();
+    if (num) resolveHouse(num, seq);
+    else if (pending !== streetCtx.dest) showPreview(streetCtx.dest);
+    return;
+  }
   const q = searchQuery();
   if (q.length < 3) { ul.innerHTML = ''; firstResult = null; return; }
   const params = new URLSearchParams({ q, limit: '12' });
@@ -660,7 +693,7 @@ async function ensurePreviewMap() {
   });
 }
 
-async function showPreview(dest) {
+async function showPreview(dest, note) {
   pending = dest;
   firstResult = null;
   $('results').innerHTML = '';
@@ -688,7 +721,7 @@ async function showPreview(dest) {
     }
     previewData = { coords, dest };
     drawPreview();
-    $('psum').textContent = `${fmtDuration(time)} · ${fmtDist(dist)} · ${MODE_LABEL[travelMode]}`;
+    $('psum').textContent = (note ? note + ' · ' : '') + `${fmtDuration(time)} · ${fmtDist(dist)} · ${MODE_LABEL[travelMode]}`;
     $('qok').disabled = false;
   } catch (e) {
     if (seq === previewSeq) $('psum').textContent = 'Route berekenen lukt niet: ' + e.message;
