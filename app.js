@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '8';
+const VERSION = '9';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -295,9 +295,6 @@ function renderBar() {
   bar.style.color = fg;
   if (bg !== lastTheme) {
     document.querySelector('meta[name="theme-color"]').setAttribute('content', bg);
-    // iOS legt bovenin een doorschijnende laag in de paginakleur; maak die gelijk aan de balk
-    document.documentElement.style.background = bg;
-    document.body.style.background = bg;
     lastTheme = bg;
   }
 }
@@ -461,6 +458,43 @@ function setTravelMode(mode) {
   document.querySelectorAll('.modes button').forEach(b => b.setAttribute('aria-checked', String(b.dataset.mode === mode)));
 }
 
+// Laatst gekozen bestemmingen, per toestel bewaard
+function loadRecent() {
+  try { return JSON.parse(localStorage.getItem('recent') || '[]'); } catch (e) { return []; }
+}
+function saveRecent(dest) {
+  const list = [dest, ...loadRecent().filter(d => d.name !== dest.name)].slice(0, 8);
+  try { localStorage.setItem('recent', JSON.stringify(list)); } catch (e) { /* geen opslag */ }
+}
+
+// Bij een leeg zoekveld de recente bestemmingen tonen
+function showRecent() {
+  searchSeq++;
+  firstResult = null;
+  const ul = $('results');
+  ul.innerHTML = '';
+  const list = loadRecent();
+  if (!list.length) return;
+  $('preview').hidden = true;
+  ul.innerHTML = '<li class="hdr">Recent</li>';
+  for (const d of list) {
+    const [first, ...rest] = d.name.split(', ');
+    const li = document.createElement('li');
+    li.className = 'recent';
+    li.innerHTML = '<i class="ti ti-history" aria-hidden="true"></i><div><div class="r1"></div><div class="r2"></div></div>';
+    li.querySelector('.r1').textContent = first;
+    li.querySelector('.r2').textContent = rest.join(', ');
+    li.addEventListener('click', () => {
+      streetCtx = null;
+      $('q').value = d.name;
+      $('q').blur();
+      updateClear();
+      showPreview(d);
+    });
+    ul.appendChild(li);
+  }
+}
+
 function updateClear() {
   $('qclear').hidden = !$('q').value;
 }
@@ -480,8 +514,11 @@ function openSearch() {
   setTravelMode(travelMode);
   updateClear();
   if (navigating) showPreview(state.dest);
-  // Op iOS opent het toetsenbord alleen als focus direct binnen de tik gebeurt
-  else $('q').focus();
+  else {
+    showRecent();
+    // Op iOS opent het toetsenbord alleen als focus direct binnen de tik gebeurt
+    $('q').focus();
+  }
 }
 
 function closeSearch() {
@@ -577,9 +614,14 @@ async function search() {
 function onSearchInput() {
   const v = $('q').value;
   if (streetCtx && !v.startsWith(streetCtx.street)) streetCtx = null;
-  if (!v.trim()) { $('q-postcode').value = ''; $('q-city').value = ''; }
   updateClear();
   clearTimeout(searchTimer);
+  if (!v.trim()) {
+    $('q-postcode').value = '';
+    $('q-city').value = '';
+    showRecent();
+    return;
+  }
   searchTimer = setTimeout(search, 300);
 }
 
@@ -656,6 +698,7 @@ async function showPreview(dest) {
 function confirmPreview() {
   if (!pending) return;
   const dest = pending;
+  saveRecent({ lat: dest.lat, lon: dest.lon, name: dest.name });
   closeSearch();
   if (previewNav) {
     state.dest = dest;
@@ -685,11 +728,11 @@ $('qclear').addEventListener('click', () => {
   $('q-postcode').value = '';
   $('q-city').value = '';
   streetCtx = null;
-  firstResult = null;
-  $('results').innerHTML = '';
   updateClear();
+  showRecent();
   $('q').focus();
 });
+$('q').addEventListener('focus', () => { if (!$('q').value.trim()) showRecent(); });
 $('qform').addEventListener('submit', e => { e.preventDefault(); submitSearch(); });
 for (const id of ['q', 'q-postcode', 'q-city']) $(id).addEventListener('input', onSearchInput);
 document.querySelectorAll('.modes button').forEach(b => b.addEventListener('click', () => {

@@ -144,6 +144,9 @@ button { font: inherit; color: inherit; border: 0; background: none; cursor: poi
 #results .r1 { font-size: 17px; }
 #results .r2 { font-size: 14px; color: #6b6b6b; margin-top: 2px; }
 #results .empty { color: #8a8a8a; cursor: default; }
+#results .hdr { font-size: 13px; color: #8a8a8a; padding: 12px 16px 6px; border-bottom: 0; cursor: default; }
+#results .recent { display: flex; align-items: center; gap: 12px; }
+#results .recent .ti { font-size: 22px; color: #8a8a8a; flex: none; }
 
 .start { position: absolute; inset: 0; z-index: 30; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; padding: 24px; }
 .start-card { background: #fff; border-radius: 22px; padding: 26px 22px; max-width: 360px; text-align: center; }
