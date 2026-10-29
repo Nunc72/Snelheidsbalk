@@ -34,7 +34,7 @@ button { font: inherit; color: inherit; border: 0; background: none; cursor: poi
 /* Huidige weg linksboven, op dezelfde hoogte als het verkeersbord */
 .road {
   position: absolute; left: min(5vw, 22px); bottom: min(3vw, 13px);
-  height: min(15vw, 64px); max-width: 34vw;
+  height: min(15vw, 64px); max-width: 37vw;
   display: flex; align-items: center; gap: 5px;
 }
 .road:empty { display: none; }
@@ -137,7 +137,7 @@ button { font: inherit; color: inherit; border: 0; background: none; cursor: poi
 
 /* Dark mode: volgt de instelling van de iPhone */
 @media (prefers-color-scheme: dark) {
-  body { background: #0c0c0c; color: #f2f2f7; }
+  body { background: #23262B; color: #f2f2f7; }
   .card { background: #1c1c1e; color: #f2f2f7; }
   .instr { background: #2c2c2e; box-shadow: 0 2px 12px rgba(0,0,0,.5); }
   .bottom { box-shadow: 0 2px 14px rgba(0,0,0,.5); }

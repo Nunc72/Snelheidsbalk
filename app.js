@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '2';
+const VERSION = '3';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -11,11 +11,14 @@ const darkQuery = matchMedia('(prefers-color-scheme: dark)');
 const theme = () => (darkQuery.matches ? 'dark' : 'light');
 const DEMO = new URLSearchParams(location.search).has('demo');
 
-// Kleurschaal: percentage van de maximumsnelheid -> kleur
-const STOPS = [[0, [255, 255, 255]], [80, [135, 206, 235]], [98, [0, 128, 0]], [100, [0, 128, 0]], [102, [255, 255, 0]],
+// Kleurschaal: percentage van de maximumsnelheid -> kleur.
+// In dark mode zijn de uiteinden omgedraaid: 0% is zwart, 200% is wit.
+const STOPS_LIGHT = [[0, [255, 255, 255]], [80, [135, 206, 235]], [98, [0, 128, 0]], [100, [0, 128, 0]], [102, [255, 255, 0]],
   [104, [255, 165, 0]], [106, [255, 0, 0]], [150, [178, 0, 255]], [200, [0, 0, 0]]];
+const STOPS_DARK = [[0, [0, 0, 0]], ...STOPS_LIGHT.slice(1, -1), [200, [255, 255, 255]]];
 
 function scaleColor(p) {
+  const STOPS = theme() === 'dark' ? STOPS_DARK : STOPS_LIGHT;
   p = Math.min(200, Math.max(0, p));
   for (let i = 0; i < STOPS.length - 1; i++) {
     const [a, ca] = STOPS[i], [b, cb] = STOPS[i + 1];
@@ -117,9 +120,57 @@ function toast(msg, ms = 3500) {
 }
 
 // ---------- Kaart ----------
+// Donkere kaart: de standaard 'dark'-stijl is bijna zwart. Deze kleuren maken hem
+// iets lichter, met beter zichtbare straten, groene parken en blauwig water.
+const DARK_BG = '#23262B';
+const DARK_PAINT = {
+  background: { 'background-color': DARK_BG },
+  landuse_residential: { 'fill-color': '#272A30' },
+  water: { 'fill-color': '#1E3550' },
+  waterway: { 'line-color': '#1E3550' },
+  landcover_wood: { 'fill-color': '#284634' },
+  landuse_park: { 'fill-color': '#284634' },
+  landcover_ice_shelf: { 'fill-color': DARK_BG },
+  building: { 'fill-color': '#30333A', 'fill-outline-color': '#3A3E46' },
+  'aeroway-area': { 'fill-color': '#2B2E34' },
+  'aeroway-runway': { 'line-color': '#3A3E46' },
+  road_area_pier: { 'fill-color': DARK_BG },
+  road_pier: { 'line-color': DARK_BG },
+  highway_path: { 'line-color': '#3A3E46' },
+  highway_minor: { 'line-color': '#474B54' },
+  highway_major_casing: { 'line-color': '#2A2D33' },
+  highway_major_inner: { 'line-color': '#5A5F69' },
+  highway_major_subtle: { 'line-color': '#4A4E57' },
+  highway_motorway_casing: { 'line-color': '#2A2D33' },
+  highway_motorway_inner: { 'line-color': '#6E737D' },
+  highway_motorway_subtle: { 'line-color': '#4A4E57' },
+  railway_transit: { 'line-color': '#3D4048' },
+  railway_minor: { 'line-color': '#3D4048' },
+  railway: { 'line-color': '#3D4048' },
+  railway_transit_dashline: { 'line-color': DARK_BG },
+  railway_minor_dashline: { 'line-color': DARK_BG },
+  railway_dashline: { 'line-color': DARK_BG },
+  water_name: { 'text-color': '#7193B8', 'text-halo-color': '#1E3550' },
+  highway_name_other: { 'text-color': '#A6AAB2', 'text-halo-color': DARK_BG },
+  highway_name_motorway: { 'text-color': '#B4B8C0' },
+};
+const PLACEHOLDER_DARK = { version: 8, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': DARK_BG } }] };
+
+let darkStyleCache = null;
+async function darkStyle() {
+  if (darkStyleCache) return darkStyleCache;
+  const style = await (await fetch(STYLES.dark)).json();
+  for (const layer of style.layers) {
+    const paint = DARK_PAINT[layer.id];
+    if (paint) layer.paint = { ...layer.paint, ...paint };
+    if (layer.id.startsWith('place_')) layer.paint = { ...layer.paint, 'text-color': '#B9BCC3', 'text-halo-color': 'rgba(35,38,43,0.85)' };
+  }
+  darkStyleCache = style;
+  return style;
+}
 const map = new maplibregl.Map({
   container: 'map',
-  style: STYLES[theme()],
+  style: theme() === 'dark' ? PLACEHOLDER_DARK : STYLES.light,
   center: [5.1214, 52.0907],
   zoom: 15,
   attributionControl: false,
@@ -141,12 +192,18 @@ map.on('style.load', () => {
   const dark = theme() === 'dark';
   map.addSource('route', { type: 'geojson', data: lineFeature(routeCoords) });
   map.addLayer({ id: 'route-casing', type: 'line', source: 'route',
-    layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': dark ? '#0c0c0c' : '#ffffff', 'line-width': 13 } });
+    layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': dark ? DARK_BG : '#ffffff', 'line-width': 13 } });
   map.addLayer({ id: 'route-line', type: 'line', source: 'route',
     layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': dark ? '#3D8BFF' : '#1F6FE0', 'line-width': 8 } });
 });
 
-darkQuery.addEventListener('change', () => map.setStyle(STYLES[theme()], { diff: false }));
+async function applyTheme() {
+  const style = theme() === 'dark' ? await darkStyle() : STYLES.light;
+  map.setStyle(style, { diff: false });
+  renderBar();
+}
+darkQuery.addEventListener('change', applyTheme);
+if (theme() === 'dark') applyTheme();
 
 function setRouteLine(coords) {
   routeCoords = coords;
@@ -243,14 +300,26 @@ function roadParts(names) {
   }
   const order = { a: 0, n: 1, e: 2 };
   refs.sort((x, y) => order[x.cls] - order[y.cls]);
-  if (refs.length) return refs.slice(0, 2);
+  if (refs.length) return refs.slice(0, 3);
   if (streets.length) return [{ cls: 'street', text: abbreviate(streets[0]), title: streets[0] }];
   return [];
 }
 
 let roadKey = null, roadCand;
+let lastE = { road: null, refs: [] };
+
+// Op korte stukken snelweg ontbreekt het E-nummer soms in de kaartgegevens;
+// zolang je op dezelfde A- of N-weg blijft, blijft het laatst bekende E-nummer staan.
+function withStickyE(parts) {
+  const main = parts.find(p => p.cls === 'a' || p.cls === 'n');
+  if (!main) return parts;
+  const es = parts.filter(p => p.cls === 'e');
+  if (es.length) { lastE = { road: main.text, refs: es }; return parts; }
+  return main.text === lastE.road ? [...parts, ...lastE.refs].slice(0, 3) : parts;
+}
+
 function acceptRoad(names) {
-  const parts = roadParts(names);
+  const parts = withStickyE(roadParts(names));
   const key = parts.map(p => p.text).join('|');
   // Net als bij de limiet: pas wisselen als dezelfde weg twee keer terugkomt
   if (key === roadKey) { roadCand = undefined; return; }
