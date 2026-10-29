@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '6';
+const VERSION = '7';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -436,16 +436,44 @@ $('startbtn').addEventListener('click', () => {
   startGps();
 });
 
-// ---------- Zoeken (Photon) ----------
+// ---------- Bestemming kiezen (Photon) ----------
 let searchTimer, searchSeq = 0;
+let pending = null;      // gekozen bestemming die nog met het vinkje bevestigd moet worden
+let streetCtx = null;    // gekozen straat zonder huisnummer: { street, city }
+let firstResult = null;  // bovenste zoekresultaat, voor het vinkje of Enter
+let modeAtOpen = 'auto';
+
+let travelMode = 'auto';
+try { travelMode = localStorage.getItem('travelMode') || 'auto'; } catch (e) { /* geen opslag */ }
+
+function setTravelMode(mode) {
+  travelMode = mode;
+  try { localStorage.setItem('travelMode', mode); } catch (e) { /* geen opslag */ }
+  document.querySelectorAll('.modes button').forEach(b => b.setAttribute('aria-checked', String(b.dataset.mode === mode)));
+}
+
+function updateConfirm() {
+  $('qok').disabled = !(pending || firstResult);
+}
 
 function openSearch() {
+  const navigating = !!state.nav;
   $('search').hidden = false;
-  $('q').value = '';
+  $('q').value = navigating && state.dest ? state.dest.name : '';
+  $('q-postcode').value = '';
+  $('q-city').value = '';
   $('results').innerHTML = '';
+  pending = navigating ? state.dest : null;
+  streetCtx = null;
+  firstResult = null;
+  modeAtOpen = travelMode;
+  setTravelMode(travelMode);
+  $('stopwrap').hidden = !navigating;
+  updateConfirm();
   // Op iOS opent het toetsenbord alleen als focus direct binnen de tik gebeurt
-  $('q').focus();
+  if (!navigating) $('q').focus();
 }
+
 function closeSearch() {
   $('q').blur();
   $('search').hidden = true;
@@ -459,10 +487,52 @@ function describe(props) {
   return { title, sub };
 }
 
-async function search(q) {
+function confirmDest(dest) {
+  closeSearch();
+  startRoute(dest);
+}
+
+// Een straat zonder huisnummer wordt in het veld gezet zodat je het nummer kunt
+// toevoegen; adressen met nummer en andere plekken worden meteen de bestemming.
+function choose(f) {
+  const p = f.properties;
+  const { title, sub } = describe(p);
+  const [lon, lat] = f.geometry.coordinates;
+  const dest = { lat, lon, name: [title, sub].filter(Boolean).join(', ') };
+  if (p.type === 'street' && !p.housenumber && p.name) {
+    streetCtx = { street: p.name, city: p.city || p.town || p.village || '' };
+    pending = dest;
+    firstResult = null;
+    const q = $('q');
+    q.value = p.name + ' ';
+    $('results').innerHTML = '';
+    q.focus();
+    q.setSelectionRange(q.value.length, q.value.length);
+    updateConfirm();
+    return;
+  }
+  confirmDest(dest);
+}
+
+function submitSearch() {
+  const typedNumber = streetCtx && /\d/.test($('q').value.slice(streetCtx.street.length));
+  if (firstResult && (!pending || typedNumber)) choose(firstResult);
+  else if (pending) confirmDest(pending);
+}
+
+function searchQuery() {
+  let q = $('q').value.trim();
+  const extra = [$('q-postcode').value, $('q-city').value].map(v => v.trim()).filter(Boolean);
+  if (extra.length) q = [q, ...extra].join(' ');
+  else if (streetCtx && streetCtx.city && !q.toLowerCase().includes(streetCtx.city.toLowerCase())) q += ', ' + streetCtx.city;
+  return q;
+}
+
+async function search() {
   const seq = ++searchSeq;
   const ul = $('results');
-  if (q.trim().length < 3) { ul.innerHTML = ''; return; }
+  const q = searchQuery();
+  if (q.length < 3) { ul.innerHTML = ''; firstResult = null; updateConfirm(); return; }
   const params = new URLSearchParams({ q, limit: '8' });
   if (state.fix) { params.set('lat', state.fix.lat); params.set('lon', state.fix.lon); }
   try {
@@ -470,6 +540,8 @@ async function search(q) {
     const data = await res.json();
     if (seq !== searchSeq) return;
     ul.innerHTML = '';
+    firstResult = data.features[0] || null;
+    updateConfirm();
     if (!data.features.length) { ul.innerHTML = '<li class="empty">Niets gevonden</li>'; return; }
     for (const f of data.features) {
       const { title, sub } = describe(f.properties);
@@ -477,11 +549,7 @@ async function search(q) {
       li.innerHTML = `<div class="r1"></div><div class="r2"></div>`;
       li.querySelector('.r1').textContent = title;
       li.querySelector('.r2').textContent = sub;
-      li.addEventListener('click', () => {
-        closeSearch();
-        const [lon, lat] = f.geometry.coordinates;
-        startRoute({ lat, lon, name: title });
-      });
+      li.addEventListener('click', () => choose(f));
       ul.appendChild(li);
     }
   } catch (e) {
@@ -489,15 +557,28 @@ async function search(q) {
   }
 }
 
-$('where').addEventListener('click', openSearch);
-$('qcancel').addEventListener('click', closeSearch);
-$('q').addEventListener('input', e => {
+function onSearchInput() {
+  const v = $('q').value;
+  if (streetCtx && !v.startsWith(streetCtx.street)) { streetCtx = null; pending = null; }
+  if (!streetCtx && pending && state.dest && pending === state.dest && v !== state.dest.name) pending = null;
+  if (!v.trim()) { $('q-postcode').value = ''; $('q-city').value = ''; }
+  updateConfirm();
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => search(e.target.value), 300);
-});
-$('q').addEventListener('keydown', e => {
-  if (e.key === 'Enter') { clearTimeout(searchTimer); search(e.target.value); }
-});
+  searchTimer = setTimeout(search, 300);
+}
+
+$('where').addEventListener('click', openSearch);
+$('bottom-nav').addEventListener('click', openSearch);
+$('qback').addEventListener('click', () => { setTravelMode(modeAtOpen); closeSearch(); });
+$('stop').addEventListener('click', () => { stopRoute(); closeSearch(); });
+$('qform').addEventListener('submit', e => { e.preventDefault(); submitSearch(); });
+for (const id of ['q', 'q-postcode', 'q-city']) $(id).addEventListener('input', onSearchInput);
+document.querySelectorAll('.modes button').forEach(b => b.addEventListener('click', () => {
+  setTravelMode(b.dataset.mode);
+  // Tijdens navigeren: met het vinkje dezelfde bestemming opnieuw plannen met het nieuwe vervoer
+  if (state.nav && !pending && !firstResult) pending = state.dest;
+  updateConfirm();
+}));
 
 // ---------- Route (Valhalla) ----------
 async function fetchRoute(dest) {
@@ -506,7 +587,7 @@ async function fetchRoute(dest) {
   if (state.heading != null && state.speedKmh > 5) { from.heading = Math.round(state.heading); from.heading_tolerance = 60; }
   const body = {
     locations: [from, { lat: dest.lat, lon: dest.lon }],
-    costing: 'auto',
+    costing: travelMode,
     language: 'nl-NL',
     directions_options: { units: 'kilometers', language: 'nl-NL' },
   };
@@ -561,7 +642,6 @@ function stopRoute() {
   setRouteLine([]);
   setMode('idle');
 }
-$('stop').addEventListener('click', stopRoute);
 
 function setMode(mode) {
   const nav = mode === 'nav';
@@ -679,8 +759,8 @@ function startDemo() {
     const n = state.nav;
     if (n && demo.along < n.total - 5) {
       const k = (Date.now() - demo.t0) / 1000;
-      const lim = state.limit || 50;
-      const target = lim * (1 + 0.15 * Math.sin(k / 8)) / 3.6;
+      const base = travelMode === 'bicycle' ? 18 : travelMode === 'pedestrian' ? 5 : (state.limit || 50);
+      const target = base * (1 + 0.15 * Math.sin(k / 8)) / 3.6;
       demo.speed += Math.max(-3, Math.min(2.5, (target - demo.speed) * 0.35));
       demo.along = Math.min(n.total, demo.along + demo.speed);
       const { pt, heading } = pointAlong(n, demo.along);

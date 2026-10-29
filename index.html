@@ -15,7 +15,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
-<link rel="stylesheet" href="style.css?v=4">
+<link rel="stylesheet" href="style.css?v=7">
 </head>
 <body>
 <div id="map"></div>
@@ -45,16 +45,29 @@
   <div class="meta"><span id="gps">Wachten op GPS…</span><span id="demo-badge" hidden>DEMO</span><span>© OpenStreetMap · OpenFreeMap · Valhalla</span></div>
 </div>
 
-<div class="card bottom nav" id="bottom-nav" hidden>
+<div class="card bottom nav" id="bottom-nav" role="button" tabindex="0" aria-label="Bestemming wijzigen of route stoppen" hidden>
   <div><div class="eta" id="eta">--:--</div><div class="lbl">aankomst</div></div>
-  <div class="mid"><div class="min" id="remain-time">-- min</div><div class="lbl" id="remain-dist">-- km</div></div>
-  <button class="stop" id="stop" aria-label="Stop route"><i class="ti ti-x" aria-hidden="true"></i></button>
+  <div class="mid"><div class="min" id="remain-time">-- min</div><div class="lbl">reistijd</div></div>
+  <div class="right"><div class="min" id="remain-dist">-- km</div><div class="lbl">afstand</div></div>
 </div>
 
 <div class="sheet" id="search" hidden>
-  <div class="sheet-head">
-    <input id="q" type="search" placeholder="Zoek adres of plaats" autocomplete="off" autocorrect="off" enterkeyhint="search">
-    <button id="qcancel">Annuleer</button>
+  <form class="sheet-head" id="qform" autocomplete="on">
+    <button type="button" class="icon-btn" id="qback" aria-label="Terug"><i class="ti ti-arrow-left" aria-hidden="true"></i></button>
+    <input id="q" name="address" type="text" placeholder="Zoek adres of plaats" autocomplete="street-address" autocorrect="off" autocapitalize="words" enterkeyhint="go">
+    <!-- Onzichtbare velden zodat iOS bij 'Thuis'/'Werk' ook postcode en plaats invult -->
+    <input class="af" id="q-postcode" name="postal-code" autocomplete="postal-code" tabindex="-1" aria-hidden="true">
+    <input class="af" id="q-city" name="city" autocomplete="address-level2" tabindex="-1" aria-hidden="true">
+    <button type="submit" class="icon-btn confirm" id="qok" aria-label="Bestemming bevestigen" disabled><i class="ti ti-check" aria-hidden="true"></i></button>
+  </form>
+  <div class="modes" role="radiogroup" aria-label="Vervoer">
+    <button type="button" role="radio" data-mode="auto"><i class="ti ti-car" aria-hidden="true"></i>Auto</button>
+    <button type="button" role="radio" data-mode="bicycle"><i class="ti ti-bike" aria-hidden="true"></i>Fiets</button>
+    <button type="button" role="radio" data-mode="pedestrian"><i class="ti ti-walk" aria-hidden="true"></i>Lopen</button>
+  </div>
+  <div class="stopwrap" id="stopwrap" hidden>
+    <button type="button" class="stopbig" id="stop" aria-label="Route stoppen"><i class="ti ti-x" aria-hidden="true"></i></button>
+    <div class="stoplbl">Route stoppen</div>
   </div>
   <ul id="results"></ul>
 </div>
@@ -69,6 +82,6 @@
 </div>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-<script src="app.js?v=6"></script>
+<script src="app.js?v=7"></script>
 </body>
 </html>
