@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Snelheidsbalk">
+<meta name="theme-color" content="#48484A">
+<title>Snelheidsbalk</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
+<link rel="stylesheet" href="style.css?v=1">
+</head>
+<body>
+<div id="map"></div>
+
+<div class="car" id="car" aria-label="Je positie"><div><div></div></div></div>
+
+<div class="bar" id="bar">
+  <span class="spd" id="spd">–</span>
+  <span class="lim" id="lim" hidden aria-label="Maximumsnelheid"></span>
+</div>
+
+<div class="card instr" id="instr" hidden>
+  <i class="ti ti-arrow-up" id="instr-icon" aria-hidden="true"></i>
+  <div class="instr-text">
+    <div class="instr-title" id="instr-title"></div>
+    <div class="instr-sub" id="instr-sub"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<button class="recenter" id="recenter" hidden aria-label="Centreer op je positie"><i class="ti ti-current-location" aria-hidden="true"></i></button>
+
+<div class="card bottom" id="bottom-idle">
+  <button class="where" id="where"><i class="ti ti-search" aria-hidden="true"></i>Waarheen?</button>
+  <div class="meta"><span id="gps">Wachten op GPS…</span><span id="demo-badge" hidden>DEMO</span><span>© OpenStreetMap · OpenFreeMap · Valhalla</span></div>
+</div>
+
+<div class="card bottom nav" id="bottom-nav" hidden>
+  <div><div class="eta" id="eta">--:--</div><div class="lbl">aankomst</div></div>
+  <div class="mid"><div class="min" id="remain-time">-- min</div><div class="lbl" id="remain-dist">-- km</div></div>
+  <button class="stop" id="stop" aria-label="Stop route"><i class="ti ti-x" aria-hidden="true"></i></button>
+</div>
+
+<div class="sheet" id="search" hidden>
+  <div class="sheet-head">
+    <input id="q" type="search" placeholder="Zoek adres of plaats" autocomplete="off" autocorrect="off" enterkeyhint="search">
+    <button id="qcancel">Annuleer</button>
+  </div>
+  <ul id="results"></ul>
+</div>
+
+<div class="start" id="start">
+  <div class="start-card">
+    <h1>Snelheidsbalk</h1>
+    <p>Zet je telefoon in een houder en laat een bijrijder de app bedienen.</p>
+    <button id="startbtn">Start</button>
+    <p class="small">De app vraagt om je locatie en houdt het scherm aan zolang hij open staat.</p>
+  </div>
+</div>
+
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="app.js?v=1"></script>
+</body>
+</html>
