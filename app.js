@@ -1,9 +1,14 @@
 'use strict';
 
-const VERSION = '1';
+const VERSION = '2';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
-const STYLE = 'https://tiles.openfreemap.org/styles/positron';
+const STYLES = {
+  light: 'https://tiles.openfreemap.org/styles/positron',
+  dark: 'https://tiles.openfreemap.org/styles/dark',
+};
+const darkQuery = matchMedia('(prefers-color-scheme: dark)');
+const theme = () => (darkQuery.matches ? 'dark' : 'light');
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 // Kleurschaal: percentage van de maximumsnelheid -> kleur
@@ -114,7 +119,7 @@ function toast(msg, ms = 3500) {
 // ---------- Kaart ----------
 const map = new maplibregl.Map({
   container: 'map',
-  style: STYLE,
+  style: STYLES[theme()],
   center: [5.1214, 52.0907],
   zoom: 15,
   attributionControl: false,
@@ -128,19 +133,25 @@ markerEl.className = 'car marker';
 markerEl.innerHTML = '<div><div></div></div>';
 const marker = new maplibregl.Marker({ element: markerEl, rotationAlignment: 'map' });
 
-const emptyLine = () => ({ type: 'Feature', geometry: { type: 'LineString', coordinates: [] }, properties: {} });
+let routeCoords = [];
+const lineFeature = coords => ({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: {} });
 
-map.on('load', () => {
-  map.addSource('route', { type: 'geojson', data: emptyLine() });
+// Wordt ook opnieuw aangeroepen na een wissel tussen licht en donker
+map.on('style.load', () => {
+  const dark = theme() === 'dark';
+  map.addSource('route', { type: 'geojson', data: lineFeature(routeCoords) });
   map.addLayer({ id: 'route-casing', type: 'line', source: 'route',
-    layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': 13 } });
+    layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': dark ? '#0c0c0c' : '#ffffff', 'line-width': 13 } });
   map.addLayer({ id: 'route-line', type: 'line', source: 'route',
-    layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#1F6FE0', 'line-width': 8 } });
+    layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': dark ? '#3D8BFF' : '#1F6FE0', 'line-width': 8 } });
 });
 
+darkQuery.addEventListener('change', () => map.setStyle(STYLES[theme()], { diff: false }));
+
 function setRouteLine(coords) {
+  routeCoords = coords;
   const src = map.getSource('route');
-  if (src) src.setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: {} });
+  if (src) src.setData(lineFeature(coords));
 }
 
 function stopFollowing() {
@@ -210,6 +221,56 @@ function renderBar() {
   }
 }
 
+// ---------- Huidige weg linksboven ----------
+const PARTICLES = new Set(['van', 'der', 'de', 'den', 'het', "'t", 'ter', 'ten', 'in', 'op', 'aan', 'bij', 'la', 'le', 'du', 'des', 'en']);
+
+// "Eerste Jan van der Heijdenstraat" -> "EJvdH"; korte namen blijven heel
+function abbreviate(name) {
+  const words = name.split(/[\s-]+/).filter(Boolean);
+  if (name.length <= 14 || words.length < 2) return name;
+  return words.map(w => (PARTICLES.has(w.toLowerCase()) ? w[0].toLowerCase() : w[0].toUpperCase())).join('');
+}
+
+function roadParts(names) {
+  const refs = [], streets = [];
+  for (const raw of names || []) {
+    const n = raw.trim();
+    let m;
+    if ((m = n.match(/^A\s?(\d+)$/i))) refs.push({ cls: 'a', text: 'A' + m[1] });
+    else if ((m = n.match(/^N\s?(\d+)$/i))) refs.push({ cls: 'n', text: 'N' + m[1] });
+    else if ((m = n.match(/^E\s?(\d+)$/i))) refs.push({ cls: 'e', text: 'E' + m[1] });
+    else if (!/^Rijksweg\b/i.test(n) && !/^S\s?\d+$/i.test(n)) streets.push(n);
+  }
+  const order = { a: 0, n: 1, e: 2 };
+  refs.sort((x, y) => order[x.cls] - order[y.cls]);
+  if (refs.length) return refs.slice(0, 2);
+  if (streets.length) return [{ cls: 'street', text: abbreviate(streets[0]), title: streets[0] }];
+  return [];
+}
+
+let roadKey = null, roadCand;
+function acceptRoad(names) {
+  const parts = roadParts(names);
+  const key = parts.map(p => p.text).join('|');
+  // Net als bij de limiet: pas wisselen als dezelfde weg twee keer terugkomt
+  if (key === roadKey) { roadCand = undefined; return; }
+  if (roadKey === null || roadCand === key) {
+    roadKey = key;
+    roadCand = undefined;
+    const el = $('road');
+    el.innerHTML = '';
+    for (const p of parts) {
+      const span = document.createElement('span');
+      span.className = p.cls === 'street' ? 'street' : 'ref ' + p.cls;
+      span.textContent = p.text;
+      if (p.title) span.title = p.title;
+      el.appendChild(span);
+    }
+  } else {
+    roadCand = key;
+  }
+}
+
 // ---------- Maximumsnelheid via Valhalla /locate ----------
 let limitBusy = false, lastLimitAt = 0, lastLimitPos = null;
 
@@ -244,6 +305,7 @@ async function maybeFetchLimit(p) {
     const e = edges[0];
     const sl = e && e.edge_info && e.edge_info.speed_limit;
     acceptLimit(typeof sl === 'number' && sl > 0 && sl < 200 ? sl : null);
+    acceptRoad(e && e.edge_info ? e.edge_info.names : null);
   } catch (err) {
     // Netwerkfout: laatste bekende limiet blijft staan
   } finally {

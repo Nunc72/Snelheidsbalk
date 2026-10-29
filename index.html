@@ -8,13 +8,14 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Snelheidsbalk">
 <meta name="theme-color" content="#48484A">
+<meta name="color-scheme" content="light dark">
 <title>Snelheidsbalk</title>
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" href="icon-192.png">
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
-<link rel="stylesheet" href="style.css?v=1">
+<link rel="stylesheet" href="style.css?v=2">
 </head>
 <body>
 <div id="map"></div>
@@ -22,6 +23,7 @@
 <div class="car" id="car" aria-label="Je positie"><div><div></div></div></div>
 
 <div class="bar" id="bar">
+  <div class="road" id="road" aria-label="Huidige weg"></div>
   <span class="spd" id="spd">–</span>
   <span class="lim" id="lim" hidden aria-label="Maximumsnelheid"></span>
 </div>
@@ -67,6 +69,6 @@
 </div>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-<script src="app.js?v=1"></script>
+<script src="app.js?v=2"></script>
 </body>
 </html>
