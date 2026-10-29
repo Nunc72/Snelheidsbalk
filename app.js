@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '3';
+const VERSION = '4';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -128,8 +128,8 @@ const DARK_PAINT = {
   landuse_residential: { 'fill-color': '#272A30' },
   water: { 'fill-color': '#1E3550' },
   waterway: { 'line-color': '#1E3550' },
-  landcover_wood: { 'fill-color': '#284634' },
-  landuse_park: { 'fill-color': '#284634' },
+  landcover_wood: { 'fill-color': '#2F5E3E' },
+  landuse_park: { 'fill-color': '#2F5E3E' },
   landcover_ice_shelf: { 'fill-color': DARK_BG },
   building: { 'fill-color': '#30333A', 'fill-outline-color': '#3A3E46' },
   'aeroway-area': { 'fill-color': '#2B2E34' },
@@ -278,40 +278,26 @@ function renderBar() {
   }
 }
 
-// ---------- Huidige weg linksboven ----------
-const PARTICLES = new Set(['van', 'der', 'de', 'den', 'het', "'t", 'ter', 'ten', 'in', 'op', 'aan', 'bij', 'la', 'le', 'du', 'des', 'en']);
-
-// "Eerste Jan van der Heijdenstraat" -> "EJvdH"; korte namen blijven heel
-function abbreviate(name) {
-  const words = name.split(/[\s-]+/).filter(Boolean);
-  if (name.length <= 14 || words.length < 2) return name;
-  return words.map(w => (PARTICLES.has(w.toLowerCase()) ? w[0].toLowerCase() : w[0].toUpperCase())).join('');
-}
-
+// ---------- Huidige weg linksboven: alleen A- en E-nummers ----------
 function roadParts(names) {
-  const refs = [], streets = [];
+  const refs = [];
   for (const raw of names || []) {
     const n = raw.trim();
     let m;
     if ((m = n.match(/^A\s?(\d+)$/i))) refs.push({ cls: 'a', text: 'A' + m[1] });
-    else if ((m = n.match(/^N\s?(\d+)$/i))) refs.push({ cls: 'n', text: 'N' + m[1] });
     else if ((m = n.match(/^E\s?(\d+)$/i))) refs.push({ cls: 'e', text: 'E' + m[1] });
-    else if (!/^Rijksweg\b/i.test(n) && !/^S\s?\d+$/i.test(n)) streets.push(n);
   }
-  const order = { a: 0, n: 1, e: 2 };
-  refs.sort((x, y) => order[x.cls] - order[y.cls]);
-  if (refs.length) return refs.slice(0, 3);
-  if (streets.length) return [{ cls: 'street', text: abbreviate(streets[0]), title: streets[0] }];
-  return [];
+  refs.sort((x, y) => (x.cls === 'a' ? 0 : 1) - (y.cls === 'a' ? 0 : 1));
+  return refs.slice(0, 3);
 }
 
 let roadKey = null, roadCand;
 let lastE = { road: null, refs: [] };
 
 // Op korte stukken snelweg ontbreekt het E-nummer soms in de kaartgegevens;
-// zolang je op dezelfde A- of N-weg blijft, blijft het laatst bekende E-nummer staan.
+// zolang je op dezelfde A-weg blijft, blijft het laatst bekende E-nummer staan.
 function withStickyE(parts) {
-  const main = parts.find(p => p.cls === 'a' || p.cls === 'n');
+  const main = parts.find(p => p.cls === 'a');
   if (!main) return parts;
   const es = parts.filter(p => p.cls === 'e');
   if (es.length) { lastE = { road: main.text, refs: es }; return parts; }
@@ -330,9 +316,8 @@ function acceptRoad(names) {
     el.innerHTML = '';
     for (const p of parts) {
       const span = document.createElement('span');
-      span.className = p.cls === 'street' ? 'street' : 'ref ' + p.cls;
+      span.className = 'ref ' + p.cls;
       span.textContent = p.text;
-      if (p.title) span.title = p.title;
       el.appendChild(span);
     }
   } else {

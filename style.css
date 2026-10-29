@@ -44,12 +44,6 @@ button { font: inherit; color: inherit; border: 0; background: none; cursor: poi
 }
 .road .ref.a { background: #1B4FA0; color: #fff; }
 .road .ref.e { background: #0C7A3C; color: #fff; }
-.road .ref.n { background: #F5C400; color: #111; }
-.road .street {
-  font-size: min(3.9vw, 16px); font-weight: 600; line-height: 1;
-  padding: 4px 6px 3px; border-radius: 4px; border: 1.5px solid currentColor; opacity: .85;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
-}
 
 /* Autopijltje op 70% van de schermhoogte */
 .car {
