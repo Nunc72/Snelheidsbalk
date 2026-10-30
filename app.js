@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '13';
+const VERSION = '14';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -447,6 +447,7 @@ let searchTimer, searchSeq = 0;
 let pending = null;      // gekozen bestemming, wordt pas gestart met het vinkje
 let streetCtx = null;    // gekozen straat zonder huisnummer: { street, city }
 let firstResult = null;  // bovenste zoekresultaat, voor Enter
+let firstRecent = null;  // bovenste passende recente bestemming, gaat voor bij Enter
 let modeAtOpen = 'auto';
 const MODE_LABEL = { auto: 'auto', bicycle: 'fiets', pedestrian: 'lopen' };
 
@@ -464,36 +465,49 @@ function loadRecent() {
   try { return JSON.parse(localStorage.getItem('recent') || '[]'); } catch (e) { return []; }
 }
 function saveRecent(dest) {
-  const list = [dest, ...loadRecent().filter(d => d.name !== dest.name)].slice(0, 8);
+  const list = [dest, ...loadRecent().filter(d => d.name !== dest.name)].slice(0, 30);
   try { localStorage.setItem('recent', JSON.stringify(list)); } catch (e) { /* geen opslag */ }
+}
+
+function recentItem(d) {
+  const [first, ...rest] = d.name.split(', ');
+  const li = document.createElement('li');
+  li.className = 'recent';
+  li.innerHTML = '<i class="ti ti-history" aria-hidden="true"></i><div><div class="r1"></div><div class="r2"></div></div>';
+  li.querySelector('.r1').textContent = first;
+  li.querySelector('.r2').textContent = rest.join(', ');
+  li.addEventListener('click', () => chooseRecent(d));
+  return li;
+}
+
+function chooseRecent(d) {
+  streetCtx = null;
+  $('q').value = d.name;
+  $('q').blur();
+  updateClear();
+  showPreview(d);
+}
+
+// Recente bestemmingen waarin elk getypt woord voorkomt
+const fold = t => t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+function matchRecent(q) {
+  const words = fold(q).split(/[\s,]+/).filter(Boolean);
+  if (!words.length) return [];
+  return loadRecent().filter(d => { const n = fold(d.name); return words.every(w => n.includes(w)); }).slice(0, 5);
 }
 
 // Bij een leeg zoekveld de recente bestemmingen tonen
 function showRecent() {
   searchSeq++;
   firstResult = null;
+  firstRecent = null;
   const ul = $('results');
   ul.innerHTML = '';
   const list = loadRecent();
   if (!list.length) return;
   $('preview').hidden = true;
   ul.innerHTML = '<li class="hdr">Recent</li>';
-  for (const d of list) {
-    const [first, ...rest] = d.name.split(', ');
-    const li = document.createElement('li');
-    li.className = 'recent';
-    li.innerHTML = '<i class="ti ti-history" aria-hidden="true"></i><div><div class="r1"></div><div class="r2"></div></div>';
-    li.querySelector('.r1').textContent = first;
-    li.querySelector('.r2').textContent = rest.join(', ');
-    li.addEventListener('click', () => {
-      streetCtx = null;
-      $('q').value = d.name;
-      $('q').blur();
-      updateClear();
-      showPreview(d);
-    });
-    ul.appendChild(li);
-  }
+  for (const d of list) ul.appendChild(recentItem(d));
 }
 
 function updateClear() {
@@ -511,6 +525,7 @@ function openSearch() {
   pending = null;
   streetCtx = null;
   firstResult = null;
+  firstRecent = null;
   modeAtOpen = travelMode;
   setTravelMode(travelMode);
   updateClear();
@@ -619,18 +634,29 @@ async function search() {
     return;
   }
   const q = searchQuery();
-  if (q.length < 3) { ul.innerHTML = ''; firstResult = null; return; }
+  // Passende recente bestemmingen staan meteen bovenaan, nog voor de suggesties binnen zijn
+  const recents = matchRecent(v);
+  firstRecent = recents[0] || null;
+  firstResult = null;
+  ul.innerHTML = '';
+  if (recents.length) {
+    $('preview').hidden = true;
+    for (const d of recents) ul.appendChild(recentItem(d));
+  }
+  if (q.length < 3) return;
   const params = new URLSearchParams({ q, limit: '12' });
   if (state.fix) { params.set('lat', state.fix.lat); params.set('lon', state.fix.lon); }
   try {
     const res = await fetch(`${PHOTON}?${params}`);
     const data = await res.json();
     if (seq !== searchSeq) return;
-    const features = dedupe(data.features).slice(0, 8);
-    ul.innerHTML = '';
+    const known = new Set(recents.map(d => d.name));
+    const features = dedupe(data.features)
+      .filter(f => { const { title, sub } = describe(f.properties); return !known.has([title, sub].filter(Boolean).join(', ')); })
+      .slice(0, 8);
     firstResult = features[0] || null;
     $('preview').hidden = true;
-    if (!features.length) { ul.innerHTML = '<li class="empty">Niets gevonden</li>'; return; }
+    if (!features.length && !recents.length) { ul.innerHTML = '<li class="empty">Niets gevonden</li>'; return; }
     for (const f of features) {
       const { title, sub } = describe(f.properties);
       const li = document.createElement('li');
@@ -697,6 +723,7 @@ async function ensurePreviewMap() {
 async function showPreview(dest, note) {
   pending = dest;
   firstResult = null;
+  firstRecent = null;
   $('results').innerHTML = '';
   $('preview').hidden = false;
   $('stop').style.visibility = state.nav ? 'visible' : 'hidden';
@@ -748,7 +775,8 @@ function confirmPreview() {
 }
 
 function submitSearch() {
-  if (firstResult && !$('results').hidden && $('results').children.length) choose(firstResult);
+  if (firstRecent && $('preview').hidden) chooseRecent(firstRecent);
+  else if (firstResult && !$('results').hidden && $('results').children.length) choose(firstResult);
   else if (pending && !$('qok').disabled) confirmPreview();
 }
 
