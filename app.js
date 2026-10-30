@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '12';
+const VERSION = '13';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -281,6 +281,7 @@ let lastTheme = '';
 function renderBar() {
   const bar = $('bar'), lim = $('lim');
   $('spd').textContent = state.fix ? Math.round(state.speedKmh) : '–';
+  $('destlbl').hidden = state.speedKmh > 10;
   let bg = '#48484A', fg = '#fff';
   if (state.limit) {
     const c = scaleColor(state.speedKmh, state.limit);
@@ -836,9 +837,13 @@ function stopRoute() {
   setMode('idle');
 }
 
+// Postcode weglaten, ook buitenlandse: een los adresdeel met cijfers en zonder
+// kleine letters ("3022 CA", "75001", "SW1A 1AA", "D02 X285").
 // "Heemraadssingel, 3022 CA, Rotterdam" -> "Heemraadssingel, Rotterdam"
 function withoutPostcode(name) {
-  return name.split(',').map(p => p.replace(/\b\d{4}\s?[A-Z]{2}\b/, '').trim()).filter(Boolean).join(', ');
+  return name.split(',').map(p => p.trim())
+    .filter((p, i) => !(i > 0 && p.length <= 10 && /\d/.test(p) && !/[a-z]/.test(p)))
+    .join(', ');
 }
 
 function setMode(mode) {
