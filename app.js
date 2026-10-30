@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '14';
+const VERSION = '15';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -488,12 +488,16 @@ function chooseRecent(d) {
   showPreview(d);
 }
 
-// Recente bestemmingen waarin elk getypt woord voorkomt
+// Recente bestemmingen waarin elk getypt woord het begin van een woord is
+// ("heem" en "rotter" vinden "Heemraadssingel, Rotterdam", "raad" niet)
 const fold = t => t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 function matchRecent(q) {
   const words = fold(q).split(/[\s,]+/).filter(Boolean);
   if (!words.length) return [];
-  return loadRecent().filter(d => { const n = fold(d.name); return words.every(w => n.includes(w)); }).slice(0, 5);
+  return loadRecent().filter(d => {
+    const parts = fold(d.name).split(/[^\p{L}\p{N}]+/u);
+    return words.every(w => parts.some(p => p.startsWith(w)));
+  }).slice(0, 5);
 }
 
 // Bij een leeg zoekveld de recente bestemmingen tonen
