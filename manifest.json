@@ -1,6 +1,6 @@
 {
-  "name": "Snelheidsbalk",
-  "short_name": "Snelheidsbalk",
+  "name": "VeloVerde",
+  "short_name": "VeloVerde",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

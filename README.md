@@ -1,4 +1,4 @@
-# Snelheidsbalk
+# VeloVerde
 
 Testapp (PWA) voor een navigatiescherm met een gekleurde snelheidsbalk bovenin.
 De kleur geeft aan hoe hard je rijdt ten opzichte van de maximumsnelheid; rechts staat het verkeersbord.

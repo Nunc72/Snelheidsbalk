@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '10';
+const VERSION = '11';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -276,7 +276,7 @@ function updateCamera(p, duration = 1000) {
   });
 }
 
-// ---------- Snelheidsbalk ----------
+// ---------- Kleurbalk ----------
 let lastTheme = '';
 function renderBar() {
   const bar = $('bar'), lim = $('lim');
@@ -752,7 +752,7 @@ function submitSearch() {
 }
 
 $('where').addEventListener('click', openSearch);
-$('bottom-nav').addEventListener('click', openSearch);
+$('edit').addEventListener('click', openSearch);
 $('qback').addEventListener('click', () => { setTravelMode(modeAtOpen); closeSearch(); });
 $('stop').addEventListener('click', () => { stopRoute(); closeSearch(); });
 $('qok').addEventListener('click', confirmPreview);
@@ -840,6 +840,8 @@ function setMode(mode) {
   const nav = mode === 'nav';
   $('instr').hidden = !nav;
   $('bottom-nav').hidden = !nav;
+  $('destlbl').hidden = !nav;
+  $('destlbl').textContent = nav && state.dest ? state.dest.name : '';
   $('bottom-idle').hidden = nav;
 }
 
