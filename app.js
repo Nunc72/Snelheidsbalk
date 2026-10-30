@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '15';
+const VERSION = '16';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -184,11 +184,14 @@ async function darkStyle() {
   darkStyleCache = style;
   return style;
 }
+// Kaart half gekanteld: 50% van de maximale kanteling (60°) geeft wat perspectief
+const PITCH = 30;
 const map = new maplibregl.Map({
   container: 'map',
   style: theme() === 'dark' ? PLACEHOLDER_DARK : STYLES.light,
   center: [5.1214, 52.0907],
   zoom: 15,
+  pitch: PITCH,
   attributionControl: false,
   dragRotate: false,
   pitchWithRotate: false,
@@ -270,6 +273,7 @@ function updateCamera(p, duration = 1000) {
     center: p,
     bearing: state.heading ?? map.getBearing(),
     zoom: state.zoom,
+    pitch: PITCH,
     padding: { top: Math.round(h * 0.4), bottom: 0, left: 0, right: 0 },
     duration,
     easing: t => t,
