@@ -15,7 +15,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
-<link rel="stylesheet" href="style.css?v=11">
+<link rel="stylesheet" href="style.css?v=12">
 </head>
 <body>
 <div id="map"></div>
@@ -27,8 +27,6 @@
   <span class="spd" id="spd">–</span>
   <span class="lim" id="lim" hidden aria-label="Maximumsnelheid"></span>
 </div>
-
-<div class="destlbl" id="destlbl" hidden></div>
 
 <div class="card instr" id="instr" hidden>
   <i class="ti ti-arrow-up" id="instr-icon" aria-hidden="true"></i>
@@ -47,10 +45,13 @@
   <div class="meta"><span id="gps">Wachten op GPS…</span><span id="demo-badge" hidden>DEMO</span><span>© OpenStreetMap · OpenFreeMap · Valhalla</span></div>
 </div>
 
-<div class="card bottom nav" id="bottom-nav" hidden>
+<div class="card bottom" id="bottom-nav" hidden>
+  <div class="destlbl" id="destlbl"></div>
+  <div class="nav">
   <div><div class="eta" id="eta">--:--</div><div class="lbl">aankomst</div></div>
   <div class="mid"><div class="min" id="remain-time">-- min</div><div class="lbl" id="remain-dist">-- km</div></div>
   <button class="edit" id="edit" aria-label="Bestemming wijzigen"><i class="ti ti-pencil" aria-hidden="true"></i></button>
+  </div>
 </div>
 
 <div class="sheet" id="search" hidden>
@@ -90,6 +91,6 @@
 </div>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-<script src="app.js?v=11"></script>
+<script src="app.js?v=12"></script>
 </body>
 </html>

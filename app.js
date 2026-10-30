@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '11';
+const VERSION = '12';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -836,12 +836,16 @@ function stopRoute() {
   setMode('idle');
 }
 
+// "Heemraadssingel, 3022 CA, Rotterdam" -> "Heemraadssingel, Rotterdam"
+function withoutPostcode(name) {
+  return name.split(',').map(p => p.replace(/\b\d{4}\s?[A-Z]{2}\b/, '').trim()).filter(Boolean).join(', ');
+}
+
 function setMode(mode) {
   const nav = mode === 'nav';
   $('instr').hidden = !nav;
   $('bottom-nav').hidden = !nav;
-  $('destlbl').hidden = !nav;
-  $('destlbl').textContent = nav && state.dest ? state.dest.name : '';
+  $('destlbl').textContent = nav && state.dest ? withoutPostcode(state.dest.name) : '';
   $('bottom-idle').hidden = nav;
 }
 

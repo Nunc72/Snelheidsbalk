@@ -35,7 +35,8 @@ button { font: inherit; color: inherit; border: 0; background: none; cursor: poi
 .road {
   position: absolute; left: min(5vw, 22px); bottom: min(3vw, 13px);
   height: min(15vw, 64px); max-width: 37vw;
-  display: flex; align-items: center; gap: 5px;
+  display: grid; grid-template-rows: repeat(2, auto); grid-auto-flow: column;
+  align-content: center; justify-items: start; gap: 4px 5px;
 }
 .road:empty { display: none; }
 .road .ref {
@@ -59,14 +60,7 @@ button { font: inherit; color: inherit; border: 0; background: none; cursor: poi
 
 .card { position: absolute; left: 16px; right: 16px; z-index: 6; border-radius: 20px; background: #fff; }
 
-/* Bestemming, subtiel op de kaart tussen balk en instructiekaart */
-.destlbl {
-  position: absolute; left: 24px; right: 24px; top: calc(15vh + 6px); z-index: 6; pointer-events: none;
-  text-align: center; font-size: 13px; font-weight: 500; color: #5c5c60;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  text-shadow: 0 0 3px #EDEBE6, 0 0 3px #EDEBE6, 0 0 6px #EDEBE6;
-}
-.destlbl:not([hidden]) ~ .instr { top: calc(15vh + 30px); }
+.instr { top: calc(15vh + 30px); }
 
 .instr {
   top: calc(15vh + 10px);
@@ -90,6 +84,11 @@ button { font: inherit; color: inherit; border: 0; background: none; cursor: poi
 .meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; font-size: 11px; color: #8a8a8a; }
 #demo-badge { color: #fff; background: #E5484D; border-radius: 4px; padding: 0 5px; font-weight: 600; }
 
+.destlbl {
+  text-align: center; font-size: 13px; font-weight: 500; color: #8a8a8a; margin: -4px 0 6px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.destlbl:empty { display: none; }
 .nav { display: flex; justify-content: space-between; align-items: center; }
 .eta { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .min { font-size: 20px; font-weight: 600; }
@@ -135,7 +134,7 @@ button { font: inherit; color: inherit; border: 0; background: none; cursor: poi
   top: calc(15vh + 12px); max-width: calc(100% - 32px);
   background: rgba(28,28,30,.92); color: #fff; font-size: 15px; padding: 10px 14px; border-radius: 12px; text-align: center;
 }
-.instr:not([hidden]) ~ .toast { top: calc(15vh + 130px); }
+.instr:not([hidden]) ~ .toast { top: calc(15vh + 110px); }
 
 .sheet {
   position: absolute; inset: 0; z-index: 20; background: #fff;
@@ -172,7 +171,6 @@ button { font: inherit; color: inherit; border: 0; background: none; cursor: poi
   .bottom { box-shadow: 0 2px 14px rgba(0,0,0,.5); }
   .where { background: #2c2c2e; color: #a1a1a6; }
   .edit { background: #2c2c2e; color: #f2f2f7; }
-  .destlbl { color: #b8b8bd; text-shadow: 0 0 3px #23262B, 0 0 3px #23262B, 0 0 6px #23262B; }
   .meta, .lbl { color: #8e8e93; }
   .recenter { background: #2c2c2e; color: #5EA0FF; box-shadow: 0 2px 10px rgba(0,0,0,.5); }
   .car { box-shadow: 0 1px 8px rgba(0,0,0,.6); }
