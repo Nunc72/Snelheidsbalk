@@ -15,7 +15,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
-<link rel="stylesheet" href="style.css?v=17">
+<link rel="stylesheet" href="style.css?v=18">
 </head>
 <body>
 <div id="map"></div>
@@ -73,8 +73,17 @@
   <div class="tabs" role="tablist" aria-label="Bestemmingen">
     <button type="button" role="tab" data-tab="recent" aria-selected="true"><i class="ti ti-history" aria-hidden="true"></i>Recent</button>
     <button type="button" role="tab" data-tab="fav" aria-selected="false"><i class="ti ti-star" aria-hidden="true"></i>Favorieten</button>
+    <button type="button" role="tab" data-tab="map" aria-selected="false"><i class="ti ti-map" aria-hidden="true"></i>Kaart</button>
   </div>
   <ul id="results"></ul>
+  <div class="pick" id="pick" hidden>
+    <div class="pickwrap">
+      <div class="pickmap" id="pickmap"></div>
+      <svg class="pin" viewBox="0 0 36 48" aria-hidden="true"><path d="M18 46.5C18 46.5 34 28.5 34 17A16 16 0 0 0 2 17C2 28.5 18 46.5 18 46.5Z"/><circle cx="18" cy="17" r="6"/></svg>
+      <button type="button" class="pickme" id="pickme" aria-label="Naar je positie"><i class="ti ti-current-location" aria-hidden="true"></i></button>
+    </div>
+    <button type="button" class="pickok" id="pickok"><i class="ti ti-check" aria-hidden="true"></i>Kies deze plek</button>
+  </div>
   <div class="preview" id="preview" hidden>
     <div class="pmap" id="pmap"></div>
     <div class="psum" id="psum"></div>
@@ -95,6 +104,6 @@
 </div>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-<script src="app.js?v=17"></script>
+<script src="app.js?v=18"></script>
 </body>
 </html>

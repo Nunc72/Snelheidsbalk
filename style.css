@@ -129,6 +129,22 @@ button { font: inherit; color: inherit; border: 0; background: none; cursor: poi
 .tabs button[aria-selected="true"] { color: #1F6FE0; border-bottom-color: #1F6FE0; font-weight: 600; }
 .tabs .ti { font-size: 18px; }
 
+/* Tab Kaart: schuif de kaart onder de vaste pin in het midden */
+.pick { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 12px 16px calc(env(safe-area-inset-bottom) + 16px); gap: 12px; }
+.pickwrap { position: relative; flex: 1; min-height: 200px; border-radius: 16px; overflow: hidden; background: #EDEBE6; }
+.pickmap { position: absolute; inset: 0; }
+.pin { position: absolute; left: 50%; top: 50%; width: 36px; height: 48px; transform: translate(-50%, -100%); pointer-events: none;
+  filter: drop-shadow(0 2px 3px rgba(0,0,0,.3)); }
+.pin path { fill: #E5484D; stroke: #fff; stroke-width: 2; }
+.pin circle { fill: #fff; }
+.pickme { position: absolute; right: 10px; bottom: 10px; width: 44px; height: 44px; border-radius: 50%; background: #fff; color: #1F6FE0;
+  display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 8px rgba(0,0,0,.18); }
+.pickme .ti { font-size: 22px; }
+.pickok { display: flex; align-items: center; justify-content: center; gap: 8px; background: #008000; color: #fff;
+  font-size: 18px; font-weight: 600; padding: 15px; border-radius: 14px; }
+.pickok .ti { font-size: 22px; }
+.pickok:disabled { opacity: .5; }
+
 .recenter {
   position: absolute; right: 16px; z-index: 6;
   bottom: calc(env(safe-area-inset-bottom) + 120px);
@@ -199,7 +215,8 @@ button { font: inherit; color: inherit; border: 0; background: none; cursor: poi
   .tabs button[aria-selected="true"] { color: #5EA0FF; border-bottom-color: #5EA0FF; }
   #results .star.on .ti { color: #5EA0FF; }
   #results li.dragging { background: #1c1c1e; box-shadow: 0 4px 16px rgba(0,0,0,.6); }
-  .pmap { background: #23262B; }
+  .pmap, .pickwrap { background: #23262B; }
+  .pickme { background: #2c2c2e; color: #5EA0FF; box-shadow: 0 2px 8px rgba(0,0,0,.5); }
   .psum { color: #c7c7cc; }
     #results li { border-bottom-color: #1c1c1e; }
   #results li:active { background: #1c1c1e; }

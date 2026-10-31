@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '17';
+const VERSION = '18';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -224,6 +224,7 @@ async function applyTheme() {
   const style = await currentStyle();
   map.setStyle(style, { diff: false });
   if (pmap) pmap.setStyle(style, { diff: false });
+  if (pickmap) pickmap.setStyle(style, { diff: false });
   renderBar();
 }
 darkQuery.addEventListener('change', applyTheme);
@@ -592,6 +593,8 @@ let listTab = 'recent';
 function setListTab(tab) {
   listTab = tab;
   document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === tab)));
+  // Toetsenbord weg, anders valt de kaart erachter
+  if (tab === 'map') $('q').blur();
   showRecent();
 }
 
@@ -602,6 +605,8 @@ function showRecent() {
   const ul = $('results');
   ul.innerHTML = '';
   $('preview').hidden = true;
+  $('pick').hidden = listTab !== 'map';
+  if (listTab === 'map') { showPickMap(); return; }
   const fav = listTab === 'fav';
   const list = fav ? loadFavs() : loadRecent();
   if (!list.length) {
@@ -623,6 +628,7 @@ function openSearch() {
   $('q-city').value = '';
   $('results').innerHTML = '';
   $('preview').hidden = true;
+  $('pick').hidden = true;
   pending = null;
   streetCtx = null;
   firstResult = null;
@@ -742,6 +748,7 @@ async function search() {
   firstRecent = recents[0] || null;
   firstResult = null;
   ul.innerHTML = '';
+  $('pick').hidden = true;
   if (recents.length) {
     $('preview').hidden = true;
     for (const d of recents) ul.appendChild(recentItem(d));
@@ -828,6 +835,7 @@ async function showPreview(dest, note) {
   firstResult = null;
   firstRecent = null;
   $('results').innerHTML = '';
+  $('pick').hidden = true;
   $('preview').hidden = false;
   $('stop').style.visibility = state.nav ? 'visible' : 'hidden';
   $('qok').disabled = true;
@@ -859,6 +867,48 @@ async function showPreview(dest, note) {
   }
 }
 
+// ---------- Bestemming kiezen op de kaart ----------
+// De pin staat vast in het midden; je schuift en zoomt de kaart eronder.
+let pickmap = null;
+
+async function showPickMap() {
+  const at = state.dest || state.fix;
+  const center = at ? [at.lon, at.lat] : [5.1214, 52.0907];
+  if (!pickmap) {
+    pickmap = new maplibregl.Map({ container: 'pickmap', style: await currentStyle(), center, zoom: 15,
+      attributionControl: false, dragRotate: false, pitchWithRotate: false });
+    pickmap.touchZoomRotate.disableRotation();
+  } else {
+    pickmap.resize();
+    pickmap.jumpTo({ center, zoom: 15 });
+  }
+}
+
+// Naam van de gekozen plek: dichtstbijzijnde adres, anders de coördinaten
+async function placeName(lat, lon) {
+  try {
+    const data = await (await fetch(`${PHOTON.replace('/api/', '/reverse')}?lat=${lat}&lon=${lon}&limit=1`)).json();
+    const f = data.features[0];
+    if (f) {
+      const { title, sub } = describe(f.properties);
+      return [title, sub].filter(Boolean).join(', ');
+    }
+  } catch (e) { /* valt terug op coördinaten */ }
+  return `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+}
+
+async function confirmPick() {
+  const { lng: lon, lat } = pickmap.getCenter();
+  $('pickok').disabled = true;
+  const name = await placeName(lat, lon);
+  $('pickok').disabled = false;
+  if ($('pick').hidden) return;
+  streetCtx = null;
+  $('q').value = name;
+  updateClear();
+  showPreview({ lat, lon, name });
+}
+
 function confirmPreview() {
   if (!pending) return;
   const dest = pending;
@@ -888,6 +938,8 @@ $('edit').addEventListener('click', openSearch);
 $('qback').addEventListener('click', () => { setTravelMode(modeAtOpen); closeSearch(); });
 $('stop').addEventListener('click', () => { stopRoute(); closeSearch(); });
 $('qok').addEventListener('click', confirmPreview);
+$('pickok').addEventListener('click', confirmPick);
+$('pickme').addEventListener('click', () => { if (state.fix) pickmap.easeTo({ center: [state.fix.lon, state.fix.lat] }); });
 document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => setListTab(b.dataset.tab)));
 $('qclear').addEventListener('click', () => {
   $('q').value = '';
