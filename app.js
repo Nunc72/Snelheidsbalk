@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '16';
+const VERSION = '17';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -473,15 +473,95 @@ function saveRecent(dest) {
   try { localStorage.setItem('recent', JSON.stringify(list)); } catch (e) { /* geen opslag */ }
 }
 
-function recentItem(d) {
+// Favorieten: met het sterretje gemarkeerde bestemmingen, in eigen volgorde
+function loadFavs() {
+  try { return JSON.parse(localStorage.getItem('favorites') || '[]'); } catch (e) { return []; }
+}
+function saveFavs(list) {
+  try { localStorage.setItem('favorites', JSON.stringify(list)); } catch (e) { /* geen opslag */ }
+}
+const isFav = d => loadFavs().some(f => f.name === d.name);
+function toggleFav(d) {
+  const favs = loadFavs();
+  saveFavs(isFav(d) ? favs.filter(f => f.name !== d.name) : [...favs, { lat: d.lat, lon: d.lon, name: d.name }]);
+}
+
+// Een regel in de lijst: klik kiest de bestemming, het sterretje maakt hem (geen) favoriet,
+// in de favorietenlijst zit links een greep om te slepen.
+function recentItem(d, { star = false, handle = false } = {}) {
   const [first, ...rest] = d.name.split(', ');
   const li = document.createElement('li');
   li.className = 'recent';
-  li.innerHTML = '<i class="ti ti-history" aria-hidden="true"></i><div><div class="r1"></div><div class="r2"></div></div>';
+  const fav = isFav(d);
+  li.innerHTML = (handle ? '<span class="grip" aria-label="Verslepen"><i class="ti ti-grip-vertical" aria-hidden="true"></i></span>'
+    : `<i class="ti ${fav && !star ? 'ti-star' : 'ti-history'}" aria-hidden="true"></i>`)
+    + '<div class="rtext"><div class="r1"></div><div class="r2"></div></div>';
   li.querySelector('.r1').textContent = first;
   li.querySelector('.r2').textContent = rest.join(', ');
   li.addEventListener('click', () => chooseRecent(d));
+  if (star) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'star' + (fav ? ' on' : '');
+    btn.setAttribute('aria-label', fav ? 'Uit favorieten halen' : 'Favoriet maken');
+    btn.setAttribute('aria-pressed', String(fav));
+    btn.innerHTML = `<i class="ti ${fav ? 'ti-star-filled' : 'ti-star'}" aria-hidden="true"></i>`;
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      toggleFav(d);
+      showRecent();
+    });
+    li.appendChild(btn);
+  }
+  if (handle) makeDraggable(li, li.querySelector('.grip'));
+  li.dataset.name = d.name;
   return li;
+}
+
+// Favorieten sorteren door aan de greep te slepen (werkt met vinger en muis).
+// Luistert op window: een verplaatst element verliest anders zijn pointer.
+function makeDraggable(li, grip) {
+  grip.addEventListener('click', e => e.stopPropagation());
+  grip.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    const ul = li.parentElement;
+    const id = e.pointerId;
+    li.classList.add('dragging');
+    let startY = e.clientY;
+    const centre = el => el.getBoundingClientRect().top + el.offsetHeight / 2;
+    const shift = (ev, swap) => {
+      const before = li.getBoundingClientRect().top - (ev.clientY - startY);
+      swap();
+      li.style.transform = '';
+      startY += li.getBoundingClientRect().top - before;
+      li.style.transform = `translateY(${ev.clientY - startY}px)`;
+    };
+    const move = ev => {
+      if (ev.pointerId !== id) return;
+      ev.preventDefault();
+      li.style.transform = `translateY(${ev.clientY - startY}px)`;
+      for (let guard = 0; guard < 50; guard++) {
+        const prev = li.previousElementSibling, next = li.nextElementSibling;
+        if (prev && centre(li) < centre(prev)) shift(ev, () => ul.insertBefore(li, prev));
+        else if (next && centre(li) > centre(next)) shift(ev, () => ul.insertBefore(next, li));
+        else break;
+      }
+    };
+    const up = ev => {
+      if (ev.pointerId !== id) return;
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+      li.classList.remove('dragging');
+      li.style.transform = '';
+      const byName = new Map(loadFavs().map(f => [f.name, f]));
+      saveFavs([...ul.querySelectorAll('li[data-name]')].map(el => byName.get(el.dataset.name)).filter(Boolean));
+    };
+    window.addEventListener('pointermove', move, { passive: false });
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
+  });
 }
 
 function chooseRecent(d) {
@@ -498,24 +578,37 @@ const fold = t => t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '
 function matchRecent(q) {
   const words = fold(q).split(/[\s,]+/).filter(Boolean);
   if (!words.length) return [];
-  return loadRecent().filter(d => {
+  const seen = new Set();
+  return [...loadFavs(), ...loadRecent()].filter(d => {
+    if (seen.has(d.name)) return false;
+    seen.add(d.name);
     const parts = fold(d.name).split(/[^\p{L}\p{N}]+/u);
     return words.every(w => parts.some(p => p.startsWith(w)));
   }).slice(0, 5);
 }
 
-// Bij een leeg zoekveld de recente bestemmingen tonen
+// Bij een leeg zoekveld de tab Recent of Favorieten tonen
+let listTab = 'recent';
+function setListTab(tab) {
+  listTab = tab;
+  document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === tab)));
+  showRecent();
+}
+
 function showRecent() {
   searchSeq++;
   firstResult = null;
   firstRecent = null;
   const ul = $('results');
   ul.innerHTML = '';
-  const list = loadRecent();
-  if (!list.length) return;
   $('preview').hidden = true;
-  ul.innerHTML = '<li class="hdr">Recent</li>';
-  for (const d of list) ul.appendChild(recentItem(d));
+  const fav = listTab === 'fav';
+  const list = fav ? loadFavs() : loadRecent();
+  if (!list.length) {
+    ul.innerHTML = `<li class="empty">${fav ? 'Nog geen favorieten. Tik bij Recent op het sterretje om er een toe te voegen.' : 'Nog geen recente bestemmingen.'}</li>`;
+    return;
+  }
+  for (const d of list) ul.appendChild(fav ? recentItem(d, { star: true, handle: true }) : recentItem(d, { star: true }));
 }
 
 function updateClear() {
@@ -536,6 +629,8 @@ function openSearch() {
   firstRecent = null;
   modeAtOpen = travelMode;
   setTravelMode(travelMode);
+  listTab = 'recent';
+  document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === 'recent')));
   updateClear();
   if (navigating) showPreview(state.dest);
   else {
@@ -793,6 +888,7 @@ $('edit').addEventListener('click', openSearch);
 $('qback').addEventListener('click', () => { setTravelMode(modeAtOpen); closeSearch(); });
 $('stop').addEventListener('click', () => { stopRoute(); closeSearch(); });
 $('qok').addEventListener('click', confirmPreview);
+document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => setListTab(b.dataset.tab)));
 $('qclear').addEventListener('click', () => {
   $('q').value = '';
   $('q-postcode').value = '';

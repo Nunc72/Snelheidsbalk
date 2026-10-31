@@ -15,7 +15,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
-<link rel="stylesheet" href="style.css?v=12">
+<link rel="stylesheet" href="style.css?v=17">
 </head>
 <body>
 <div id="map"></div>
@@ -70,6 +70,10 @@
     <button type="button" role="radio" data-mode="bicycle"><i class="ti ti-bike" aria-hidden="true"></i>Fiets</button>
     <button type="button" role="radio" data-mode="pedestrian"><i class="ti ti-walk" aria-hidden="true"></i>Lopen</button>
   </div>
+  <div class="tabs" role="tablist" aria-label="Bestemmingen">
+    <button type="button" role="tab" data-tab="recent" aria-selected="true"><i class="ti ti-history" aria-hidden="true"></i>Recent</button>
+    <button type="button" role="tab" data-tab="fav" aria-selected="false"><i class="ti ti-star" aria-hidden="true"></i>Favorieten</button>
+  </div>
   <ul id="results"></ul>
   <div class="preview" id="preview" hidden>
     <div class="pmap" id="pmap"></div>
@@ -91,6 +95,6 @@
 </div>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-<script src="app.js?v=16"></script>
+<script src="app.js?v=17"></script>
 </body>
 </html>
