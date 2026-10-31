@@ -15,7 +15,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
-<link rel="stylesheet" href="style.css?v=18">
+<link rel="stylesheet" href="style.css?v=19">
 </head>
 <body>
 <div id="map"></div>
@@ -57,10 +57,19 @@
 <div class="sheet" id="search" hidden>
   <form class="sheet-head" id="qform" autocomplete="on">
     <button type="button" class="icon-btn" id="qback" aria-label="Terug"><i class="ti ti-arrow-left" aria-hidden="true"></i></button>
-    <div class="qwrap">
-      <input id="q" name="address" type="text" placeholder="Zoek adres of plaats" autocomplete="street-address" autocorrect="off" autocapitalize="words" enterkeyhint="go">
-      <button type="button" class="qclear" id="qclear" aria-label="Veld leegmaken" hidden><i class="ti ti-x" aria-hidden="true"></i></button>
+    <div class="fields">
+      <div class="qwrap" id="fromwrap" hidden>
+        <span class="flbl" aria-hidden="true">Van</span>
+        <input id="qfrom" type="text" placeholder="Huidige locatie" aria-label="Van" autocomplete="off" autocorrect="off" autocapitalize="words" enterkeyhint="go">
+        <button type="button" class="qclear" id="qfromclear" aria-label="Veld leegmaken" hidden><i class="ti ti-x" aria-hidden="true"></i></button>
+      </div>
+      <div class="qwrap">
+        <span class="flbl" aria-hidden="true">Naar</span>
+        <input id="q" name="address" type="text" placeholder="Zoek adres of plaats" autocomplete="street-address" autocorrect="off" autocapitalize="words" enterkeyhint="go">
+        <button type="button" class="qclear" id="qclear" aria-label="Veld leegmaken" hidden><i class="ti ti-x" aria-hidden="true"></i></button>
+      </div>
     </div>
+    <button type="button" class="icon-btn swap" id="swap" aria-label="Route omdraaien" hidden><i class="ti ti-arrows-up-down" aria-hidden="true"></i></button>
     <!-- Onzichtbare velden zodat iOS bij 'Thuis'/'Werk' ook postcode en plaats invult -->
     <input class="af" id="q-postcode" name="postal-code" autocomplete="postal-code" tabindex="-1" aria-hidden="true">
     <input class="af" id="q-city" name="city" autocomplete="address-level2" tabindex="-1" aria-hidden="true">
@@ -104,6 +113,6 @@
 </div>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-<script src="app.js?v=18"></script>
+<script src="app.js?v=19"></script>
 </body>
 </html>

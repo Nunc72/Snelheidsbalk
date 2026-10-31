@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '18';
+const VERSION = '19';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -196,7 +196,8 @@ const map = new maplibregl.Map({
   dragRotate: false,
   pitchWithRotate: false,
 });
-map.touchZoomRotate.disableRotation();
+// Draaien met twee vingers mag; de kanteling blijft vast
+map.touchPitch.disable();
 
 const markerEl = document.createElement('div');
 markerEl.className = 'car marker';
@@ -246,6 +247,7 @@ function stopFollowing() {
 
 map.on('dragstart', e => { if (e.originalEvent) stopFollowing(); });
 map.on('zoomstart', e => { if (e.originalEvent) stopFollowing(); });
+map.on('rotatestart', e => { if (e.originalEvent) stopFollowing(); });
 
 $('recenter').addEventListener('click', () => {
   state.following = true;
@@ -272,7 +274,8 @@ function updateCamera(p, duration = 1000) {
   const h = map.getContainer().clientHeight;
   map.easeTo({
     center: p,
-    bearing: state.heading ?? map.getBearing(),
+    // Rijrichting boven; zonder bekende richting terug naar het noorden
+    bearing: state.heading ?? 0,
     zoom: state.zoom,
     pitch: PITCH,
     padding: { top: Math.round(h * 0.4), bottom: 0, left: 0, right: 0 },
@@ -454,6 +457,23 @@ let streetCtx = null;    // gekozen straat zonder huisnummer: { street, city }
 let firstResult = null;  // bovenste zoekresultaat, voor Enter
 let firstRecent = null;  // bovenste passende recente bestemming, gaat voor bij Enter
 let modeAtOpen = 'auto';
+let origin = null;       // gekozen vertrekpunt; null = huidige locatie
+let activeField = 'to';  // welk veld de lijsten en suggesties vult: 'to' (Naar) of 'from' (Van)
+const field = () => $(activeField === 'from' ? 'qfrom' : 'q');
+function setField(which) {
+  activeField = which;
+  $('search').dataset.field = which;
+}
+
+// Een gekozen plek gaat naar het veld waar je in zit
+function useChoice(d, note) {
+  if (activeField === 'from') {
+    origin = d;
+    if (pending) showPreview(pending, note); else showRecent();
+  } else {
+    showPreview(d, note);
+  }
+}
 const MODE_LABEL = { auto: 'auto', bicycle: 'fiets', pedestrian: 'lopen' };
 
 let travelMode = 'auto';
@@ -567,10 +587,25 @@ function makeDraggable(li, grip) {
 
 function chooseRecent(d) {
   streetCtx = null;
-  $('q').value = d.name;
-  $('q').blur();
+  field().value = d.name;
+  field().blur();
   updateClear();
-  showPreview(d);
+  useChoice(d);
+}
+
+// Bovenaan de lijst voor het Van-veld: terug naar vertrekken vanaf je eigen positie
+function hereItem() {
+  const li = document.createElement('li');
+  li.className = 'recent here';
+  li.innerHTML = '<i class="ti ti-current-location" aria-hidden="true"></i><div class="rtext"><div class="r1">Huidige locatie</div></div>';
+  li.addEventListener('click', () => {
+    $('qfrom').value = '';
+    $('qfrom').blur();
+    updateClear();
+    origin = null;
+    if (pending) showPreview(pending);
+  });
+  return li;
 }
 
 // Recente bestemmingen waarin elk getypt woord het begin van een woord is
@@ -594,7 +629,7 @@ function setListTab(tab) {
   listTab = tab;
   document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === tab)));
   // Toetsenbord weg, anders valt de kaart erachter
-  if (tab === 'map') $('q').blur();
+  if (tab === 'map') field().blur();
   showRecent();
 }
 
@@ -609,8 +644,9 @@ function showRecent() {
   if (listTab === 'map') { showPickMap(); return; }
   const fav = listTab === 'fav';
   const list = fav ? loadFavs() : loadRecent();
+  if (!fav && activeField === 'from') ul.appendChild(hereItem());
   if (!list.length) {
-    ul.innerHTML = `<li class="empty">${fav ? 'Nog geen favorieten. Tik bij Recent op het sterretje om er een toe te voegen.' : 'Nog geen recente bestemmingen.'}</li>`;
+    ul.insertAdjacentHTML('beforeend', `<li class="empty">${fav ? 'Nog geen favorieten. Tik bij Recent op het sterretje om er een toe te voegen.' : 'Nog geen recente bestemmingen.'}</li>`);
     return;
   }
   for (const d of list) ul.appendChild(fav ? recentItem(d, { star: true, handle: true }) : recentItem(d, { star: true }));
@@ -618,6 +654,7 @@ function showRecent() {
 
 function updateClear() {
   $('qclear').hidden = !$('q').value;
+  $('qfromclear').hidden = !$('qfrom').value;
 }
 
 function openSearch() {
@@ -629,6 +666,11 @@ function openSearch() {
   $('results').innerHTML = '';
   $('preview').hidden = true;
   $('pick').hidden = true;
+  $('qfrom').value = '';
+  $('fromwrap').hidden = true;
+  $('swap').hidden = true;
+  origin = null;
+  setField('to');
   pending = null;
   streetCtx = null;
   firstResult = null;
@@ -648,6 +690,7 @@ function openSearch() {
 
 function closeSearch() {
   $('q').blur();
+  $('qfrom').blur();
   $('search').hidden = true;
   previewSeq++;
 }
@@ -683,7 +726,7 @@ function choose(f) {
   const { title, sub } = describe(p);
   const [lon, lat] = f.geometry.coordinates;
   const dest = { lat, lon, name: [title, sub].filter(Boolean).join(', ') };
-  const q = $('q');
+  const q = field();
   if (isStreet(p)) {
     streetCtx = { street: p.name, city: p.city || p.town || p.village || '', dest };
     q.value = p.name + ' ';
@@ -695,12 +738,12 @@ function choose(f) {
     q.blur();
   }
   updateClear();
-  showPreview(dest);
+  useChoice(dest);
 }
 
 function searchQuery() {
-  let q = $('q').value.trim();
-  const extra = [$('q-postcode').value, $('q-city').value].map(v => v.trim()).filter(Boolean);
+  let q = field().value.trim();
+  const extra = activeField === 'to' ? [$('q-postcode').value, $('q-city').value].map(v => v.trim()).filter(Boolean) : [];
   if (extra.length) q = [q, ...extra].join(' ');
   else if (streetCtx && streetCtx.city && !q.toLowerCase().includes(streetCtx.city.toLowerCase())) q += ', ' + streetCtx.city;
   return q;
@@ -723,9 +766,9 @@ async function resolveHouse(num, seq) {
     if (f) {
       const { title, sub } = describe(f.properties);
       const [lon, lat] = f.geometry.coordinates;
-      showPreview({ lat, lon, name: [title, sub].filter(Boolean).join(', ') }, title);
+      useChoice({ lat, lon, name: [title, sub].filter(Boolean).join(', ') }, title);
     } else {
-      showPreview(streetDest, `Nummer ${num} niet gevonden, route naar de straat`);
+      useChoice(streetDest, `Nummer ${num} niet gevonden, route naar de straat`);
     }
   } catch (e) {
     if (seq === searchSeq) $('psum').textContent = 'Zoeken lukt nu niet. Controleer je verbinding.';
@@ -735,11 +778,11 @@ async function resolveHouse(num, seq) {
 async function search() {
   const seq = ++searchSeq;
   const ul = $('results');
-  const v = $('q').value;
+  const v = field().value;
   if (streetCtx && v.startsWith(streetCtx.street)) {
     const num = v.slice(streetCtx.street.length).trim();
     if (num) resolveHouse(num, seq);
-    else if (pending !== streetCtx.dest) showPreview(streetCtx.dest);
+    else if ((activeField === 'from' ? origin : pending) !== streetCtx.dest) useChoice(streetCtx.dest);
     return;
   }
   const q = searchQuery();
@@ -782,7 +825,7 @@ async function search() {
 }
 
 function onSearchInput() {
-  const v = $('q').value;
+  const v = field().value;
   if (streetCtx && !v.startsWith(streetCtx.street)) streetCtx = null;
   updateClear();
   clearTimeout(searchTimer);
@@ -798,18 +841,18 @@ function onSearchInput() {
 // ---------- Routeoverzicht in de dialoog ----------
 let pmap = null, previewNav = null, previewSeq = 0, previewData = null;
 
-function previewEnds(coords, dest) {
+function previewEnds(start, dest) {
   const pts = [];
-  if (state.fix) pts.push({ type: 'Feature', geometry: { type: 'Point', coordinates: coords[0] || [state.fix.lon, state.fix.lat] }, properties: { kind: 'start' } });
+  if (start) pts.push({ type: 'Feature', geometry: { type: 'Point', coordinates: start }, properties: { kind: 'start' } });
   pts.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [dest.lon, dest.lat] }, properties: { kind: 'end' } });
   return { type: 'FeatureCollection', features: pts };
 }
 
 function drawPreview() {
   if (!pmap || !previewData || !pmap.getSource('route')) return;
-  const { coords, dest } = previewData;
+  const { coords, dest, start } = previewData;
   pmap.getSource('route').setData(lineFeature(coords));
-  pmap.getSource('ends').setData(previewEnds(coords, dest));
+  pmap.getSource('ends').setData(previewEnds(start, dest));
   const all = coords.length ? coords : [[dest.lon, dest.lat]];
   const b = all.reduce((bb, c) => bb.extend(c), new maplibregl.LngLatBounds(all[0], all[0]));
   pmap.resize();
@@ -846,19 +889,20 @@ async function showPreview(dest, note) {
   try {
     const n = state.nav;
     let coords, dist, time;
-    if (n && dest === state.dest && n.mode === travelMode) {
+    if (n && dest === state.dest && n.mode === travelMode && !origin) {
       // Huidige route: alleen het stuk dat nog komt
       coords = routeCoords.length ? routeCoords : n.shape;
       dist = Math.max(0, n.total - n.along);
       time = n.time * (n.total ? dist / n.total : 0);
     } else {
-      if (!state.fix) throw new Error('Nog geen GPS-positie');
-      const r = await fetchRoute(dest);
+      if (!state.fix && !origin) throw new Error('Nog geen GPS-positie');
+      const r = await fetchRoute(dest, origin);
       if (seq !== previewSeq) return;
       previewNav = r;
       coords = r.shape; dist = r.total; time = r.time;
     }
-    previewData = { coords, dest };
+    const start = coords[0] || (origin ? [origin.lon, origin.lat] : state.fix && [state.fix.lon, state.fix.lat]);
+    previewData = { coords, dest, start };
     drawPreview();
     $('psum').textContent = (note ? note + ' · ' : '') + `${fmtDuration(time)} · ${fmtDist(dist)} · ${MODE_LABEL[travelMode]}`;
     $('qok').disabled = false;
@@ -872,7 +916,7 @@ async function showPreview(dest, note) {
 let pickmap = null;
 
 async function showPickMap() {
-  const at = state.dest || state.fix;
+  const at = activeField === 'from' ? origin || state.fix : pending || state.dest || state.fix;
   const center = at ? [at.lon, at.lat] : [5.1214, 52.0907];
   if (!pickmap) {
     pickmap = new maplibregl.Map({ container: 'pickmap', style: await currentStyle(), center, zoom: 15,
@@ -904,15 +948,15 @@ async function confirmPick() {
   $('pickok').disabled = false;
   if ($('pick').hidden) return;
   streetCtx = null;
-  $('q').value = name;
+  field().value = name;
   updateClear();
-  showPreview({ lat, lon, name });
+  useChoice({ lat, lon, name });
 }
 
 function confirmPreview() {
   if (!pending) return;
   const dest = pending;
-  saveRecent({ lat: dest.lat, lon: dest.lon, name: dest.name });
+  if (!dest.here) saveRecent({ lat: dest.lat, lon: dest.lon, name: dest.name });
   closeSearch();
   if (previewNav) {
     state.dest = dest;
@@ -942,6 +986,7 @@ $('pickok').addEventListener('click', confirmPick);
 $('pickme').addEventListener('click', () => { if (state.fix) pickmap.easeTo({ center: [state.fix.lon, state.fix.lat] }); });
 document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => setListTab(b.dataset.tab)));
 $('qclear').addEventListener('click', () => {
+  setField('to');
   $('q').value = '';
   $('q-postcode').value = '';
   $('q-city').value = '';
@@ -950,19 +995,58 @@ $('qclear').addEventListener('click', () => {
   showRecent();
   $('q').focus();
 });
-$('q').addEventListener('focus', () => { if (!$('q').value.trim()) showRecent(); });
+$('qfromclear').addEventListener('click', () => {
+  setField('from');
+  $('qfrom').value = '';
+  origin = null;
+  streetCtx = null;
+  updateClear();
+  showRecent();
+  $('qfrom').focus();
+});
+// Wissel je van veld terwijl de lijst van het andere veld open staat, dan komt het overzicht terug
+for (const [id, which] of [['q', 'to'], ['qfrom', 'from']]) $(id).addEventListener('focus', () => {
+  const switched = activeField !== which;
+  setField(which);
+  if (switched) streetCtx = null;
+  if (!$(id).value.trim()) showRecent();
+  else if (switched && pending && $('preview').hidden) showPreview(pending);
+});
+
+// Tik op het blauwe vertrekpunt in het overzicht: het Van-veld verschijnt
+$('pmap').addEventListener('click', e => {
+  if (!previewData || !previewData.start || !$('fromwrap').hidden) return;
+  const r = $('pmap').getBoundingClientRect();
+  const p = pmap.project(previewData.start);
+  if (Math.hypot(e.clientX - r.left - p.x, e.clientY - r.top - p.y) > 28) return;
+  $('fromwrap').hidden = false;
+  $('swap').hidden = false;
+});
+
+// Van en Naar omwisselen; je eigen positie kan zo ook de bestemming worden
+$('swap').addEventListener('click', () => {
+  if (!pending || (!origin && !state.fix)) return;
+  const to = origin || { lat: state.fix.lat, lon: state.fix.lon, name: 'Huidige locatie', here: true };
+  origin = pending.here ? null : pending;
+  $('qfrom').value = origin ? origin.name : '';
+  $('q').value = to.name;
+  streetCtx = null;
+  updateClear();
+  showPreview(to);
+});
 $('qform').addEventListener('submit', e => { e.preventDefault(); submitSearch(); });
-for (const id of ['q', 'q-postcode', 'q-city']) $(id).addEventListener('input', onSearchInput);
+for (const id of ['q', 'qfrom', 'q-postcode', 'q-city']) $(id).addEventListener('input', onSearchInput);
 document.querySelectorAll('.modes button').forEach(b => b.addEventListener('click', () => {
   setTravelMode(b.dataset.mode);
   if (pending) showPreview(pending);
 }));
 
 // ---------- Route (Valhalla) ----------
-async function fetchRoute(dest) {
+// Zonder vertrekpunt rijdt de route vanaf je huidige positie
+async function fetchRoute(dest, start = null) {
   const f = state.fix;
-  const from = { lat: f.lat, lon: f.lon };
-  if (state.heading != null && state.speedKmh > 5) { from.heading = Math.round(state.heading); from.heading_tolerance = 60; }
+  const from = start ? { lat: start.lat, lon: start.lon } : { lat: f.lat, lon: f.lon };
+  if (!start && state.heading != null && state.speedKmh > 5) { from.heading = Math.round(state.heading); from.heading_tolerance = 60; }
   const body = {
     locations: [from, { lat: dest.lat, lon: dest.lon }],
     costing: travelMode,
