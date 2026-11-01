@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '20';
+const VERSION = '21';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -215,6 +215,78 @@ async function lightStyle() {
   return style;
 }
 
+// ---------- Kaartsoort: 3D (standaard), plat of luchtfoto ----------
+const MAP_KINDS = ['standard', 'terrain', 'satellite'];
+let mapKind = 'terrain';
+try { if (MAP_KINDS.includes(localStorage.getItem('mapKind'))) mapKind = localStorage.getItem('mapKind'); } catch (e) { /* geen opslag */ }
+
+// Hoogtedata (Mapzen/AWS, gratis, wereldwijd) voor reliëf en 3D
+const DEM = { type: 'raster-dem', tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
+  encoding: 'terrarium', tileSize: 256, maxzoom: 14 };
+// Luchtfoto van PDOK: open data, alleen Nederland
+const PHOTO = { type: 'raster', tiles: ['https://service.pdok.nl/hwh/luchtfotorgb/wmts/v1_0/Actueel_orthoHR/EPSG:3857/{z}/{x}/{y}.jpeg'],
+  tileSize: 256, maxzoom: 19, bounds: [3.2, 50.7, 7.3, 53.6] };
+// Gemarkeerde wandelroutes (GR, LAW, streekpaden) van Waymarked Trails
+const TRAILS = { type: 'raster', tiles: ['https://tile.waymarkedtrails.org/hiking/{z}/{x}/{y}.png'], tileSize: 256, maxzoom: 17 };
+
+function styleFor(base, kind, dark) {
+  const style = { ...base, sources: { ...base.sources }, layers: [...base.layers] };
+  const at = id => style.layers.findIndex(l => l.id === id);
+  if (kind === 'terrain') {
+    // Schaduw boven bos en gras, onder water en wegen; de bergen staan rechtop als je kantelt
+    style.sources.dem = DEM;
+    style.layers.splice(at('waterway'), 0, { id: 'hillshade', type: 'hillshade', source: 'dem',
+      paint: dark
+        ? { 'hillshade-exaggeration': 0.45, 'hillshade-shadow-color': '#000000', 'hillshade-highlight-color': '#4A4F58', 'hillshade-accent-color': '#15171A' }
+        : { 'hillshade-exaggeration': 0.4, 'hillshade-shadow-color': '#5A6B78', 'hillshade-highlight-color': '#FFFFFF', 'hillshade-accent-color': '#8A9A8A' } });
+    style.terrain = { source: 'dem', exaggeration: 1.2 };
+    style.layers.push({ id: 'peaks', type: 'symbol', source: 'openmaptiles', 'source-layer': 'mountain_peak', minzoom: 10,
+      filter: ['has', 'name'],
+      layout: { 'text-field': ['format', '▲\n', { 'font-scale': 0.8 }, ['get', 'name'], {},
+        ['case', ['has', 'ele'], ['concat', '\n', ['to-string', ['get', 'ele']], ' m'], ''], { 'font-scale': 0.85 }],
+        'text-font': ['Noto Sans Bold'], 'text-size': 12, 'text-anchor': 'top', 'text-offset': [0, -0.6],
+        'symbol-sort-key': ['-', 0, ['coalesce', ['get', 'ele'], 0]] },
+      paint: dark
+        ? { 'text-color': '#D9B48F', 'text-halo-color': 'rgba(35,38,43,0.9)', 'text-halo-width': 1.5 }
+        : { 'text-color': '#6B3E1F', 'text-halo-color': 'rgba(255,255,255,0.9)', 'text-halo-width': 1.5 } });
+  }
+  if (kind === 'satellite') {
+    // Foto boven vlakken en gebouwen; buiten Nederland blijft de gewone kaart zichtbaar.
+    // Wegen dun en doorzichtig erover, namen wit met een donkere rand.
+    const i = at('aeroway-taxiway');
+    style.sources.photo = PHOTO;
+    style.layers = style.layers.map((l, j) => {
+      if (j < i) return l;
+      if (l.type === 'line') return { ...l, paint: { ...l.paint, 'line-opacity': /casing/.test(l.id) ? 0 : 0.35 } };
+      if (l.type === 'symbol') return { ...l, paint: { ...l.paint, 'text-color': '#ffffff', 'text-halo-color': 'rgba(0,0,0,0.75)', 'text-halo-width': 1.5 } };
+      return l;
+    });
+    style.layers.splice(i, 0, { id: 'photo', type: 'raster', source: 'photo' });
+  }
+  // Wandelpaden: alleen zichtbaar bij Lopen en flink ingezoomd (zie updateTrails)
+  style.sources.trails = TRAILS;
+  style.layers.splice(style.layers.findIndex(l => l.type === 'symbol'), 0,
+    { id: 'trails', type: 'raster', source: 'trails', layout: { visibility: 'none' } });
+  return style;
+}
+
+// Breedte van het kaartbeeld in meters
+function viewWidth(m) {
+  const lat = m.getCenter().lat;
+  return 40075016.686 * Math.cos(rad(lat)) / (512 * 2 ** m.getZoom()) * m.getContainer().clientWidth;
+}
+
+function updateTrails(m) {
+  if (!m || !m.getLayer('trails')) return;
+  const show = travelMode === 'pedestrian' && viewWidth(m) <= 1000 ? 'visible' : 'none';
+  if (m.getLayoutProperty('trails', 'visibility') !== show) m.setLayoutProperty('trails', 'visibility', show);
+}
+
+function watchTrails(m) {
+  m.on('style.load', () => updateTrails(m));
+  m.on('zoomend', () => updateTrails(m));
+}
+
 // Publieke gebouwen iets donkerder. De kaartdata zegt niet wat voor gebouw iets is,
 // dus zoeken we de gebouwen waar een kerk, museum, gemeentehuis enz. in ligt.
 const PUBLIC_POI = new Set(['place_of_worship', 'museum', 'town_hall', 'library', 'theatre', 'cinema', 'art_gallery',
@@ -292,6 +364,7 @@ const map = new maplibregl.Map({
 // De gekozen kanteling blijft staan, ook als de kaart je weer volgt.
 map.on('pitchend', e => { if (e.originalEvent) state.pitch = map.getPitch(); });
 watchPublicBuildings(map);
+watchTrails(map);
 
 const markerEl = document.createElement('div');
 markerEl.className = 'car marker';
@@ -327,7 +400,16 @@ function addConceptLayers(m) {
 // Wordt ook opnieuw aangeroepen na een wissel tussen licht en donker
 map.on('style.load', () => { addRouteLayers(map, routeCoords); addConceptLayers(map); });
 
-const currentStyle = async () => (theme() === 'dark' ? darkStyle() : lightStyle());
+async function currentStyle() {
+  const dark = theme() === 'dark';
+  return styleFor(await (dark ? darkStyle() : lightStyle()), mapKind, dark);
+}
+
+function setMapKind(kind) {
+  mapKind = kind;
+  try { localStorage.setItem('mapKind', kind); } catch (e) { /* geen opslag */ }
+  applyTheme();
+}
 
 async function applyTheme() {
   const style = await currentStyle();
@@ -420,17 +502,27 @@ function renderBar() {
   }
 }
 
-// ---------- Huidige weg linksboven: alleen A- en E-nummers ----------
+// ---------- Huidige weg linksboven: A-, N- en E-nummers als bordje ----------
+const REF_ORDER = { a: 0, n: 1, e: 2 };
+function refOf(name) {
+  const m = name.trim().match(/^([AEN])\s?(\d+)$/i);
+  return m && { cls: m[1].toLowerCase(), text: m[1].toUpperCase() + m[2] };
+}
 function roadParts(names) {
   const refs = [];
-  for (const raw of names || []) {
-    const n = raw.trim();
-    let m;
-    if ((m = n.match(/^A\s?(\d+)$/i))) refs.push({ cls: 'a', text: 'A' + m[1] });
-    else if ((m = n.match(/^E\s?(\d+)$/i))) refs.push({ cls: 'e', text: 'E' + m[1] });
+  for (const n of names || []) {
+    const r = refOf(n);
+    if (r && !refs.some(x => x.text === r.text)) refs.push(r);
   }
-  refs.sort((x, y) => (x.cls === 'a' ? 0 : 1) - (y.cls === 'a' ? 0 : 1));
+  refs.sort((x, y) => REF_ORDER[x.cls] - REF_ORDER[y.cls]);
   return refs.slice(0, 3);
+}
+
+function refSpan(p) {
+  const span = document.createElement('span');
+  span.className = 'ref ' + p.cls;
+  span.textContent = p.text;
+  return span;
 }
 
 let roadKey = null, roadCand;
@@ -455,13 +547,7 @@ function acceptRoad(names) {
     roadKey = key;
     roadCand = undefined;
     const el = $('road');
-    el.innerHTML = '';
-    for (const p of parts) {
-      const span = document.createElement('span');
-      span.className = 'ref ' + p.cls;
-      span.textContent = p.text;
-      el.appendChild(span);
-    }
+    el.replaceChildren(...parts.map(refSpan));
   } else {
     roadCand = key;
   }
@@ -595,6 +681,7 @@ function setTravelMode(mode) {
   travelMode = mode;
   try { localStorage.setItem('travelMode', mode); } catch (e) { /* geen opslag */ }
   document.querySelectorAll('.modes button').forEach(b => b.setAttribute('aria-checked', String(b.dataset.mode === mode)));
+  for (const m of [map, pmap, pickmap]) updateTrails(m);
 }
 
 // Laatst gekozen bestemmingen, per toestel bewaard
@@ -1110,28 +1197,106 @@ function previewEnds(start, dest) {
   return { type: 'FeatureCollection', features: pts };
 }
 
+// Geschat brandstofverbruik (liter): per stuk route de gemiddelde snelheid, met het
+// zuinigste punt rond 75 km/u, plus wat extra voor optrekken na elke afslag
+const STOP_TYPES = new Set([9, 10, 11, 12, 13, 14, 15, 16, 26]);
+function fuel(nav) {
+  let l = 0;
+  for (const m of nav.maneuvers) {
+    const km = m.length || 0;
+    const v = m.time ? km / (m.time / 3600) : 50;
+    l += km * (4.7 + 0.00055 * (v - 75) ** 2) / 100;
+    if (STOP_TYPES.has(m.type)) l += 0.012;
+  }
+  return l;
+}
+
+// Plek voor het tijdlabel: zo ver mogelijk van de andere routes, maar niet op een ander label
+function labelPoint(route, others, taken) {
+  const step = r => Math.max(1, Math.floor(r.shape.length / 80));
+  const pts = others.flatMap(r => r.shape.filter((_, i) => i % step(r) === 0));
+  const cands = route.shape.filter((_, i) => i % step(route) === 0)
+    .map(p => ({ p, d: pts.reduce((min, q) => Math.min(min, dist(p, q)), Infinity), px: pmap.project(p) }))
+    .sort((a, b) => b.d - a.d);
+  const free = cands.find(c => !taken.some(t => Math.abs(t.x - c.px.x) < 80 && Math.abs(t.y - c.px.y) < 28));
+  return (free || cands[0]).p;
+}
+
+let previewTags = [];
+function drawAltTags() {
+  previewTags.forEach(t => t.remove());
+  previewTags = [];
+  const { routes, sel } = previewData;
+  if (!routes || routes.length < 2) return;
+  const fuels = routes.map(fuel);
+  const eco = travelMode === 'auto' ? fuels.indexOf(Math.min(...fuels)) : -1;
+  routes.forEach((r, i) => {
+    const el = document.createElement('button');
+    el.type = 'button';
+    el.className = 'alttag' + (i === sel ? ' sel' : '');
+    el.innerHTML = (i === eco ? '<i class="ti ti-leaf" aria-label="Zuinigst"></i>' : '') + fmtDuration(r.time);
+    el.addEventListener('click', e => { e.stopPropagation(); selectAlt(i); });
+    const at = labelPoint(r, routes.filter(o => o !== r), previewTags.map(t => pmap.project(t.getLngLat())));
+    previewTags.push(new maplibregl.Marker({ element: el }).setLngLat(at).addTo(pmap));
+  });
+}
+
 function drawPreview() {
   if (!pmap || !previewData || !pmap.getSource('route')) return;
-  const { coords, dest, start } = previewData;
+  const { coords, dest, start, routes, sel } = previewData;
   pmap.getSource('route').setData(lineFeature(coords));
+  pmap.getSource('alts').setData({ type: 'FeatureCollection',
+    features: (routes || []).map((r, i) => ({ ...lineFeature(r.shape), properties: { i } })).filter((_, i) => i !== sel) });
   pmap.getSource('ends').setData(previewEnds(start, dest));
-  const all = coords.length ? coords : [[dest.lon, dest.lat]];
+  const all = (routes || []).flatMap(r => r.shape);
+  if (!all.length) all.push(...(coords.length ? coords : [[dest.lon, dest.lat]]));
   const b = all.reduce((bb, c) => bb.extend(c), new maplibregl.LngLatBounds(all[0], all[0]));
   pmap.resize();
   pmap.fitBounds(b, { padding: 36, duration: 0, maxZoom: 16 });
+  drawAltTags();
+}
+
+function previewSummary(note, time, dist) {
+  $('psum').textContent = (note ? note + ' · ' : '') + `${fmtDuration(time)} · ${fmtDist(dist)} · ${MODE_LABEL[travelMode]}`;
+}
+
+// Andere route kiezen: tik op het label of op de grijze lijn
+function selectAlt(i) {
+  const d = previewData;
+  if (!d || !d.routes || i === d.sel) return;
+  d.sel = i;
+  d.coords = d.routes[i].shape;
+  previewNav = d.routes[i];
+  drawPreview();
+  previewSummary(d.note, previewNav.time, previewNav.total);
 }
 
 async function ensurePreviewMap() {
   if (pmap) { pmap.resize(); return; }
   pmap = new maplibregl.Map({ container: 'pmap', style: await currentStyle(), interactive: false, attributionControl: false,
     center: state.fix ? [state.fix.lon, state.fix.lat] : [5.1214, 52.0907], zoom: 12 });
+  watchTrails(pmap);
   pmap.on('style.load', () => {
+    const dark = theme() === 'dark';
     addRouteLayers(pmap, []);
+    pmap.addSource('alts', { type: 'geojson', data: EMPTY_FC });
+    pmap.addLayer({ id: 'alts-casing', type: 'line', source: 'alts', layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': dark ? DARK_BG : '#ffffff', 'line-width': 11 } }, 'route-casing');
+    pmap.addLayer({ id: 'alts-line', type: 'line', source: 'alts', layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': dark ? '#5A6270' : '#A9B4C2', 'line-width': 6 } }, 'route-casing');
     pmap.addSource('ends', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
     pmap.addLayer({ id: 'ends', type: 'circle', source: 'ends', paint: {
       'circle-radius': 8, 'circle-stroke-width': 3, 'circle-stroke-color': '#ffffff',
       'circle-color': ['match', ['get', 'kind'], 'start', '#1F6FE0', '#E5484D'] } });
     drawPreview();
+  });
+  // De kaart is niet te verschuiven, maar tikken op een grijze route kiest hem wel
+  pmap.getContainer().addEventListener('click', e => {
+    if (!pmap.getLayer('alts-line')) return;
+    const r = pmap.getContainer().getBoundingClientRect();
+    const x = e.clientX - r.left, y = e.clientY - r.top;
+    const f = pmap.queryRenderedFeatures([[x - 14, y - 14], [x + 14, y + 14]], { layers: ['alts-line'] })[0];
+    if (f) selectAlt(f.properties.i);
   });
 }
 
@@ -1150,7 +1315,7 @@ async function showPreview(dest, note) {
   await ensurePreviewMap();
   try {
     const n = state.nav, c = state.concept;
-    let coords, dist, time;
+    let coords, dist, time, routes = null;
     if (c && dest === c.dest && origin === c.origin && c.mode === travelMode) {
       previewNav = c.nav;
       coords = c.nav.shape; dist = c.nav.total; time = c.nav.time;
@@ -1161,15 +1326,17 @@ async function showPreview(dest, note) {
       time = n.time * (n.total ? dist / n.total : 0);
     } else {
       if (!state.fix && !origin) throw new Error('Nog geen GPS-positie');
-      const r = await fetchRoute(dest, origin);
+      // Snelste route plus maximaal twee alternatieven
+      routes = await fetchRoutes(dest, origin, 2);
       if (seq !== previewSeq) return;
+      const r = routes[0];
       previewNav = r;
       coords = r.shape; dist = r.total; time = r.time;
     }
     const start = coords[0] || (origin ? [origin.lon, origin.lat] : state.fix && [state.fix.lon, state.fix.lat]);
-    previewData = { coords, dest, start };
+    previewData = { coords, dest, start, routes, sel: 0, note };
     drawPreview();
-    $('psum').textContent = (note ? note + ' · ' : '') + `${fmtDuration(time)} · ${fmtDist(dist)} · ${MODE_LABEL[travelMode]}`;
+    previewSummary(note, time, dist);
     $('qok').disabled = false;
   } catch (e) {
     if (seq === previewSeq) $('psum').textContent = 'Route berekenen lukt niet: ' + e.message;
@@ -1188,6 +1355,7 @@ async function showPickMap() {
       attributionControl: false, dragRotate: false, pitchWithRotate: false });
     pickmap.touchZoomRotate.disableRotation();
     watchPublicBuildings(pickmap);
+    watchTrails(pickmap);
   } else {
     pickmap.resize();
     pickmap.jumpTo({ center, zoom: 15 });
@@ -1257,6 +1425,22 @@ $('edit').addEventListener('click', openSearch);
 $('qback').addEventListener('click', () => { setTravelMode(modeAtOpen); closeSearch(); });
 $('stop').addEventListener('click', () => { stopRoute(); closeSearch(); });
 $('qok').addEventListener('click', confirmPreview);
+
+// Kaartsoort kiezen met het tandwiel tussen de rode en de groene knop
+function toggleMapMenu(open) {
+  $('mapmenu').hidden = !open;
+  $('mapset').setAttribute('aria-expanded', String(open));
+  $('mapmenu').querySelectorAll('button').forEach(b => b.setAttribute('aria-checked', String(b.dataset.kind === mapKind)));
+}
+$('mapset').addEventListener('click', e => { e.stopPropagation(); toggleMapMenu($('mapmenu').hidden); });
+$('mapmenu').addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  e.stopPropagation();
+  if (b.dataset.kind !== mapKind) setMapKind(b.dataset.kind);
+  toggleMapMenu(false);
+});
+document.addEventListener('click', () => { if (!$('mapmenu').hidden) toggleMapMenu(false); });
 $('pickok').addEventListener('click', confirmPick);
 $('pickme').addEventListener('click', () => { if (state.fix) pickmap.easeTo({ center: [state.fix.lon, state.fix.lat] }); });
 document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => setListTab(b.dataset.tab)));
@@ -1317,7 +1501,7 @@ document.querySelectorAll('.modes button').forEach(b => b.addEventListener('clic
 
 // ---------- Route (Valhalla) ----------
 // Zonder vertrekpunt rijdt de route vanaf je huidige positie
-async function fetchRoute(dest, start = null) {
+async function fetchRoutes(dest, start = null, alternates = 0) {
   const f = state.fix;
   const from = start ? { lat: start.lat, lon: start.lon } : { lat: f.lat, lon: f.lon };
   if (!start && state.heading != null && state.speedKmh > 5) { from.heading = Math.round(state.heading); from.heading_tolerance = 60; }
@@ -1327,15 +1511,22 @@ async function fetchRoute(dest, start = null) {
     language: 'nl-NL',
     directions_options: { units: 'kilometers', language: 'nl-NL' },
   };
+  if (alternates) body.alternates = alternates;
   const res = await fetch(`${VALHALLA}/route`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const data = await res.json();
   if (!data.trip) throw new Error(data.error || 'Geen route gevonden');
-  const leg = data.trip.legs[0];
+  return [data.trip, ...(data.alternates || []).map(a => a.trip)].map(navFromTrip);
+}
+
+function navFromTrip(trip) {
+  const leg = trip.legs[0];
   const shape = decodePolyline6(leg.shape);
   const cum = [0];
   for (let i = 1; i < shape.length; i++) cum.push(cum[i - 1] + dist(shape[i - 1], shape[i]));
-  return { shape, cum, maneuvers: leg.maneuvers, total: cum[cum.length - 1], time: data.trip.summary.time, mode: travelMode, idx: 0, along: 0, off: 0, arrivedAt: 0 };
+  return { shape, cum, maneuvers: leg.maneuvers, total: cum[cum.length - 1], time: trip.summary.time, mode: travelMode, idx: 0, along: 0, off: 0, arrivedAt: 0 };
 }
+
+const fetchRoute = async (dest, start = null) => (await fetchRoutes(dest, start))[0];
 
 async function startRoute(dest) {
   if (!state.fix) { toast('Nog geen GPS-positie. Probeer het zo opnieuw.'); return; }
@@ -1462,15 +1653,29 @@ function maneuverInfo(m) {
   return { verb, icon };
 }
 
+// Onder de instructie: wegnummers als bordje (alleen als ze anders zijn dan de weg
+// waar je nu op rijdt), daarna straatnaam en richting als tekst
 function maneuverSub(m) {
-  const names = m.street_names || m.begin_street_names;
+  const names = m.street_names || m.begin_street_names || [];
   const toward = m.sign && m.sign.exit_toward_elements;
-  const branch = m.sign && m.sign.exit_branch_elements;
+  const branch = (m.sign && m.sign.exit_branch_elements || []).map(e => e.text);
+  const here = (roadKey || '').split('|');
+  const refs = roadParts([...names, ...branch]).filter(r => !here.includes(r.text));
+  const words = [...names, ...branch].filter(n => !refOf(n) && !/^Rijksweg\b/i.test(n));
   const parts = [];
-  if (names && names.length) parts.push(names.slice(0, 2).join(' / '));
-  if (branch && branch.length) parts.push(branch.map(e => e.text).join('/'));
+  if (words.length) parts.push(words.slice(0, 2).join(' / '));
   if (toward && toward.length) parts.push('richting ' + toward.map(e => e.text).slice(0, 2).join(', '));
-  return parts.join(' · ') || m.instruction || '';
+  const text = parts.join(' · ') || (refs.length ? '' : m.instruction || '');
+  return { refs, text };
+}
+
+function setInstrSub(sub) {
+  const el = $('instr-sub');
+  if (typeof sub === 'string') sub = { refs: [], text: sub };
+  const t = document.createElement('span');
+  t.className = 't';
+  t.textContent = sub.text;
+  el.replaceChildren(...sub.refs.map(refSpan), t);
 }
 
 function updateNav(p) {
@@ -1512,7 +1717,7 @@ function updateNav(p) {
   if (remaining < 30) {
     $('instr-icon').className = 'ti ti-flag';
     $('instr-title').textContent = 'Je bent er';
-    $('instr-sub').textContent = state.dest ? state.dest.name : '';
+    setInstrSub(state.dest ? state.dest.name : '');
     if (!n.arrivedAt) n.arrivedAt = Date.now();
     else if (Date.now() - n.arrivedAt > 15000) stopRoute();
     return;
@@ -1526,7 +1731,7 @@ function updateNav(p) {
   const isDest = next.type >= 4 && next.type <= 6;
   if (d < 30) $('instr-title').textContent = isDest ? 'Bestemming bereikt' : 'Nu ' + verb;
   else $('instr-title').textContent = isDest ? `Bestemming over ${fmtDist(d)}` : `Over ${fmtDist(d)} ${verb}`;
-  $('instr-sub').textContent = isDest ? (state.dest ? state.dest.name : '') : maneuverSub(next);
+  setInstrSub(isDest ? (state.dest ? state.dest.name : '') : maneuverSub(next));
 }
 
 // ---------- Demo-modus (?demo=1): rijdt zelf over de route ----------

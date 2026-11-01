@@ -44,12 +44,15 @@ body.nobar .instr:not([hidden]) ~ .toast { top: calc(env(safe-area-inset-top) + 
   align-content: center; justify-items: start; gap: 4px 5px;
 }
 .road:empty { display: none; }
-.road .ref {
-  font-size: min(3.9vw, 16px); font-weight: 700; line-height: 1; letter-spacing: 0.01em;
+.road .ref { font-size: min(3.9vw, 16px); }
+/* Wegnummers zoals op de Nederlandse borden: A rood, N geel, E groen */
+.ref {
+  flex: none; font-weight: 700; line-height: 1; letter-spacing: 0.01em;
   padding: 4px 6px 3px; border-radius: 4px; border: 1.5px solid #fff; white-space: nowrap;
 }
-.road .ref.a { background: #1B4FA0; color: #fff; }
-.road .ref.e { background: #0C7A3C; color: #fff; }
+.ref.a { background: #C8102E; color: #fff; }
+.ref.e { background: #0C7A3C; color: #fff; }
+.ref.n { background: #F7C600; color: #111; border-color: #111; }
 
 /* Autopijltje op 70% van de schermhoogte */
 .car {
@@ -74,7 +77,10 @@ body.nobar .instr:not([hidden]) ~ .toast { top: calc(env(safe-area-inset-top) + 
 }
 .instr .ti { font-size: 42px; flex: none; }
 .instr-title { font-size: 21px; font-weight: 600; line-height: 1.25; }
-.instr-sub { font-size: 15px; opacity: .7; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.instr-sub { font-size: 15px; margin-top: 4px; display: flex; align-items: center; gap: 5px; min-width: 0; }
+.instr-sub .ref { font-size: 14px; }
+.instr-sub .t { opacity: .7; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.instr-sub .t:empty { display: none; }
 .instr-text { min-width: 0; }
 
 .bottom {
@@ -126,6 +132,27 @@ body.nobar .instr:not([hidden]) ~ .toast { top: calc(env(safe-area-inset-top) + 
 .roundbtn:disabled { opacity: .35; }
 .stopbig { background: #E5484D; }
 .okbig { background: #008000; }
+/* Kaartsoort: klein tandwiel tussen de rode en de groene knop */
+.mapset { position: relative; }
+.setbtn { width: 44px; height: 44px; border-radius: 50%; background: #F1F0EC; color: #3a3a3c; display: flex; align-items: center; justify-content: center; }
+.setbtn .ti { font-size: 24px; }
+.mapmenu {
+  position: absolute; bottom: 54px; left: 50%; transform: translateX(-50%); z-index: 3;
+  background: #fff; border-radius: 14px; box-shadow: 0 4px 20px rgba(0,0,0,.18); padding: 6px; min-width: 170px;
+}
+.mapmenu button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 12px; border-radius: 9px; font-size: 16px; text-align: left; }
+.mapmenu button .ti { font-size: 21px; color: #6b6b6b; }
+.mapmenu button[aria-checked="true"] { color: #1F6FE0; font-weight: 600; }
+.mapmenu button[aria-checked="true"] .ti { color: #1F6FE0; }
+.mapmenu button:active { background: #F1F0EC; }
+/* Tijdlabel bij elke route; het blaadje markeert de zuinigste */
+.alttag {
+  display: flex; align-items: center; gap: 3px; padding: 3px 7px; border-radius: 9px;
+  background: #fff; color: #6b6b6b; font-size: 12px; font-weight: 600; white-space: nowrap;
+  box-shadow: 0 1px 4px rgba(0,0,0,.2);
+}
+.alttag.sel { color: #1F6FE0; }
+.alttag .ti { font-size: 14px; color: #2E9E4F; }
 .af { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; border: 0; padding: 0; }
 .modes { display: flex; gap: 8px; padding: 10px 16px; border-bottom: 1px solid #eee; }
 .modes button { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 9px 0; border-radius: 10px; background: #F1F0EC; color: #3a3a3c; font-size: 15px; }
@@ -246,6 +273,14 @@ body.nobar .instr:not([hidden]) ~ .toast { top: calc(env(safe-area-inset-top) + 
   .pmap, .pickwrap { background: #23262B; }
   .pickme { background: #2c2c2e; color: #5EA0FF; box-shadow: 0 2px 8px rgba(0,0,0,.5); }
   .psum { color: #c7c7cc; }
+  .setbtn { background: #2c2c2e; color: #c7c7cc; }
+  .mapmenu { background: #2c2c2e; box-shadow: 0 4px 20px rgba(0,0,0,.6); }
+  .mapmenu button .ti { color: #8e8e93; }
+  .mapmenu button[aria-checked="true"], .mapmenu button[aria-checked="true"] .ti { color: #5EA0FF; }
+  .mapmenu button:active { background: #3a3a3c; }
+  .alttag { background: #2c2c2e; color: #a1a1a6; box-shadow: 0 1px 4px rgba(0,0,0,.6); }
+  .alttag.sel { color: #5EA0FF; }
+  .alttag .ti { color: #4CC26E; }
     #results li { border-bottom-color: #1c1c1e; }
   #results li:not(.recent):active { background: #1c1c1e; }
   #results .r2, #results .empty { color: #8e8e93; }
