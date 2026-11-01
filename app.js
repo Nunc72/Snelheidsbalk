@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '23';
+const VERSION = '24';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -237,6 +237,7 @@ const TRAIL_TYPES = [
   { key: 'NAT', label: 'Nationaal', sub: 'LAW, GR', color: '#2B6CD9', offset: -1.5 },
   { key: 'REG', label: 'Regionaal', sub: 'streekpaden', color: '#F08C00', offset: 1.5 },
   { key: 'LOC', label: 'Lokaal', sub: 'rondwandelingen', color: '#9B4DCA', offset: 4.5 },
+  { key: 'NDS', label: 'Wandelnetwerk', sub: 'knooppunten', color: '#1E8A5A', offset: 7.5 },
 ];
 let trailOff = [];
 try { trailOff = JSON.parse(localStorage.getItem('trailOff')) || []; } catch (e) { /* geen opslag */ }
@@ -328,11 +329,13 @@ function loadTrailTile(x, y) {
         const g = f.geometry;
         const coordinates = g.type === 'LineString' ? g.coordinates.map(fromMerc) : g.coordinates.map(l => l.map(fromMerc));
         const groups = new Set((f.properties.shields || []).map(sh => sh.split('_')[1]));
+        // Knooppuntennetwerken hebben geen routebordje, alleen deze stijl
+        if (f.properties.style === 'NDS') groups.add('NDS');
         const rels = (f.properties.top_relations || []).map(id => info.get(id)).filter(Boolean);
         for (const t of TRAIL_TYPES) {
           if (!groups.has(t.key)) continue;
           // Naam alleen bij de grotere routes; lokale rondjes zouden de kaart volschrijven
-          const ref = t.key === 'LOC' ? '' : [...new Set(rels.filter(r => r.group === t.key).map(r => r.ref || r.name))].join(' · ');
+          const ref = t.key === 'LOC' || t.key === 'NDS' ? '' : [...new Set(rels.filter(r => r.group === t.key).map(r => r.ref || r.name))].join(' · ');
           out.push({ type: 'Feature', geometry: { type: g.type, coordinates }, properties: { g: t.key, ref } });
         }
       }
@@ -1382,11 +1385,14 @@ async function ensurePreviewMap() {
   pmap.on('style.load', () => {
     const dark = theme() === 'dark';
     addRouteLayers(pmap, []);
+    // Kleine overzichtskaart: dunnere lijnen dan tijdens het rijden
+    pmap.setPaintProperty('route-casing', 'line-width', 7);
+    pmap.setPaintProperty('route-line', 'line-width', 4);
     pmap.addSource('alts', { type: 'geojson', data: EMPTY_FC });
     pmap.addLayer({ id: 'alts-casing', type: 'line', source: 'alts', layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': dark ? DARK_BG : '#ffffff', 'line-width': 11 } }, 'route-casing');
+      paint: { 'line-color': dark ? DARK_BG : '#ffffff', 'line-width': 6 } }, 'route-casing');
     pmap.addLayer({ id: 'alts-line', type: 'line', source: 'alts', layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': dark ? '#5A6270' : '#A9B4C2', 'line-width': 6 } }, 'route-casing');
+      paint: { 'line-color': dark ? '#5A6270' : '#A9B4C2', 'line-width': 3.5 } }, 'route-casing');
     pmap.addSource('ends', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
     pmap.addLayer({ id: 'ends', type: 'circle', source: 'ends', paint: {
       'circle-radius': 8, 'circle-stroke-width': 3, 'circle-stroke-color': '#ffffff',
@@ -1555,9 +1561,19 @@ async function showTrailLegend() {
   $('legnote').textContent = 'zoeken…';
   let present;
   try {
+    // De lijst per gebied geeft maximaal 100 routes; bij een klein gebied kijken we
+    // daarom ook in de routetegels zelf, zodat geen soort ontbreekt
     const b = (pmap || map).getBounds();
     const routes = await trailRoutes(b.getWest(), b.getSouth(), b.getEast(), b.getNorth());
     present = new Set(routes.map(r => r.group));
+    const xs = [tileX(b.getWest()), tileX(b.getEast())], ys = [tileY(b.getNorth()), tileY(b.getSouth())];
+    if ((xs[1] - xs[0] + 1) * (ys[1] - ys[0] + 1) <= 6) {
+      for (let x = xs[0]; x <= xs[1]; x++) {
+        for (let y = ys[0]; y <= ys[1]; y++) {
+          (await loadTrailTile(x, y).catch(() => [])).forEach(f => present.add(f.properties.g));
+        }
+      }
+    }
   } catch (e) {
     present = new Set(TRAIL_TYPES.map(t => t.key));
   }
