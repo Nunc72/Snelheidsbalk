@@ -138,13 +138,31 @@ body.nobar .instr:not([hidden]) ~ .toast { top: calc(env(safe-area-inset-top) + 
 .setbtn .ti { font-size: 24px; }
 .mapmenu {
   position: absolute; bottom: 54px; left: 50%; transform: translateX(-50%); z-index: 3;
-  background: #fff; border-radius: 14px; box-shadow: 0 4px 20px rgba(0,0,0,.18); padding: 6px; min-width: 170px;
+  background: #fff; border-radius: 14px; box-shadow: 0 4px 20px rgba(0,0,0,.18); padding: 6px; min-width: 170px; width: max-content; max-width: calc(100vw - 32px);
 }
 .mapmenu button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 12px; border-radius: 9px; font-size: 16px; text-align: left; }
 .mapmenu button .ti { font-size: 21px; color: #6b6b6b; }
 .mapmenu button[aria-checked="true"] { color: #1F6FE0; font-weight: 600; }
 .mapmenu button[aria-checked="true"] .ti { color: #1F6FE0; }
 .mapmenu button:active { background: #F1F0EC; }
+/* Legenda wandelroutes, alleen bij Lopen */
+.trailleg { border-top: 1px solid #ECECEF; margin-top: 6px; padding: 8px 4px 2px; }
+.legh { font-size: 13px; font-weight: 600; color: #6b6b6b; padding: 0 8px 6px; }
+.legh span { font-weight: 400; }
+.legrow { display: flex; align-items: center; gap: 10px; padding: 7px 8px; }
+.legrow .sw { width: 18px; height: 4px; border-radius: 2px; flex: none; }
+.legrow .lt { flex: 1; font-size: 15px; line-height: 1.2; }
+.legrow small { display: block; font-size: 12px; color: #8a8a8a; }
+.legrow input {
+  appearance: none; -webkit-appearance: none; margin: 0; flex: none; position: relative;
+  width: 42px; height: 26px; border-radius: 13px; background: #D1D1D6; transition: background .2s;
+}
+.legrow input::after {
+  content: ''; position: absolute; top: 2px; left: 2px; width: 22px; height: 22px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: transform .2s;
+}
+.legrow input:checked { background: #34C759; }
+.legrow input:checked::after { transform: translateX(16px); }
 /* Tijdlabel bij elke route; het blaadje markeert de zuinigste */
 .alttag {
   display: flex; align-items: center; gap: 3px; padding: 3px 7px; border-radius: 9px;
@@ -278,6 +296,9 @@ body.nobar .instr:not([hidden]) ~ .toast { top: calc(env(safe-area-inset-top) + 
   .mapmenu button .ti { color: #8e8e93; }
   .mapmenu button[aria-checked="true"], .mapmenu button[aria-checked="true"] .ti { color: #5EA0FF; }
   .mapmenu button:active { background: #3a3a3c; }
+  .trailleg { border-top-color: #3a3a3c; }
+  .legh { color: #8e8e93; }
+  .legrow input { background: #48484A; }
   .alttag { background: #2c2c2e; color: #a1a1a6; box-shadow: 0 1px 4px rgba(0,0,0,.6); }
   .alttag.sel { color: #5EA0FF; }
   .alttag .ti { color: #4CC26E; }

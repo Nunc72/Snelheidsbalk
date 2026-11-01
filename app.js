@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '21';
+const VERSION = '22';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -217,7 +217,7 @@ async function lightStyle() {
 
 // ---------- Kaartsoort: 3D (standaard), plat of luchtfoto ----------
 const MAP_KINDS = ['standard', 'terrain', 'satellite'];
-let mapKind = 'terrain';
+let mapKind = 'standard';
 try { if (MAP_KINDS.includes(localStorage.getItem('mapKind'))) mapKind = localStorage.getItem('mapKind'); } catch (e) { /* geen opslag */ }
 
 // Hoogtedata (Mapzen/AWS, gratis, wereldwijd) voor reliëf en 3D
@@ -226,8 +226,18 @@ const DEM = { type: 'raster-dem', tiles: ['https://s3.amazonaws.com/elevation-ti
 // Luchtfoto van PDOK: open data, alleen Nederland
 const PHOTO = { type: 'raster', tiles: ['https://service.pdok.nl/hwh/luchtfotorgb/wmts/v1_0/Actueel_orthoHR/EPSG:3857/{z}/{x}/{y}.jpeg'],
   tileSize: 256, maxzoom: 19, bounds: [3.2, 50.7, 7.3, 53.6] };
-// Gemarkeerde wandelroutes (GR, LAW, streekpaden) van Waymarked Trails
-const TRAILS = { type: 'raster', tiles: ['https://tile.waymarkedtrails.org/hiking/{z}/{x}/{y}.png'], tileSize: 256, maxzoom: 17 };
+// Gemarkeerde wandelroutes van Waymarked Trails, per soort met een eigen kleur.
+// Lopen ze over hetzelfde pad, dan liggen de lijnen naast elkaar.
+const TRAIL_TYPES = [
+  { key: 'INT', label: 'Internationaal', sub: 'E-paden', color: '#D7263D', offset: -4.5 },
+  { key: 'NAT', label: 'Nationaal', sub: 'LAW, GR', color: '#2B6CD9', offset: -1.5 },
+  { key: 'REG', label: 'Regionaal', sub: 'streekpaden', color: '#F08C00', offset: 1.5 },
+  { key: 'LOC', label: 'Lokaal', sub: 'rondwandelingen', color: '#9B4DCA', offset: 4.5 },
+];
+let trailOff = [];
+try { trailOff = JSON.parse(localStorage.getItem('trailOff')) || []; } catch (e) { /* geen opslag */ }
+const trailFilter = () => ['!', ['in', ['get', 'g'], ['literal', trailOff]]];
+const byTrailType = prop => ['match', ['get', 'g'], ...TRAIL_TYPES.flatMap(t => [t.key, t[prop]]), 0];
 
 function styleFor(base, kind, dark) {
   const style = { ...base, sources: { ...base.sources }, layers: [...base.layers] };
@@ -263,10 +273,16 @@ function styleFor(base, kind, dark) {
     });
     style.layers.splice(i, 0, { id: 'photo', type: 'raster', source: 'photo' });
   }
-  // Wandelpaden: alleen zichtbaar bij Lopen en flink ingezoomd (zie updateTrails)
-  style.sources.trails = TRAILS;
+  // Wandelroutes: alleen zichtbaar bij Lopen en flink ingezoomd (zie updateTrails)
+  style.sources.trails = { type: 'geojson', data: EMPTY_FC };
+  const color = ['match', ['get', 'g'], ...TRAIL_TYPES.flatMap(t => [t.key, t.color]), '#888'];
   style.layers.splice(style.layers.findIndex(l => l.type === 'symbol'), 0,
-    { id: 'trails', type: 'raster', source: 'trails', layout: { visibility: 'none' } });
+    { id: 'trails', type: 'line', source: 'trails', filter: trailFilter(), layout: { visibility: 'none', 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': color, 'line-width': 3, 'line-opacity': 0.9, 'line-offset': byTrailType('offset') } });
+  style.layers.push({ id: 'trails-label', type: 'symbol', source: 'trails', filter: ['all', trailFilter(), ['!=', ['get', 'ref'], '']],
+    layout: { visibility: 'none', 'symbol-placement': 'line', 'symbol-spacing': 280, 'text-field': ['get', 'ref'],
+      'text-font': ['Noto Sans Bold'], 'text-size': 12, 'text-offset': [0, -0.9] },
+    paint: { 'text-color': color, 'text-halo-color': dark ? DARK_BG : '#ffffff', 'text-halo-width': 2 } });
   return style;
 }
 
@@ -276,15 +292,91 @@ function viewWidth(m) {
   return 40075016.686 * Math.cos(rad(lat)) / (512 * 2 ** m.getZoom()) * m.getContainer().clientWidth;
 }
 
-function updateTrails(m) {
+// De routes komen als kaarttegels van zoomniveau 12 (circa 10 km breed), in webmercator
+const WMT = 'https://hiking.waymarkedtrails.org/api/v1';
+const TRAIL_Z = 12;
+const toMerc = (lon, lat) => [lon * 20037508.34 / 180, Math.log(Math.tan(Math.PI / 4 + rad(lat) / 2)) * 6378137];
+const fromMerc = ([x, y]) => [x / 20037508.34 * 180, deg(2 * Math.atan(Math.exp(y / 6378137)) - Math.PI / 2)];
+const tileX = lon => Math.floor((lon + 180) / 360 * 2 ** TRAIL_Z);
+const tileY = lat => Math.floor((1 - Math.log(Math.tan(rad(lat)) + 1 / Math.cos(rad(lat))) / Math.PI) / 2 * 2 ** TRAIL_Z);
+const tileLat = y => deg(Math.atan(Math.sinh(Math.PI * (1 - 2 * y / 2 ** TRAIL_Z))));
+const tileLon = x => x / 2 ** TRAIL_Z * 360 - 180;
+
+// Routes in een gebied, belangrijkste eerst (internationaal, nationaal, regionaal, lokaal)
+async function trailRoutes(w, s, e, n) {
+  const bbox = [...toMerc(w, s), ...toMerc(e, n)].map(Math.round).join(',');
+  return (await (await fetch(`${WMT}/list/by_area?bbox=${bbox}&limit=100`)).json()).results || [];
+}
+
+const trailTiles = new Map();
+function loadTrailTile(x, y) {
+  const key = x + '/' + y;
+  if (!trailTiles.has(key)) {
+    const p = (async () => {
+      const [tile, routes] = await Promise.all([
+        fetch(`${WMT}/tiles/${TRAIL_Z}/${x}/${y}.json`).then(r => r.json()),
+        trailRoutes(tileLon(x), tileLat(y + 1), tileLon(x + 1), tileLat(y)).catch(() => []),
+      ]);
+      const info = new Map(routes.map(r => [r.id, r]));
+      const out = [];
+      for (const f of tile.features) {
+        if (f.properties.type !== 'way' || !f.geometry) continue;
+        const g = f.geometry;
+        const coordinates = g.type === 'LineString' ? g.coordinates.map(fromMerc) : g.coordinates.map(l => l.map(fromMerc));
+        const groups = new Set((f.properties.shields || []).map(sh => sh.split('_')[1]));
+        const rels = (f.properties.top_relations || []).map(id => info.get(id)).filter(Boolean);
+        for (const t of TRAIL_TYPES) {
+          if (!groups.has(t.key)) continue;
+          // Naam alleen bij de grotere routes; lokale rondjes zouden de kaart volschrijven
+          const ref = t.key === 'LOC' ? '' : [...new Set(rels.filter(r => r.group === t.key).map(r => r.ref || r.name))].join(' · ');
+          out.push({ type: 'Feature', geometry: { type: g.type, coordinates }, properties: { g: t.key, ref } });
+        }
+      }
+      return out;
+    })();
+    p.catch(() => trailTiles.delete(key));
+    trailTiles.set(key, p);
+  }
+  return trailTiles.get(key);
+}
+
+async function updateTrails(m) {
   if (!m || !m.getLayer('trails')) return;
   const show = travelMode === 'pedestrian' && viewWidth(m) <= 1000 ? 'visible' : 'none';
-  if (m.getLayoutProperty('trails', 'visibility') !== show) m.setLayoutProperty('trails', 'visibility', show);
+  for (const id of ['trails', 'trails-label']) {
+    if (m.getLayoutProperty(id, 'visibility') !== show) m.setLayoutProperty(id, 'visibility', show);
+  }
+  if (show === 'none') return;
+  const b = m.getBounds();
+  const keys = [];
+  for (let x = tileX(b.getWest()); x <= tileX(b.getEast()); x++) {
+    for (let y = tileY(b.getNorth()); y <= tileY(b.getSouth()); y++) keys.push([x, y]);
+  }
+  // Alleen opnieuw tekenen als er andere tegels in beeld komen (de kaart beweegt elke seconde mee)
+  const key = keys.join(';');
+  if (m._trailKey === key) return;
+  m._trailKey = key;
+  let failed = false;
+  const features = (await Promise.all(keys.map(([x, y]) => loadTrailTile(x, y).catch(() => { failed = true; return []; })))).flat();
+  if (failed && m._trailKey === key) m._trailKey = null;  // volgende beweging probeert het opnieuw
+  const src = m.getSource('trails');
+  if (src && m._trailKey === key) src.setData({ type: 'FeatureCollection', features });
 }
 
 function watchTrails(m) {
-  m.on('style.load', () => updateTrails(m));
-  m.on('zoomend', () => updateTrails(m));
+  m.on('style.load', () => { m._trailKey = null; updateTrails(m); });
+  m.on('moveend', () => updateTrails(m));
+}
+
+// Soorten wandelroutes aan of uit; geldt voor alle kaarten
+function setTrailType(key, on) {
+  trailOff = on ? trailOff.filter(k => k !== key) : [...new Set([...trailOff, key])];
+  try { localStorage.setItem('trailOff', JSON.stringify(trailOff)); } catch (e) { /* geen opslag */ }
+  for (const m of [map, pmap, pickmap]) {
+    if (!m || !m.getLayer('trails')) continue;
+    m.setFilter('trails', trailFilter());
+    m.setFilter('trails-label', ['all', trailFilter(), ['!=', ['get', 'ref'], '']]);
+  }
 }
 
 // Publieke gebouwen iets donkerder. De kaartdata zegt niet wat voor gebouw iets is,
@@ -1348,17 +1440,25 @@ async function showPreview(dest, note) {
 let pickmap = null;
 
 async function showPickMap() {
-  const at = activeField === 'from' ? origin || state.fix : pending || state.dest || state.fix;
-  const center = at ? [at.lon, at.lat] : [5.1214, 52.0907];
+  const chosen = activeField === 'from' ? origin : pending;
+  let center, zoom = 15;
+  if (!chosen && !state.following) {
+    // Je keek op de live kaart naar een eigen plek: daar verder kiezen, net zo ver ingezoomd
+    center = map.getCenter().toArray();
+    zoom = map.getZoom();
+  } else {
+    const at = chosen || (activeField === 'from' ? state.fix : state.dest || state.fix);
+    center = at ? [at.lon, at.lat] : [5.1214, 52.0907];
+  }
   if (!pickmap) {
-    pickmap = new maplibregl.Map({ container: 'pickmap', style: await currentStyle(), center, zoom: 15,
+    pickmap = new maplibregl.Map({ container: 'pickmap', style: await currentStyle(), center, zoom,
       attributionControl: false, dragRotate: false, pitchWithRotate: false });
     pickmap.touchZoomRotate.disableRotation();
     watchPublicBuildings(pickmap);
     watchTrails(pickmap);
   } else {
     pickmap.resize();
-    pickmap.jumpTo({ center, zoom: 15 });
+    pickmap.jumpTo({ center, zoom });
   }
 }
 
@@ -1431,12 +1531,45 @@ function toggleMapMenu(open) {
   $('mapmenu').hidden = !open;
   $('mapset').setAttribute('aria-expanded', String(open));
   $('mapmenu').querySelectorAll('button').forEach(b => b.setAttribute('aria-checked', String(b.dataset.kind === mapKind)));
+  $('trailleg').hidden = !(open && travelMode === 'pedestrian');
+  if (!$('trailleg').hidden) showTrailLegend();
 }
+
+// Legenda van de wandelroutes: alleen de soorten die in dit kaartdeel voorkomen
+let legendSeq = 0;
+async function showTrailLegend() {
+  const seq = ++legendSeq;
+  const rows = $('legrows');
+  rows.replaceChildren();
+  $('legnote').textContent = 'zoeken…';
+  let present;
+  try {
+    const b = (pmap || map).getBounds();
+    const routes = await trailRoutes(b.getWest(), b.getSouth(), b.getEast(), b.getNorth());
+    present = new Set(routes.map(r => r.group));
+  } catch (e) {
+    present = new Set(TRAIL_TYPES.map(t => t.key));
+  }
+  if (seq !== legendSeq) return;
+  const types = TRAIL_TYPES.filter(t => present.has(t.key));
+  $('legnote').textContent = types.length ? 'in dit gebied' : 'geen in dit gebied';
+  for (const t of types) {
+    const row = document.createElement('label');
+    row.className = 'legrow';
+    row.innerHTML = `<span class="sw" style="background:${t.color}"></span><span class="lt">${t.label}<small>${t.sub}</small></span>`
+      + '<input type="checkbox" role="switch">';
+    const box = row.querySelector('input');
+    box.checked = !trailOff.includes(t.key);
+    box.addEventListener('change', () => setTrailType(t.key, box.checked));
+    rows.appendChild(row);
+  }
+}
+
 $('mapset').addEventListener('click', e => { e.stopPropagation(); toggleMapMenu($('mapmenu').hidden); });
 $('mapmenu').addEventListener('click', e => {
+  e.stopPropagation();
   const b = e.target.closest('button');
   if (!b) return;
-  e.stopPropagation();
   if (b.dataset.kind !== mapKind) setMapKind(b.dataset.kind);
   toggleMapMenu(false);
 });

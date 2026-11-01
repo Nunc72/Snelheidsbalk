@@ -15,7 +15,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
-<link rel="stylesheet" href="style.css?v=21">
+<link rel="stylesheet" href="style.css?v=22">
 </head>
 <body>
 <div id="map"></div>
@@ -100,11 +100,15 @@
     <div class="pbtns">
       <button type="button" class="roundbtn stopbig" id="stop" aria-label="Route stoppen"><i class="ti ti-x" aria-hidden="true"></i></button>
       <div class="mapset">
-        <button type="button" class="setbtn" id="mapset" aria-label="Kaartsoort" aria-haspopup="menu" aria-expanded="false"><i class="ti ti-settings" aria-hidden="true"></i></button>
+        <button type="button" class="setbtn" id="mapset" aria-label="Kaartinstellingen" aria-haspopup="menu" aria-expanded="false"><i class="ti ti-adjustments-horizontal" aria-hidden="true"></i></button>
         <div class="mapmenu" id="mapmenu" role="menu" hidden>
           <button type="button" role="menuitemradio" data-kind="standard"><i class="ti ti-map" aria-hidden="true"></i>Standaard</button>
           <button type="button" role="menuitemradio" data-kind="terrain"><i class="ti ti-mountain" aria-hidden="true"></i>3D</button>
           <button type="button" role="menuitemradio" data-kind="satellite"><i class="ti ti-photo" aria-hidden="true"></i>Satelliet</button>
+          <div class="trailleg" id="trailleg" hidden>
+            <div class="legh">Wandelroutes <span id="legnote"></span></div>
+            <div id="legrows"></div>
+          </div>
         </div>
       </div>
       <button type="button" class="roundbtn okbig" id="qok" aria-label="Route starten"><i class="ti ti-check" aria-hidden="true"></i></button>
@@ -122,6 +126,6 @@
 </div>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-<script src="app.js?v=21"></script>
+<script src="app.js?v=22"></script>
 </body>
 </html>
