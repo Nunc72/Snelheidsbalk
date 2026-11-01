@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '22';
+const VERSION = '23';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -124,6 +124,10 @@ function toast(msg, ms = 3500) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { el.hidden = true; }, ms);
 }
+
+// Fouten tijdelijk in beeld, zodat ze op de iPhone te zien (en te screenshotten) zijn
+window.addEventListener('error', e => toast('Fout: ' + (e.message || e.type) + (e.lineno ? ` (regel ${e.lineno})` : ''), 10000));
+window.addEventListener('unhandledrejection', e => toast('Fout: ' + (e.reason && e.reason.message || e.reason), 10000));
 
 // ---------- Kaart ----------
 // Donkere kaart: de standaard 'dark'-stijl is bijna zwart. Deze kleuren maken hem
@@ -457,6 +461,9 @@ const map = new maplibregl.Map({
 map.on('pitchend', e => { if (e.originalEvent) state.pitch = map.getPitch(); });
 watchPublicBuildings(map);
 watchTrails(map);
+// Kaart weggevallen (meestal geheugen): melden; MapLibre tekent hem opnieuw zodra het kan
+map.on('webglcontextlost', () => toast('De kaart is even weggevallen (geheugen). Hij komt vanzelf terug.', 8000));
+map.on('error', e => { if (!map.isStyleLoaded()) toast('Kaart laden lukt niet: ' + (e.error && e.error.message || 'onbekende fout'), 10000); });
 
 const markerEl = document.createElement('div');
 markerEl.className = 'car marker';
@@ -492,9 +499,13 @@ function addConceptLayers(m) {
 // Wordt ook opnieuw aangeroepen na een wissel tussen licht en donker
 map.on('style.load', () => { addRouteLayers(map, routeCoords); addConceptLayers(map); });
 
-async function currentStyle() {
+// De kleine kaarten (routeoverzicht, plek kiezen) krijgen geen 3D-terrein:
+// drie kaarten met terrein tegelijk kost de iPhone te veel geheugen
+async function currentStyle(small = false) {
   const dark = theme() === 'dark';
-  return styleFor(await (dark ? darkStyle() : lightStyle()), mapKind, dark);
+  const style = styleFor(await (dark ? darkStyle() : lightStyle()), mapKind, dark);
+  if (small) delete style.terrain;
+  return style;
 }
 
 function setMapKind(kind) {
@@ -504,10 +515,10 @@ function setMapKind(kind) {
 }
 
 async function applyTheme() {
-  const style = await currentStyle();
-  map.setStyle(style, { diff: false });
-  if (pmap) pmap.setStyle(style, { diff: false });
-  if (pickmap) pickmap.setStyle(style, { diff: false });
+  map.setStyle(await currentStyle(), { diff: false });
+  const small = await currentStyle(true);
+  if (pmap) pmap.setStyle(small, { diff: false });
+  if (pickmap) pickmap.setStyle(small, { diff: false });
   renderBar();
 }
 darkQuery.addEventListener('change', applyTheme);
@@ -1365,7 +1376,7 @@ function selectAlt(i) {
 
 async function ensurePreviewMap() {
   if (pmap) { pmap.resize(); return; }
-  pmap = new maplibregl.Map({ container: 'pmap', style: await currentStyle(), interactive: false, attributionControl: false,
+  pmap = new maplibregl.Map({ container: 'pmap', style: await currentStyle(true), interactive: false, attributionControl: false,
     center: state.fix ? [state.fix.lon, state.fix.lat] : [5.1214, 52.0907], zoom: 12 });
   watchTrails(pmap);
   pmap.on('style.load', () => {
@@ -1451,7 +1462,7 @@ async function showPickMap() {
     center = at ? [at.lon, at.lat] : [5.1214, 52.0907];
   }
   if (!pickmap) {
-    pickmap = new maplibregl.Map({ container: 'pickmap', style: await currentStyle(), center, zoom,
+    pickmap = new maplibregl.Map({ container: 'pickmap', style: await currentStyle(true), center, zoom,
       attributionControl: false, dragRotate: false, pitchWithRotate: false });
     pickmap.touchZoomRotate.disableRotation();
     watchPublicBuildings(pickmap);
