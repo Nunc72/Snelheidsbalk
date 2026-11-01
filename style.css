@@ -17,8 +17,13 @@ button { font: inherit; color: inherit; border: 0; background: none; cursor: poi
   display: flex; align-items: flex-end; justify-content: center;
   padding-bottom: min(3vw, 13px);
   background: #48484A; color: #fff;
-  transition: background-color .5s linear, color .5s linear;
+  transition: background-color .5s linear, color .5s linear, transform .4s ease;
 }
+/* Kleurbalk pas na de eerste keer harder dan 10 km/u */
+body.nobar .bar { transform: translateY(-100%); }
+body.nobar .instr { top: calc(env(safe-area-inset-top) + 10px); }
+body.nobar .toast { top: calc(env(safe-area-inset-top) + 12px); }
+body.nobar .instr:not([hidden]) ~ .toast { top: calc(env(safe-area-inset-top) + 110px); }
 .spd {
   font-size: min(11vw, 48px); line-height: min(14vw, 60px);
   font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -0.02em;
@@ -132,10 +137,10 @@ button { font: inherit; color: inherit; border: 0; background: none; cursor: poi
 #search:not([data-field="from"]):has(#q:not(:placeholder-shown)) .tabs,
 #search[data-field="from"]:has(#qfrom:not(:placeholder-shown)) .tabs { display: none; }
 .tabs { display: flex; padding: 0 16px; border-bottom: 1px solid #eee; }
-.tabs button { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 12px 0 10px;
-  font-size: 15px; color: #6b6b6b; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.tabs button { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; padding: 9px 0 7px;
+  font-size: 13px; color: #6b6b6b; border-bottom: 2px solid transparent; margin-bottom: -1px; }
 .tabs button[aria-selected="true"] { color: #1F6FE0; border-bottom-color: #1F6FE0; font-weight: 600; }
-.tabs .ti { font-size: 18px; }
+.tabs .ti { font-size: 21px; }
 
 /* Tab Kaart: schuif de kaart onder de vaste pin in het midden */
 .pick { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 12px 16px calc(env(safe-area-inset-bottom) + 16px); gap: 12px; }
@@ -180,12 +185,23 @@ button { font: inherit; color: inherit; border: 0; background: none; cursor: poi
 .sheet-head button { color: #1F6FE0; font-size: 17px; }
 #results { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; -webkit-overflow-scrolling: touch; }
 #results li { padding: 13px 16px; border-bottom: 1px solid #f0f0f0; cursor: pointer; }
-#results li:active { background: #f4f4f4; }
+#results li:not(.recent):active { background: #f4f4f4; }
 #results .r1 { font-size: 17px; }
 #results .r2 { font-size: 14px; color: #6b6b6b; margin-top: 2px; }
 #results .empty { color: #8a8a8a; cursor: default; }
 #results .hdr { font-size: 13px; color: #8a8a8a; padding: 12px 16px 6px; border-bottom: 0; cursor: default; }
-#results .recent { display: flex; align-items: center; gap: 12px; }
+/* Regels die je opzij kunt vegen: de inhoud schuift, de actie staat eronder */
+#results li.recent { padding: 0; position: relative; overflow: hidden; background: none; touch-action: pan-y; }
+#results li.recent.swiping { background: #E5484D; }
+#results li.recent.swiping[data-action="Hernoemen"] { background: #1F6FE0; }
+#results li.recent:not(.swiping)::before { display: none; }
+#results li.recent::before { content: attr(data-action); position: absolute; right: 18px; top: 50%; transform: translateY(-50%); color: #fff; font-size: 15px; font-weight: 600; }
+#results li.here { background: none; }
+#results .recent > .row { position: relative; display: flex; align-items: center; gap: 12px; padding: 13px 16px; background: #fff; transition: transform .2s ease; }
+#results li.recent:active > .row { background: #f4f4f4; }
+#results .rename { width: 100%; font: inherit; font-size: 17px; padding: 6px 10px; border: 0; border-radius: 8px; background: #F1F0EC; color: inherit; outline: none; -webkit-user-select: text; user-select: text; }
+#results .renok { flex: none; width: 40px; height: 40px; margin: -8px -8px -8px 0; border-radius: 50%; background: #008000; color: #fff; display: flex; align-items: center; justify-content: center; }
+#results .recent .renok .ti { color: #fff; font-size: 22px; }
 #results .recent .ti { font-size: 22px; color: #8a8a8a; flex: none; }
 #results .rtext { flex: 1; min-width: 0; }
 #results .r1, #results .r2 { overflow: hidden; text-overflow: ellipsis; }
@@ -193,6 +209,7 @@ button { font: inherit; color: inherit; border: 0; background: none; cursor: poi
 #results .star.on .ti { color: #1F6FE0; }
 #results .grip { flex: none; display: flex; touch-action: none; cursor: grab; padding: 8px; margin: -8px; }
 #results li.dragging { position: relative; z-index: 2; background: #fff; box-shadow: 0 4px 16px rgba(0,0,0,.18); }
+#results li.dragging::before { display: none; }
 
 .start { position: absolute; inset: 0; z-index: 30; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; padding: 24px; }
 .start-card { background: #fff; border-radius: 22px; padding: 26px 22px; max-width: 360px; text-align: center; }
@@ -222,12 +239,15 @@ button { font: inherit; color: inherit; border: 0; background: none; cursor: poi
   .tabs button { color: #8e8e93; }
   .tabs button[aria-selected="true"] { color: #5EA0FF; border-bottom-color: #5EA0FF; }
   #results .star.on .ti, #results .recent.here .ti { color: #5EA0FF; }
-  #results li.dragging { background: #1c1c1e; box-shadow: 0 4px 16px rgba(0,0,0,.6); }
+  #results li.dragging, #results li.dragging > .row { background: #1c1c1e; box-shadow: 0 4px 16px rgba(0,0,0,.6); }
+  #results .recent > .row { background: #000; }
+  #results li.recent:active > .row { background: #1c1c1e; }
+  #results .rename { background: #1c1c1e; }
   .pmap, .pickwrap { background: #23262B; }
   .pickme { background: #2c2c2e; color: #5EA0FF; box-shadow: 0 2px 8px rgba(0,0,0,.5); }
   .psum { color: #c7c7cc; }
     #results li { border-bottom-color: #1c1c1e; }
-  #results li:active { background: #1c1c1e; }
+  #results li:not(.recent):active { background: #1c1c1e; }
   #results .r2, #results .empty { color: #8e8e93; }
   .start { background: rgba(0,0,0,.6); }
   .start-card { background: #1c1c1e; }

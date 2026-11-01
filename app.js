@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '19';
+const VERSION = '20';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -48,6 +48,9 @@ const state = {
   limitCand: undefined,
   following: true,
   zoom: 16,
+  pitch: 30,          // kanteling van de kaart; met twee vingers aan te passen
+  barOn: false,       // kleurbalk zichtbaar; pas na de eerste keer harder dan 10 km/u
+  concept: null,      // getoonde route vanaf een ander vertrekpunt: { nav, origin, dest, mode }
   nav: null,          // actieve route
   dest: null,
   lastRouteAt: 0,
@@ -184,11 +187,100 @@ async function darkStyle() {
   darkStyleCache = style;
   return style;
 }
+// Lichte kaart: net als in dark mode wat meer kleur in water en groen
+const LIGHT_PAINT = {
+  water: { 'fill-color': '#BDD1DE' },
+  waterway: { 'line-color': '#BDD1DE' },
+  park: { 'fill-color': '#DDE9D7' },
+  landcover_wood: { 'fill-color': '#D3E4CE' },
+};
+const PLACEHOLDER_LIGHT = { version: 8, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#F2F3F0' } }] };
+
+let lightStyleCache = null;
+async function lightStyle() {
+  if (lightStyleCache) return lightStyleCache;
+  const style = await (await fetch(STYLES.light)).json();
+  for (const layer of style.layers) {
+    const paint = LIGHT_PAINT[layer.id];
+    if (paint) layer.paint = { ...layer.paint, ...paint };
+  }
+  // Gras tekent de lichte stijl niet; voeg het toe boven het bos
+  const wood = style.layers.find(l => l.id === 'landcover_wood');
+  if (wood) {
+    style.layers.splice(style.layers.indexOf(wood) + 1, 0,
+      { id: 'landcover_grass', type: 'fill', source: wood.source, 'source-layer': 'landcover',
+        filter: ['==', ['get', 'class'], 'grass'], paint: { 'fill-color': '#DDE9D7', 'fill-opacity': 0.9 } });
+  }
+  lightStyleCache = style;
+  return style;
+}
+
+// Publieke gebouwen iets donkerder. De kaartdata zegt niet wat voor gebouw iets is,
+// dus zoeken we de gebouwen waar een kerk, museum, gemeentehuis enz. in ligt.
+const PUBLIC_POI = new Set(['place_of_worship', 'museum', 'town_hall', 'library', 'theatre', 'cinema', 'art_gallery',
+  'hospital', 'college', 'school', 'police', 'fire_station', 'post', 'castle']);
+const EMPTY_FC = { type: 'FeatureCollection', features: [] };
+
+function inRing(pt, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i], [xj, yj] = ring[j];
+    if ((yi > pt[1]) !== (yj > pt[1]) && pt[0] < (xj - xi) * (pt[1] - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+function findPublicBuildings(m) {
+  const src = m.getSource('public');
+  if (!src || !m.getSource('openmaptiles')) return;
+  const pois = m.querySourceFeatures('openmaptiles', { sourceLayer: 'poi' })
+    .filter(f => f.geometry.type === 'Point' && PUBLIC_POI.has(f.properties.class))
+    .map(f => f.geometry.coordinates);
+  const out = [];
+  if (pois.length) {
+    for (const b of m.querySourceFeatures('openmaptiles', { sourceLayer: 'building' })) {
+      const g = b.geometry;
+      const polys = g.type === 'Polygon' ? [g.coordinates] : g.type === 'MultiPolygon' ? g.coordinates : [];
+      for (const poly of polys) {
+        const ring = poly[0];
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        for (const [x, y] of ring) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+        if (pois.some(p => p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1 && inRing(p, ring))) {
+          out.push({ type: 'Feature', geometry: { type: 'Polygon', coordinates: poly }, properties: {} });
+        }
+      }
+    }
+  }
+  src.setData({ type: 'FeatureCollection', features: out });
+}
+
+function addPublicLayer(m) {
+  if (!m.getLayer('building')) return;
+  const dark = theme() === 'dark';
+  const layers = m.getStyle().layers;
+  const next = layers[layers.findIndex(l => l.id === 'building') + 1];
+  m.addSource('public', { type: 'geojson', data: EMPTY_FC });
+  m.addLayer({ id: 'public-building', type: 'fill', source: 'public',
+    paint: { 'fill-color': dark ? '#3B3F47' : '#D9D8D0', 'fill-outline-color': dark ? '#474B54' : '#C9C8C0' } }, next && next.id);
+  findPublicBuildings(m);
+}
+
+// Opnieuw zoeken zodra er nieuwe kaarttegels binnen zijn
+function watchPublicBuildings(m) {
+  let timer;
+  m.on('style.load', () => addPublicLayer(m));
+  m.on('sourcedata', e => {
+    if (e.sourceId !== 'openmaptiles' || !e.tile) return;
+    clearTimeout(timer);
+    timer = setTimeout(() => findPublicBuildings(m), 400);
+  });
+}
+
 // Kaart half gekanteld: 50% van de maximale kanteling (60°) geeft wat perspectief
 const PITCH = 30;
 const map = new maplibregl.Map({
   container: 'map',
-  style: theme() === 'dark' ? PLACEHOLDER_DARK : STYLES.light,
+  style: theme() === 'dark' ? PLACEHOLDER_DARK : PLACEHOLDER_LIGHT,
   center: [5.1214, 52.0907],
   zoom: 15,
   pitch: PITCH,
@@ -196,8 +288,10 @@ const map = new maplibregl.Map({
   dragRotate: false,
   pitchWithRotate: false,
 });
-// Draaien met twee vingers mag; de kanteling blijft vast
-map.touchPitch.disable();
+// Twee vingers: samen omhoog of omlaag schuiven kantelt, tegen elkaar in draaien roteert.
+// De gekozen kanteling blijft staan, ook als de kaart je weer volgt.
+map.on('pitchend', e => { if (e.originalEvent) state.pitch = map.getPitch(); });
+watchPublicBuildings(map);
 
 const markerEl = document.createElement('div');
 markerEl.className = 'car marker';
@@ -216,10 +310,24 @@ function addRouteLayers(m, coords) {
     layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': dark ? '#3D8BFF' : '#1F6FE0', 'line-width': 8 } });
 }
 
-// Wordt ook opnieuw aangeroepen na een wissel tussen licht en donker
-map.on('style.load', () => addRouteLayers(map, routeCoords));
+// Conceptroute (vertrek niet vanaf je eigen positie): gestippeld, met blauw begin en rood eind
+function addConceptLayers(m) {
+  const dark = theme() === 'dark';
+  m.addSource('concept', { type: 'geojson', data: EMPTY_FC });
+  m.addLayer({ id: 'concept-line', type: 'line', source: 'concept', filter: ['==', ['geometry-type'], 'LineString'],
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: { 'line-color': dark ? '#3D8BFF' : '#1F6FE0', 'line-width': 8, 'line-dasharray': [0, 2] } });
+  m.addLayer({ id: 'concept-ends', type: 'circle', source: 'concept', filter: ['==', ['geometry-type'], 'Point'],
+    paint: { 'circle-radius': ['match', ['get', 'kind'], 'start', 13, 10], 'circle-stroke-width': 4, 'circle-stroke-color': '#ffffff',
+      'circle-color': ['match', ['get', 'kind'], 'start', dark ? '#3D8BFF' : '#1F6FE0', '#E5484D'],
+      'circle-pitch-alignment': 'map' } });
+  drawConcept();
+}
 
-const currentStyle = async () => (theme() === 'dark' ? darkStyle() : STYLES.light);
+// Wordt ook opnieuw aangeroepen na een wissel tussen licht en donker
+map.on('style.load', () => { addRouteLayers(map, routeCoords); addConceptLayers(map); });
+
+const currentStyle = async () => (theme() === 'dark' ? darkStyle() : lightStyle());
 
 async function applyTheme() {
   const style = await currentStyle();
@@ -229,7 +337,7 @@ async function applyTheme() {
   renderBar();
 }
 darkQuery.addEventListener('change', applyTheme);
-if (theme() === 'dark') applyTheme();
+applyTheme();
 
 function setRouteLine(coords) {
   routeCoords = coords;
@@ -249,13 +357,14 @@ map.on('dragstart', e => { if (e.originalEvent) stopFollowing(); });
 map.on('zoomstart', e => { if (e.originalEvent) stopFollowing(); });
 map.on('rotatestart', e => { if (e.originalEvent) stopFollowing(); });
 
-$('recenter').addEventListener('click', () => {
+function follow() {
   state.following = true;
   $('car').hidden = false;
   $('recenter').hidden = true;
   marker.remove();
   if (state.fix) updateCamera([state.fix.lon, state.fix.lat], 600);
-});
+}
+$('recenter').addEventListener('click', follow);
 
 function targetZoom(kmh) {
   if (kmh < 25) return 17;
@@ -277,7 +386,7 @@ function updateCamera(p, duration = 1000) {
     // Rijrichting boven; zonder bekende richting terug naar het noorden
     bearing: state.heading ?? 0,
     zoom: state.zoom,
-    pitch: PITCH,
+    pitch: state.pitch,
     padding: { top: Math.round(h * 0.4), bottom: 0, left: 0, right: 0 },
     duration,
     easing: t => t,
@@ -288,6 +397,9 @@ function updateCamera(p, duration = 1000) {
 let lastTheme = '';
 function renderBar() {
   const bar = $('bar'), lim = $('lim');
+  // Pas tonen na de eerste keer harder dan 10 km/u; daarna blijft hij de hele rit staan
+  if (state.speedKmh > 10) state.barOn = true;
+  document.body.classList.toggle('nobar', !state.barOn);
   $('spd').textContent = state.fix ? Math.round(state.speedKmh) : '–';
   $('destlbl').hidden = state.speedKmh > 10;
   let bg = '#48484A', fg = '#fff';
@@ -502,6 +614,103 @@ function saveFavs(list) {
   try { localStorage.setItem('favorites', JSON.stringify(list)); } catch (e) { /* geen opslag */ }
 }
 const isFav = d => loadFavs().some(f => f.name === d.name);
+const favLabel = d => d.label || (loadFavs().find(f => f.name === d.name) || {}).label || '';
+function renameFav(d, label) {
+  saveFavs(loadFavs().map(f => (f.name === d.name ? { ...f, label: label.trim() || undefined } : f)));
+}
+function deleteRecent(d) {
+  try { localStorage.setItem('recent', JSON.stringify(loadRecent().filter(r => r.name !== d.name))); } catch (e) { /* geen opslag */ }
+}
+
+// Routes met een eigen vertrekpunt, bewaard zodra je ze een keer live bekeken hebt
+const routeKey = r => r.from.name + '|' + r.to.name;
+function loadRoutes() {
+  try { return JSON.parse(localStorage.getItem('routes') || '[]'); } catch (e) { return []; }
+}
+function saveRoutes(list) {
+  try { localStorage.setItem('routes', JSON.stringify(list)); } catch (e) { /* geen opslag */ }
+}
+function saveRoute(from, to, mode) {
+  const place = d => ({ lat: d.lat, lon: d.lon, name: d.name });
+  const item = { from: place(from), to: place(to), mode };
+  saveRoutes([item, ...loadRoutes().filter(r => routeKey(r) !== routeKey(item))].slice(0, 30));
+}
+
+// Naar links vegen over een regel: verwijderen of hernoemen. De regel schuift opzij
+// en laat de actie eronder zien; voorbij 80 px gaat de actie door.
+function swipeable(li, action, onSwipe) {
+  const row = li.firstElementChild;
+  li.dataset.action = action;
+  let start = null, dx = 0, active = false;
+  li.addEventListener('pointerdown', e => {
+    if (e.target.closest('.grip, input, .renok') || li.classList.contains('editing')) return;
+    start = { x: e.clientX, y: e.clientY, id: e.pointerId };
+    dx = 0;
+    active = false;
+  });
+  li.addEventListener('pointermove', e => {
+    if (!start || e.pointerId !== start.id) return;
+    const mx = e.clientX - start.x, my = e.clientY - start.y;
+    if (!active) {
+      if (Math.abs(my) > 10) { start = null; return; }
+      if (mx > -10) return;
+      active = true;
+      li.classList.add('swiping');
+      li.setPointerCapture(e.pointerId);
+      row.style.transition = 'none';
+    }
+    dx = Math.min(0, mx);
+    row.style.transform = `translateX(${dx}px)`;
+  });
+  const end = e => {
+    if (!start || e.pointerId !== start.id) return;
+    start = null;
+    if (!active) return;
+    // De klik die na het loslaten volgt mag de regel niet kiezen
+    li.dataset.swiped = '1';
+    setTimeout(() => delete li.dataset.swiped, 300);
+    row.style.transition = '';
+    if (dx < -80) onSwipe();
+    else {
+      row.style.transform = '';
+      setTimeout(() => li.classList.remove('swiping'), 200);
+    }
+  };
+  li.addEventListener('pointerup', end);
+  li.addEventListener('pointercancel', end);
+}
+
+function swipeAway(li, then) {
+  li.firstElementChild.style.transform = 'translateX(-100%)';
+  setTimeout(then, 200);
+}
+
+// Hernoemen: tekstveld met bevestigknop op de regel zelf
+function editLabel(li, d) {
+  const row = li.firstElementChild;
+  row.style.transform = '';
+  li.classList.remove('swiping');
+  li.classList.add('editing');
+  const text = row.querySelector('.rtext');
+  text.innerHTML = '<input class="rename" type="text" enterkeyhint="done" aria-label="Naam van deze favoriet">';
+  const input = text.querySelector('input');
+  input.value = favLabel(d) || d.name.split(', ')[0];
+  const ok = document.createElement('button');
+  ok.type = 'button';
+  ok.className = 'renok';
+  ok.setAttribute('aria-label', 'Naam bewaren');
+  ok.innerHTML = '<i class="ti ti-check" aria-hidden="true"></i>';
+  row.querySelector('.star').replaceWith(ok);
+  const save = () => { renameFav(d, input.value); showRecent(); };
+  ok.addEventListener('click', e => { e.stopPropagation(); save(); });
+  input.addEventListener('click', e => e.stopPropagation());
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); save(); }
+    if (e.key === 'Escape') showRecent();
+  });
+  input.focus();
+  input.select();
+}
 function toggleFav(d) {
   const favs = loadFavs();
   saveFavs(isFav(d) ? favs.filter(f => f.name !== d.name) : [...favs, { lat: d.lat, lon: d.lon, name: d.name }]);
@@ -510,16 +719,18 @@ function toggleFav(d) {
 // Een regel in de lijst: klik kiest de bestemming, het sterretje maakt hem (geen) favoriet,
 // in de favorietenlijst zit links een greep om te slepen.
 function recentItem(d, { star = false, handle = false } = {}) {
-  const [first, ...rest] = d.name.split(', ');
+  // Met een eigen naam staat die bovenaan en het hele adres eronder
+  const label = favLabel(d);
+  const [first, ...rest] = label ? [label, d.name] : d.name.split(', ');
   const li = document.createElement('li');
   li.className = 'recent';
   const fav = isFav(d);
-  li.innerHTML = (handle ? '<span class="grip" aria-label="Verslepen"><i class="ti ti-grip-vertical" aria-hidden="true"></i></span>'
+  li.innerHTML = '<div class="row">' + (handle ? '<span class="grip" aria-label="Verslepen"><i class="ti ti-grip-vertical" aria-hidden="true"></i></span>'
     : `<i class="ti ${fav && !star ? 'ti-star' : 'ti-history'}" aria-hidden="true"></i>`)
-    + '<div class="rtext"><div class="r1"></div><div class="r2"></div></div>';
+    + '<div class="rtext"><div class="r1"></div><div class="r2"></div></div></div>';
   li.querySelector('.r1').textContent = first;
   li.querySelector('.r2').textContent = rest.join(', ');
-  li.addEventListener('click', () => chooseRecent(d));
+  li.addEventListener('click', () => { if (!li.dataset.swiped && !li.classList.contains('editing')) chooseRecent(d); });
   if (star) {
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -532,7 +743,7 @@ function recentItem(d, { star = false, handle = false } = {}) {
       toggleFav(d);
       showRecent();
     });
-    li.appendChild(btn);
+    li.firstElementChild.appendChild(btn);
   }
   if (handle) makeDraggable(li, li.querySelector('.grip'));
   li.dataset.name = d.name;
@@ -577,6 +788,8 @@ function makeDraggable(li, grip) {
       li.classList.remove('dragging');
       li.style.transform = '';
       const byName = new Map(loadFavs().map(f => [f.name, f]));
+      li.dataset.swiped = '1';
+      setTimeout(() => delete li.dataset.swiped, 300);
       saveFavs([...ul.querySelectorAll('li[data-name]')].map(el => byName.get(el.dataset.name)).filter(Boolean));
     };
     window.addEventListener('pointermove', move, { passive: false });
@@ -597,7 +810,7 @@ function chooseRecent(d) {
 function hereItem() {
   const li = document.createElement('li');
   li.className = 'recent here';
-  li.innerHTML = '<i class="ti ti-current-location" aria-hidden="true"></i><div class="rtext"><div class="r1">Huidige locatie</div></div>';
+  li.innerHTML = '<div class="row"><i class="ti ti-current-location" aria-hidden="true"></i><div class="rtext"><div class="r1">Huidige locatie</div></div></div>';
   li.addEventListener('click', () => {
     $('qfrom').value = '';
     $('qfrom').blur();
@@ -606,6 +819,39 @@ function hereItem() {
     if (pending) showPreview(pending);
   });
   return li;
+}
+
+// Bewaarde route: openen toont het overzicht met Van en Naar ingevuld
+function routeItem(r) {
+  const li = document.createElement('li');
+  li.className = 'recent';
+  li.innerHTML = '<div class="row"><i class="ti ti-route" aria-hidden="true"></i><div class="rtext"><div class="r1"></div><div class="r2"></div></div></div>';
+  const short = d => favLabel(d) || d.name.split(', ')[0];
+  li.querySelector('.r1').textContent = `${short(r.from)} → ${short(r.to)}`;
+  li.querySelector('.r2').textContent = MODE_LABEL[r.mode] || '';
+  li.addEventListener('click', () => { if (!li.dataset.swiped) openRoute(r); });
+  swipeable(li, 'Verwijderen', () => swipeAway(li, () => {
+    saveRoutes(loadRoutes().filter(x => routeKey(x) !== routeKey(r)));
+    showRecent();
+  }));
+  return li;
+}
+
+function showFrom() {
+  $('fromwrap').hidden = false;
+  $('swap').hidden = false;
+}
+
+function openRoute(r) {
+  origin = r.from;
+  $('qfrom').value = r.from.name;
+  $('q').value = r.to.name;
+  showFrom();
+  setField('to');
+  streetCtx = null;
+  setTravelMode(r.mode);
+  updateClear();
+  showPreview(r.to);
 }
 
 // Recente bestemmingen waarin elk getypt woord het begin van een woord is
@@ -618,7 +864,7 @@ function matchRecent(q) {
   return [...loadFavs(), ...loadRecent()].filter(d => {
     if (seen.has(d.name)) return false;
     seen.add(d.name);
-    const parts = fold(d.name).split(/[^\p{L}\p{N}]+/u);
+    const parts = fold(d.name + ' ' + favLabel(d)).split(/[^\p{L}\p{N}]+/u);
     return words.every(w => parts.some(p => p.startsWith(w)));
   }).slice(0, 5);
 }
@@ -642,6 +888,12 @@ function showRecent() {
   $('preview').hidden = true;
   $('pick').hidden = listTab !== 'map';
   if (listTab === 'map') { showPickMap(); return; }
+  if (listTab === 'routes') {
+    const routes = loadRoutes();
+    if (!routes.length) ul.innerHTML = '<li class="empty">Nog geen routes. Tik op het blauwe beginpunt in het routeoverzicht om een eigen vertrekpunt te kiezen.</li>';
+    for (const r of routes) ul.appendChild(routeItem(r));
+    return;
+  }
   const fav = listTab === 'fav';
   const list = fav ? loadFavs() : loadRecent();
   if (!fav && activeField === 'from') ul.appendChild(hereItem());
@@ -649,7 +901,12 @@ function showRecent() {
     ul.insertAdjacentHTML('beforeend', `<li class="empty">${fav ? 'Nog geen favorieten. Tik bij Recent op het sterretje om er een toe te voegen.' : 'Nog geen recente bestemmingen.'}</li>`);
     return;
   }
-  for (const d of list) ul.appendChild(fav ? recentItem(d, { star: true, handle: true }) : recentItem(d, { star: true }));
+  for (const d of list) {
+    const li = recentItem(d, { star: true, handle: fav });
+    if (fav) swipeable(li, 'Hernoemen', () => editLabel(li, d));
+    else swipeable(li, 'Verwijderen', () => swipeAway(li, () => { deleteRecent(d); showRecent(); }));
+    ul.appendChild(li);
+  }
 }
 
 function updateClear() {
@@ -658,7 +915,7 @@ function updateClear() {
 }
 
 function openSearch() {
-  const navigating = !!state.nav;
+  const navigating = !!(state.nav || state.concept);
   $('search').hidden = false;
   $('q').value = navigating && state.dest ? state.dest.name : '';
   $('q-postcode').value = '';
@@ -679,6 +936,11 @@ function openSearch() {
   setTravelMode(travelMode);
   listTab = 'recent';
   document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === 'recent')));
+  if (state.concept) {
+    origin = state.concept.origin;
+    $('qfrom').value = origin.name;
+    showFrom();
+  }
   updateClear();
   if (navigating) showPreview(state.dest);
   else {
@@ -880,16 +1142,19 @@ async function showPreview(dest, note) {
   $('results').innerHTML = '';
   $('pick').hidden = true;
   $('preview').hidden = false;
-  $('stop').style.visibility = state.nav ? 'visible' : 'hidden';
+  $('stop').style.visibility = state.nav || state.concept ? 'visible' : 'hidden';
   $('qok').disabled = true;
   $('psum').textContent = 'Route berekenen…';
   previewNav = null;
   const seq = ++previewSeq;
   await ensurePreviewMap();
   try {
-    const n = state.nav;
+    const n = state.nav, c = state.concept;
     let coords, dist, time;
-    if (n && dest === state.dest && n.mode === travelMode && !origin) {
+    if (c && dest === c.dest && origin === c.origin && c.mode === travelMode) {
+      previewNav = c.nav;
+      coords = c.nav.shape; dist = c.nav.total; time = c.nav.time;
+    } else if (n && dest === state.dest && n.mode === travelMode && !origin) {
       // Huidige route: alleen het stuk dat nog komt
       coords = routeCoords.length ? routeCoords : n.shape;
       dist = Math.max(0, n.total - n.along);
@@ -922,6 +1187,7 @@ async function showPickMap() {
     pickmap = new maplibregl.Map({ container: 'pickmap', style: await currentStyle(), center, zoom: 15,
       attributionControl: false, dragRotate: false, pitchWithRotate: false });
     pickmap.touchZoomRotate.disableRotation();
+    watchPublicBuildings(pickmap);
   } else {
     pickmap.resize();
     pickmap.jumpTo({ center, zoom: 15 });
@@ -958,10 +1224,19 @@ function confirmPreview() {
   const dest = pending;
   if (!dest.here) saveRecent({ lat: dest.lat, lon: dest.lon, name: dest.name });
   closeSearch();
+  // Eigen vertrekpunt: de route alleen tonen, niet navigeren vanaf je huidige positie
+  if (origin && previewNav) {
+    if (!dest.here) saveRoute(origin, dest, travelMode);
+    showConcept({ nav: previewNav, origin, dest, mode: travelMode });
+    previewNav = null;
+    return;
+  }
+  clearConcept();
   if (previewNav) {
     state.dest = dest;
     state.nav = previewNav;
     previewNav = null;
+    state.barOn = false;
     state.lastRouteAt = Date.now();
     if (DEMO) demo.along = 0;
     setMode('nav');
@@ -1019,8 +1294,7 @@ $('pmap').addEventListener('click', e => {
   const r = $('pmap').getBoundingClientRect();
   const p = pmap.project(previewData.start);
   if (Math.hypot(e.clientX - r.left - p.x, e.clientY - r.top - p.y) > 28) return;
-  $('fromwrap').hidden = false;
-  $('swap').hidden = false;
+  showFrom();
 });
 
 // Van en Naar omwisselen; je eigen positie kan zo ook de bestemming worden
@@ -1066,6 +1340,7 @@ async function fetchRoute(dest, start = null) {
 async function startRoute(dest) {
   if (!state.fix) { toast('Nog geen GPS-positie. Probeer het zo opnieuw.'); return; }
   state.dest = dest;
+  state.barOn = false;
   state.routing = true;
   state.lastRouteAt = Date.now();
   toast('Route berekenen…', 2000);
@@ -1101,8 +1376,49 @@ async function reroute() {
 function stopRoute() {
   state.nav = null;
   state.dest = null;
+  state.barOn = false;
+  clearConcept();
   setRouteLine([]);
   setMode('idle');
+  renderBar();
+}
+
+// ---------- Conceptroute: vanaf een ander vertrekpunt, alleen bekijken ----------
+function drawConcept() {
+  const src = map.getSource('concept');
+  if (!src) return;
+  const c = state.concept;
+  if (!c) { src.setData(EMPTY_FC); return; }
+  const shape = c.nav.shape;
+  const point = (pt, kind) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: pt }, properties: { kind } });
+  src.setData({ type: 'FeatureCollection', features: [lineFeature(shape), point(shape[0], 'start'), point(shape[shape.length - 1], 'end')] });
+}
+
+function clearConcept() {
+  if (!state.concept) return;
+  state.concept = null;
+  drawConcept();
+  follow();
+}
+
+// De kaart gaat naar het vertrekpunt, in de rijrichting van het eerste stuk
+function showConcept(c) {
+  state.nav = null;
+  setRouteLine([]);
+  state.concept = c;
+  state.dest = c.dest;
+  state.barOn = false;
+  drawConcept();
+  stopFollowing();
+  const [a, b] = c.nav.shape;
+  const h = map.getContainer().clientHeight;
+  map.easeTo({ center: a, bearing: b ? bearing(a, b) : 0, zoom: 15.5, pitch: state.pitch,
+    padding: { top: Math.round(h * 0.4), bottom: 0, left: 0, right: 0 }, duration: 800 });
+  $('eta').textContent = fmtClock(new Date(Date.now() + c.nav.time * 1000));
+  $('remain-time').textContent = fmtDuration(c.nav.time);
+  $('remain-dist').textContent = fmtDist(c.nav.total);
+  setMode('concept');
+  renderBar();
 }
 
 // Postcode weglaten, ook buitenlandse: een los adresdeel met cijfers en zonder
@@ -1115,8 +1431,8 @@ function withoutPostcode(name) {
 }
 
 function setMode(mode) {
-  const nav = mode === 'nav';
-  $('instr').hidden = !nav;
+  const nav = mode === 'nav' || mode === 'concept';
+  $('instr').hidden = mode !== 'nav';
   $('bottom-nav').hidden = !nav;
   $('destlbl').textContent = nav && state.dest ? withoutPostcode(state.dest.name) : '';
   $('bottom-idle').hidden = nav;
