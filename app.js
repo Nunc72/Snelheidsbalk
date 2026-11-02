@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '30';
+const VERSION = '31';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -136,7 +136,8 @@ window.addEventListener('unhandledrejection', e => toast('Fout: ' + (e.reason &&
 const MAP_CACHE = 'map-offline-v1';
 const OFM_TILEJSON = 'https://tiles.openfreemap.org/planet';
 const toOffline = u => u.replace(/^https:\/\//, 'offline://');
-const isMapTile = u => /\/planet\/[^/]+\/\d+\/\d+\/\d+\.pbf$/.test(u);
+// Kaarttegels en hoogtetegels: alleen opgeslagen als ze vooraf geladen zijn
+const isMapTile = u => /\/planet\/[^/]+\/\d+\/\d+\/\d+\.pbf$|\/terrarium\/\d+\/\d+\/\d+\.png$/.test(u);
 
 async function mapFetch(url) {
   let cache = null;
@@ -217,13 +218,19 @@ async function preloadMap(nav) {
   for (let z = 10; z <= 14; z++) {
     for (const [x, y] of corridorTiles(nav, z)) urls.push(tiles.replace('{z}', z).replace('{x}', x).replace('{y}', y));
   }
+  // Met de 3D-kaart ook het reliëf (circa 15 MB voor 80 km)
+  if (mapKind === 'terrain') {
+    for (let z = 10; z <= 13; z++) {
+      for (const [x, y] of corridorTiles(nav, z)) urls.push(DEM_URL.replace('{z}', z).replace('{x}', x).replace('{y}', y));
+    }
+  }
   for (const font of ['Noto Sans Regular', 'Noto Sans Bold', 'Noto Sans Italic']) {
     for (const range of ['0-255', '256-511', '8192-8447']) urls.push(`https://tiles.openfreemap.org/fonts/${font}/${range}.pbf`);
   }
   const cache = await storeAll(MAP_CACHE, urls);
-  // Hooguit 1500 kaarttegels bewaren (circa 60 MB); de oudste eruit
+  // Hooguit 2000 kaart- en hoogtetegels bewaren (circa 100 MB); de oudste eruit
   const stored = (await cache.keys()).filter(r => isMapTile(r.url));
-  for (const r of stored.slice(0, Math.max(0, stored.length - 1500))) await cache.delete(r);
+  for (const r of stored.slice(0, Math.max(0, stored.length - 2000))) await cache.delete(r);
 }
 
 // Bij een wandelroute: kaart en wandelroutes langs de eerste 80 km opslaan
@@ -330,8 +337,10 @@ let mapKind = 'standard';
 try { if (MAP_KINDS.includes(localStorage.getItem('mapKind'))) mapKind = localStorage.getItem('mapKind'); } catch (e) { /* geen opslag */ }
 
 // Hoogtedata (Mapzen/AWS, gratis, wereldwijd) voor reliëf en 3D
-const DEM = { type: 'raster-dem', tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
-  encoding: 'terrarium', tileSize: 256, maxzoom: 14 };
+// Tot zoomniveau 13 (circa 12 m per pixel): scherp genoeg voor reliëf en de helft lichter
+// om onderweg op te slaan dan niveau 14. Loopt via offline:// zodat het zonder bereik werkt.
+const DEM_URL = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png';
+const DEM = { type: 'raster-dem', tiles: [toOffline(DEM_URL)], encoding: 'terrarium', tileSize: 256, maxzoom: 13 };
 // Luchtfoto van PDOK: open data, alleen Nederland
 const PHOTO = { type: 'raster', tiles: ['https://service.pdok.nl/hwh/luchtfotorgb/wmts/v1_0/Actueel_orthoHR/EPSG:3857/{z}/{x}/{y}.jpeg'],
   tileSize: 256, maxzoom: 19, bounds: [3.2, 50.7, 7.3, 53.6] };
@@ -605,6 +614,20 @@ watchPublicBuildings(map);
 watchTrails(map);
 // Kaart weggevallen (meestal geheugen): melden; MapLibre tekent hem opnieuw zodra het kan
 map.on('webglcontextlost', () => toast('De kaart is even weggevallen (geheugen). Hij komt vanzelf terug.', 8000));
+// Vangnet: gaat er midden in een kaartanimatie iets mis, dan blijft MapLibre hangen en
+// tekent hij niets meer (lege kaart). Staat de takenlijst langer dan 2 s 'bezig', dan
+// zetten we hem vrij en tekenen opnieuw. Normaal is hij nooit buiten een tekenbeurt bezig.
+let stuckSince = 0;
+setInterval(() => {
+  const q = map._renderTaskQueue;
+  if (!q || !q._currentlyRunning) { stuckSince = 0; return; }
+  if (!stuckSince) { stuckSince = Date.now(); return; }
+  if (Date.now() - stuckSince > 2000) {
+    q._currentlyRunning = false;
+    stuckSince = 0;
+    map.triggerRepaint();
+  }
+}, 1000);
 // Alleen fouten van de stijl zelf; een ontbrekende kaarttegel (bijv. zonder bereik) is geen melding waard
 map.on('error', e => { if (!map.isStyleLoaded() && !e.sourceId && !e.tile) toast('Kaart laden lukt niet: ' + (e.error && e.error.message || 'onbekende fout'), 10000); });
 
@@ -642,7 +665,30 @@ function addConceptLayers(m) {
 }
 
 // Wordt ook opnieuw aangeroepen na een wissel tussen licht en donker
-map.on('style.load', () => { addRouteLayers(map, routeCoords); addConceptLayers(map); });
+// Begin (blauw) en eind (rood) van de lopende route, net als bij de conceptroute
+function addRouteEnds(m) {
+  const dark = theme() === 'dark';
+  m.addSource('route-ends', { type: 'geojson', data: EMPTY_FC });
+  m.addLayer({ id: 'route-ends', type: 'circle', source: 'route-ends',
+    paint: { 'circle-radius': ['match', ['get', 'kind'], 'start', 13, 10], 'circle-stroke-width': 4, 'circle-stroke-color': '#ffffff',
+      'circle-color': ['match', ['get', 'kind'], 'start', dark ? '#3D8BFF' : '#1F6FE0', '#E5484D'],
+      'circle-pitch-alignment': 'map' } });
+  drawRouteEnds();
+}
+
+let endsFor = null;
+function drawRouteEnds() {
+  const src = map.getSource('route-ends');
+  const n = state.nav;
+  endsFor = n;
+  if (!src) return;
+  if (!n) { src.setData(EMPTY_FC); return; }
+  // Het beginpunt blijft waar je vertrok, ook als de route onderweg opnieuw berekend is
+  const point = (pt, kind) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: pt }, properties: { kind } });
+  src.setData({ type: 'FeatureCollection', features: [point(state.navStart || n.shape[0], 'start'), point(n.shape[n.shape.length - 1], 'end')] });
+}
+
+map.on('style.load', () => { addRouteLayers(map, routeCoords); addRouteEnds(map); addConceptLayers(map); });
 
 // De kleine kaarten (routeoverzicht, plek kiezen) krijgen geen 3D-terrein:
 // drie kaarten met terrein tegelijk kost de iPhone te veel geheugen
@@ -1705,6 +1751,7 @@ function confirmPreview() {
   if (previewNav) {
     state.dest = dest;
     state.nav = previewNav;
+    state.navStart = previewNav.shape[0];
     previewNav = null;
     state.barOn = false;
     state.lastRouteAt = Date.now();
@@ -1939,6 +1986,7 @@ async function startRoute(dest) {
   toast('Route berekenen…', 2000);
   try {
     state.nav = await fetchRoute(dest);
+    state.navStart = state.nav.shape[0];
     if (DEMO) demo.along = 0;
     setMode('nav');
     updateNav([state.fix.lon, state.fix.lat]);
@@ -1968,6 +2016,8 @@ async function reroute() {
 
 function stopRoute() {
   state.nav = null;
+  state.navStart = null;
+  drawRouteEnds();
   state.dest = null;
   state.barOn = false;
   clearConcept();
@@ -1997,6 +2047,7 @@ function clearConcept() {
 // De kaart gaat naar het vertrekpunt, in de rijrichting van het eerste stuk
 function showConcept(c) {
   state.nav = null;
+  drawRouteEnds();
   setRouteLine([]);
   state.concept = c;
   state.dest = c.dest;
@@ -2085,6 +2136,7 @@ function setInstrSub(sub) {
 function updateNav(p) {
   const n = state.nav;
   if (!n) return;
+  if (endsFor !== n) drawRouteEnds();
 
   // Positie op de route bepalen; eerst rond de vorige plek zoeken, dan de hele route
   let best = { d: Infinity, i: n.idx, pt: p };
