@@ -262,6 +262,7 @@ body.nobar .instr:not([hidden]) ~ .toast { top: calc(env(safe-area-inset-top) + 
 #results .r1, #results .r2 { overflow: hidden; text-overflow: ellipsis; }
 #results .star { flex: none; width: 40px; height: 40px; margin: -8px -8px -8px 0; display: flex; align-items: center; justify-content: center; }
 #results .star.on .ti { color: #1F6FE0; }
+#results .recent .offl { color: #008000; font-size: 20px; }
 #results .grip { flex: none; display: flex; touch-action: none; cursor: grab; padding: 8px; margin: -8px; }
 #results li.dragging { position: relative; z-index: 2; background: #fff; box-shadow: 0 4px 16px rgba(0,0,0,.18); }
 #results li.dragging::before { display: none; }

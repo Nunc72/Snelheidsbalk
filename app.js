@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '31';
+const VERSION = '32';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -49,7 +49,6 @@ const state = {
   following: true,
   zoom: 16,
   pitch: 30,          // kanteling van de kaart; met twee vingers aan te passen
-  barOn: false,       // kleurbalk zichtbaar; pas na de eerste keer harder dan 10 km/u
   concept: null,      // getoonde route vanaf een ander vertrekpunt: { nav, origin, dest, mode }
   nav: null,          // actieve route
   dest: null,
@@ -139,11 +138,21 @@ const toOffline = u => u.replace(/^https:\/\//, 'offline://');
 // Kaarttegels en hoogtetegels: alleen opgeslagen als ze vooraf geladen zijn
 const isMapTile = u => /\/planet\/[^/]+\/\d+\/\d+\/\d+\.pbf$|\/terrarium\/\d+\/\d+\/\d+\.png$/.test(u);
 
+// De opslag één keer openen, en bijhouden welke tegels erin zitten. Zo kost een tegel
+// die niet is opgeslagen (bijna altijd) geen trage zoektocht in de opslag: meteen van internet.
+let mapCache = null;
+const openMapCache = () => mapCache || (mapCache = caches.open(MAP_CACHE).catch(() => null));
+const storedTiles = new Set();
+openMapCache().then(c => c && c.keys()).then(keys => { for (const r of keys || []) if (isMapTile(r.url)) storedTiles.add(r.url); }).catch(() => {});
+
+// Stijlbestanden, symbolen en letters per sessie in het geheugen: elke nieuwe (kleine) kaart
+// hoeft er dan niet opnieuw op te wachten
+const memo = new Map();
+
 async function mapFetch(url) {
-  let cache = null;
-  try { cache = await caches.open(MAP_CACHE); } catch (e) { /* geen opslag */ }
-  // Letters en tegels veranderen niet: eerst uit de opslag. De rest eerst vers van internet.
-  if (cache && (isMapTile(url) || url.includes('/fonts/'))) {
+  const cache = await openMapCache();
+  // Opgeslagen tegels (langs een wandelroute) en letters veranderen niet: eerst uit de opslag
+  if (cache && (storedTiles.has(url) || url.includes('/fonts/'))) {
     const hit = await cache.match(url);
     if (hit) return hit;
   }
@@ -158,16 +167,26 @@ async function mapFetch(url) {
   }
 }
 
-maplibregl.addProtocol('offline', async params => {
-  const res = await mapFetch(params.url.replace(/^offline:\/\//, 'https://'));
+async function loadMapFile(url, type) {
+  const res = await mapFetch(url);
   if (!res.ok) throw new Error(`Kaartbestand niet gevonden (${res.status})`);
-  if (params.type === 'json') {
+  if (type === 'json') {
     const data = await res.json();
     // De tegeladressen uit de TileJSON ook via 'offline://'
     if (Array.isArray(data.tiles)) data.tiles = data.tiles.map(toOffline);
-    return { data };
+    return data;
   }
-  return { data: await res.arrayBuffer() };
+  return res.arrayBuffer();
+}
+
+maplibregl.addProtocol('offline', async params => {
+  const url = params.url.replace(/^offline:\/\//, 'https://');
+  if (isMapTile(url)) return { data: await loadMapFile(url, params.type) };
+  const key = params.type + ' ' + url;
+  if (!memo.has(key)) memo.set(key, loadMapFile(url, params.type).catch(e => { memo.delete(key); throw e; }));
+  const data = await memo.get(key);
+  // MapLibre krijgt een eigen kopie: een doorgegeven buffer is daarna leeg
+  return { data: data instanceof ArrayBuffer ? data.slice(0) : structuredClone(data) };
 });
 
 function offlineStyle(style) {
@@ -192,53 +211,81 @@ function corridorTiles(nav, z) {
   return [...keys].map(k => k.split('/').map(Number));
 }
 
-// Bestanden opslaan, vier tegelijk; wat er al is wordt overgeslagen
+// Bestanden opslaan, vier tegelijk; wat er al is wordt overgeslagen.
+// Geeft ook terug hoeveel er niet gelukt zijn.
 async function storeAll(cacheName, urls) {
   const cache = await caches.open(cacheName);
-  let i = 0;
+  let i = 0, missing = 0;
   const next = async () => {
     while (i < urls.length) {
       const url = urls[i++];
-      if (await cache.match(url)) continue;
+      if (await cache.match(url)) { if (cacheName === MAP_CACHE) storedTiles.add(url); continue; }
       try {
         const res = await fetch(url);
-        if (res.ok) await cache.put(url, res);
-      } catch (e) { /* volgende keer opnieuw */ }
+        if (res.ok) {
+          await cache.put(url, res);
+          if (cacheName === MAP_CACHE) storedTiles.add(url);
+        } else missing++;
+      } catch (e) { missing++; /* volgende keer opnieuw */ }
     }
   };
   await Promise.all([next(), next(), next(), next()]);
-  return cache;
+  return { cache, missing };
+}
+
+const tileUrl = (tpl, z, x, y) => tpl.replace('{z}', z).replace('{x}', x).replace('{y}', y);
+// Kaarttegels (zoom 10 tot 14) en met de 3D-kaart ook het reliëf (zoom 10 tot 13)
+function walkTileUrls(nav, tiles, relief) {
+  const urls = [];
+  for (let z = 10; z <= 14; z++) for (const [x, y] of corridorTiles(nav, z)) urls.push(tileUrl(tiles, z, x, y));
+  if (relief) for (let z = 10; z <= 13; z++) for (const [x, y] of corridorTiles(nav, z)) urls.push(tileUrl(DEM_URL, z, x, y));
+  return urls;
 }
 
 // De kaart zelf: zoomniveau 10 tot 14 (14 is het scherpste; verder inzoomen gebruikt die tegels),
 // plus de letters van de drie lettertypes
-async function preloadMap(nav) {
+// Met de 3D-kaart ook het reliëf (circa 15 MB voor 80 km)
+async function preloadMap(nav, relief) {
   const tiles = (await (await mapFetch(OFM_TILEJSON)).json()).tiles[0];
-  const urls = [];
-  for (let z = 10; z <= 14; z++) {
-    for (const [x, y] of corridorTiles(nav, z)) urls.push(tiles.replace('{z}', z).replace('{x}', x).replace('{y}', y));
-  }
-  // Met de 3D-kaart ook het reliëf (circa 15 MB voor 80 km)
-  if (mapKind === 'terrain') {
-    for (let z = 10; z <= 13; z++) {
-      for (const [x, y] of corridorTiles(nav, z)) urls.push(DEM_URL.replace('{z}', z).replace('{x}', x).replace('{y}', y));
-    }
-  }
+  const urls = walkTileUrls(nav, tiles, relief);
   for (const font of ['Noto Sans Regular', 'Noto Sans Bold', 'Noto Sans Italic']) {
     for (const range of ['0-255', '256-511', '8192-8447']) urls.push(`https://tiles.openfreemap.org/fonts/${font}/${range}.pbf`);
   }
-  const cache = await storeAll(MAP_CACHE, urls);
+  const { cache, missing } = await storeAll(MAP_CACHE, urls);
   // Hooguit 2000 kaart- en hoogtetegels bewaren (circa 100 MB); de oudste eruit
   const stored = (await cache.keys()).filter(r => isMapTile(r.url));
-  for (const r of stored.slice(0, Math.max(0, stored.length - 2000))) await cache.delete(r);
+  const gone = stored.slice(0, Math.max(0, stored.length - 2000)).map(r => r.url);
+  for (const url of gone) { await cache.delete(url); storedTiles.delete(url); }
+  // Oudere opgeslagen wandelingen die daardoor niet meer compleet zijn, gaan van de lijst
+  if (gone.length) {
+    const goneSet = new Set(gone);
+    for (const w of loadWalks()) {
+      const n = await walkNav(w);
+      if (!n || walkTileUrls(n, tiles, w.relief).some(u => goneSet.has(u))) await deleteWalk(w);
+    }
+  }
+  return missing;
 }
 
-// Bij een wandelroute: kaart en wandelroutes langs de eerste 80 km opslaan
-async function preloadWalk(nav) {
+// Bij een wandelroute: kaart en wandelroutes langs de eerste 80 km opslaan.
+// Is alles binnen, dan komt de wandeling bij de tab Routes.
+async function preloadWalk(nav, from, to) {
   try { await caches.open(MAP_CACHE); } catch (e) { return; }
+  const relief = mapKind === 'terrain';
   toast('Kaart voor onderweg opslaan…', 3000);
-  await Promise.all([preloadMap(nav).catch(() => {}), preloadTrails(nav).catch(() => {})]);
-  toast(`Kaart en wandelroutes voor ${fmtDist(Math.min(80000, nav.total))} opgeslagen`, 3000);
+  const [mapMissing, trailMissing] = await Promise.all([preloadMap(nav, relief).catch(() => Infinity), preloadTrails(nav).catch(() => Infinity)]);
+  const km = fmtDist(Math.min(80000, nav.total));
+  if (mapMissing > 0 || trailMissing > 0) {
+    toast(`Kaart voor onderweg niet helemaal opgeslagen (geen bereik?). Start de route nog eens om het af te maken.`, 6000);
+    return;
+  }
+  // Vanaf je eigen positie: het beginpunt krijgt de naam van het adres daar
+  if (!from) {
+    const [lon, lat] = nav.shape[0];
+    from = { lat, lon, name: await placeName(lat, lon) };
+  }
+  try { await saveWalk(nav, from, to, relief); } catch (e) { /* geen opslag */ }
+  toast(`Kaart en wandelroutes voor ${km} opgeslagen, te vinden bij Routes`, 4000);
 }
 
 // ---------- Kaart ----------
@@ -447,9 +494,10 @@ async function trailJson(url) {
 // Wandelroutes langs de eerste 80 km; hooguit 300 bestanden (circa 150 tegels) bewaren
 async function preloadTrails(nav) {
   const urls = corridorTiles(nav, TRAIL_Z).flatMap(([x, y]) => trailTileUrls(x, y));
-  const cache = await storeAll(TRAIL_CACHE, urls);
+  const { cache, missing } = await storeAll(TRAIL_CACHE, urls);
   const all = await cache.keys();
-  for (const req of all.slice(0, Math.max(0, all.length - 300))) await cache.delete(req);
+  for (const req of all.slice(0, Math.max(0, all.length - 600))) await cache.delete(req);
+  return missing;
 }
 
 const trailTiles = new Map();
@@ -774,11 +822,11 @@ function updateCamera(p, duration = 1000) {
 
 // ---------- Kleurbalk ----------
 let lastTheme = '';
+// Alleen tijdens echte autonavigatie (vanaf je eigen positie), ongeacht de snelheid
+const barShown = () => !!(state.nav && state.nav.mode === 'auto');
 function renderBar() {
   const bar = $('bar'), lim = $('lim');
-  // Pas tonen na de eerste keer harder dan 10 km/u; daarna blijft hij de hele rit staan
-  if (state.speedKmh > 10) state.barOn = true;
-  document.body.classList.toggle('nobar', !state.barOn);
+  document.body.classList.toggle('nobar', !barShown());
   $('spd').textContent = state.fix ? Math.round(state.speedKmh) : '–';
   $('destlbl').hidden = state.speedKmh > 10;
   let bg = '#48484A', fg = '#fff';
@@ -867,7 +915,8 @@ function acceptLimit(v) {
 
 async function maybeFetchLimit(p) {
   const now = Date.now();
-  if (limitBusy) return;
+  // Zonder kleurbalk geen limiet nodig: scheelt data en batterij
+  if (limitBusy || !barShown()) return;
   if (lastLimitPos && now - lastLimitAt < 2500) return;
   if (lastLimitPos && dist(lastLimitPos, p) < 15 && now - lastLimitAt < 20000) return;
   limitBusy = true;
@@ -1006,18 +1055,53 @@ function deleteRecent(d) {
   try { localStorage.setItem('recent', JSON.stringify(loadRecent().filter(r => r.name !== d.name))); } catch (e) { /* geen opslag */ }
 }
 
-// Routes met een eigen vertrekpunt, bewaard zodra je ze een keer live bekeken hebt
-const routeKey = r => r.from.name + '|' + r.to.name;
-function loadRoutes() {
-  try { return JSON.parse(localStorage.getItem('routes') || '[]'); } catch (e) { return []; }
+// Een route met een eigen vertrekpunt (stippellijn) staat als één regel bij Recent,
+// en kan net als een bestemming favoriet worden
+const place = d => ({ lat: d.lat, lon: d.lon, name: d.name });
+const routeEntry = (from, to, mode) => ({ from: place(from), to: place(to), mode, name: `${from.name} → ${to.name}` });
+const shortName = d => favLabel(d) || d.name.split(', ')[0];
+
+// Vroeger stonden deze routes in een eigen tab; eenmalig naar Recent verhuizen
+try {
+  const old = JSON.parse(localStorage.getItem('routes') || 'null');
+  if (Array.isArray(old)) {
+    const moved = old.filter(r => r.from && r.to).map(r => routeEntry(r.from, r.to, r.mode));
+    const names = new Set(moved.map(r => r.name));
+    localStorage.setItem('recent', JSON.stringify([...loadRecent().filter(d => !names.has(d.name)), ...moved].slice(0, 30)));
+    localStorage.removeItem('routes');
+  }
+} catch (e) { /* geen opslag */ }
+
+// ---------- Opgeslagen wandelroutes (tab Routes) ----------
+// Alleen wandelingen waarvan de kaart voor de eerste 80 km (of de hele route) compleet
+// is opgeslagen. De route zelf staat in de browseropslag, zodat hij ook zonder bereik opent.
+const WALK_CACHE = 'walks-v1';
+const walkKey = w => w.from.name + '|' + w.to.name;
+const walkUrl = id => `${location.origin}/__walk/${id}.json`;
+function loadWalks() {
+  try { return JSON.parse(localStorage.getItem('walks') || '[]'); } catch (e) { return []; }
 }
-function saveRoutes(list) {
-  try { localStorage.setItem('routes', JSON.stringify(list)); } catch (e) { /* geen opslag */ }
+function saveWalks(list) {
+  try { localStorage.setItem('walks', JSON.stringify(list)); } catch (e) { /* geen opslag */ }
 }
-function saveRoute(from, to, mode) {
-  const place = d => ({ lat: d.lat, lon: d.lon, name: d.name });
-  const item = { from: place(from), to: place(to), mode };
-  saveRoutes([item, ...loadRoutes().filter(r => routeKey(r) !== routeKey(item))].slice(0, 30));
+async function saveWalk(nav, from, to, relief) {
+  const id = Date.now().toString(36);
+  const cache = await caches.open(WALK_CACHE);
+  await cache.put(walkUrl(id), new Response(JSON.stringify({ ...nav, idx: 0, along: 0, off: 0, arrivedAt: 0 })));
+  const item = { id, from: place(from), to: place(to), km: Math.round(nav.total / 100) / 10, relief };
+  const old = loadWalks().filter(w => walkKey(w) === walkKey(item));
+  saveWalks([item, ...loadWalks().filter(w => walkKey(w) !== walkKey(item))].slice(0, 20));
+  for (const w of old) cache.delete(walkUrl(w.id));
+}
+async function deleteWalk(w) {
+  saveWalks(loadWalks().filter(x => x.id !== w.id));
+  try { (await caches.open(WALK_CACHE)).delete(walkUrl(w.id)); } catch (e) { /* geen opslag */ }
+}
+async function walkNav(w) {
+  try {
+    const hit = await (await caches.open(WALK_CACHE)).match(walkUrl(w.id));
+    return hit ? await hit.json() : null;
+  } catch (e) { return null; }
 }
 
 // Naar links vegen over een regel: verwijderen of hernoemen. De regel schuift opzij
@@ -1078,7 +1162,7 @@ function editLabel(li, d) {
   const text = row.querySelector('.rtext');
   text.innerHTML = '<input class="rename" type="text" enterkeyhint="done" aria-label="Naam van deze favoriet">';
   const input = text.querySelector('input');
-  input.value = favLabel(d) || d.name.split(', ')[0];
+  input.value = favLabel(d) || (d.from ? `${shortName(d.from)} → ${shortName(d.to)}` : d.name.split(', ')[0]);
   const ok = document.createElement('button');
   ok.type = 'button';
   ok.className = 'renok';
@@ -1097,7 +1181,7 @@ function editLabel(li, d) {
 }
 function toggleFav(d) {
   const favs = loadFavs();
-  saveFavs(isFav(d) ? favs.filter(f => f.name !== d.name) : [...favs, { lat: d.lat, lon: d.lon, name: d.name }]);
+  saveFavs(isFav(d) ? favs.filter(f => f.name !== d.name) : [...favs, d.from ? routeEntry(d.from, d.to, d.mode) : place(d)]);
 }
 
 // Een regel in de lijst: klik kiest de bestemming, het sterretje maakt hem (geen) favoriet,
@@ -1105,12 +1189,15 @@ function toggleFav(d) {
 function recentItem(d, { star = false, handle = false } = {}) {
   // Met een eigen naam staat die bovenaan en het hele adres eronder
   const label = favLabel(d);
-  const [first, ...rest] = label ? [label, d.name] : d.name.split(', ');
+  // Een route: van → naar, met het vervoer eronder
+  const route = d.from && `${shortName(d.from)} → ${shortName(d.to)}`;
+  const [first, ...rest] = route ? (label ? [label, route + ' · ' + MODE_LABEL[d.mode]] : [route, MODE_LABEL[d.mode] || ''])
+    : label ? [label, d.name] : d.name.split(', ');
   const li = document.createElement('li');
   li.className = 'recent';
   const fav = isFav(d);
   li.innerHTML = '<div class="row">' + (handle ? '<span class="grip" aria-label="Verslepen"><i class="ti ti-grip-vertical" aria-hidden="true"></i></span>'
-    : `<i class="ti ${fav && !star ? 'ti-star' : 'ti-history'}" aria-hidden="true"></i>`)
+    : `<i class="ti ${fav && !star ? 'ti-star' : route ? 'ti-route' : 'ti-history'}" aria-hidden="true"></i>`)
     + '<div class="rtext"><div class="r1"></div><div class="r2"></div></div></div>';
   li.querySelector('.r1').textContent = first;
   li.querySelector('.r2').textContent = rest.join(', ');
@@ -1183,6 +1270,7 @@ function makeDraggable(li, grip) {
 }
 
 function chooseRecent(d) {
+  if (d.from) { openRoute(d); return; }
   streetCtx = null;
   field().value = d.name;
   field().blur();
@@ -1205,20 +1293,27 @@ function hereItem() {
   return li;
 }
 
-// Bewaarde route: openen toont het overzicht met Van en Naar ingevuld
-function routeItem(r) {
+// Opgeslagen wandeling: openen toont het overzicht met de bewaarde route, ook zonder bereik
+function walkItem(w) {
   const li = document.createElement('li');
   li.className = 'recent';
-  li.innerHTML = '<div class="row"><i class="ti ti-route" aria-hidden="true"></i><div class="rtext"><div class="r1"></div><div class="r2"></div></div></div>';
-  const short = d => favLabel(d) || d.name.split(', ')[0];
-  li.querySelector('.r1').textContent = `${short(r.from)} → ${short(r.to)}`;
-  li.querySelector('.r2').textContent = MODE_LABEL[r.mode] || '';
-  li.addEventListener('click', () => { if (!li.dataset.swiped) openRoute(r); });
-  swipeable(li, 'Verwijderen', () => swipeAway(li, () => {
-    saveRoutes(loadRoutes().filter(x => routeKey(x) !== routeKey(r)));
-    showRecent();
-  }));
+  li.innerHTML = '<div class="row"><i class="ti ti-walk" aria-hidden="true"></i><div class="rtext"><div class="r1"></div><div class="r2"></div></div>'
+    + '<i class="ti ti-download offl" aria-label="Offline beschikbaar"></i></div>';
+  li.querySelector('.r1').textContent = `${shortName(w.from)} → ${shortName(w.to)}`;
+  li.querySelector('.r2').textContent = `${String(w.km).replace('.', ',')} km` + (w.relief ? ' · met 3D-reliëf' : '');
+  li.addEventListener('click', () => { if (!li.dataset.swiped) openWalk(w); });
+  swipeable(li, 'Verwijderen', () => swipeAway(li, () => { deleteWalk(w); showRecent(); }));
   return li;
+}
+
+// Sta je bij het beginpunt, dan navigeer je meteen vanaf je eigen positie
+let walkPick = null;
+async function openWalk(w) {
+  const nav = await walkNav(w);
+  if (!nav) { toast('Deze route is niet meer opgeslagen'); deleteWalk(w); showRecent(); return; }
+  const near = state.fix && dist([state.fix.lon, state.fix.lat], nav.shape[0]) < 300;
+  walkPick = { to: w.to, nav };
+  openRoute({ from: near ? null : w.from, to: w.to, mode: 'pedestrian' });
 }
 
 function showFrom() {
@@ -1228,7 +1323,7 @@ function showFrom() {
 
 function openRoute(r) {
   origin = r.from;
-  $('qfrom').value = r.from.name;
+  $('qfrom').value = r.from ? r.from.name : '';
   $('q').value = r.to.name;
   showFrom();
   setField('to');
@@ -1273,9 +1368,9 @@ function showRecent() {
   $('pick').hidden = listTab !== 'map';
   if (listTab === 'map') { showPickMap(); return; }
   if (listTab === 'routes') {
-    const routes = loadRoutes();
-    if (!routes.length) ul.innerHTML = '<li class="empty">Nog geen routes. Tik op het blauwe beginpunt in het routeoverzicht om een eigen vertrekpunt te kiezen.</li>';
-    for (const r of routes) ul.appendChild(routeItem(r));
+    const walks = loadWalks();
+    if (!walks.length) ul.innerHTML = '<li class="empty">Nog geen opgeslagen wandelroutes. Start een route met Lopen; de kaart voor onderweg wordt dan opgeslagen en de route verschijnt hier.</li>';
+    for (const w of walks) ul.appendChild(walkItem(w));
     return;
   }
   const fav = listTab === 'fav';
@@ -1314,6 +1409,7 @@ function openSearch() {
   origin = null;
   setField('to');
   pending = null;
+  walkPick = null;
   streetCtx = null;
   firstResult = null;
   firstRecent = null;
@@ -1662,8 +1758,10 @@ async function showPreview(dest, note) {
     } else {
       if (!state.fix && !origin) throw new Error('Nog geen GPS-positie');
       noRoute('Route berekenen…');
-      // Snelste route plus maximaal twee alternatieven
-      routes = await fetchRoutes(dest, origin, 2);
+      // Opgeslagen wandeling: de bewaarde route, zonder internet. Anders de snelste plus
+      // maximaal twee alternatieven
+      const w = walkPick;
+      routes = w && w.to.name === dest.name && travelMode === 'pedestrian' ? [w.nav] : await fetchRoutes(dest, origin, 2);
       if (seq !== previewSeq) return;
       const r = routes[0];
       previewNav = r;
@@ -1734,13 +1832,12 @@ async function confirmPick() {
 function confirmPreview() {
   if (!pending) return;
   endView();
-  if (previewNav && travelMode === 'pedestrian') preloadWalk(previewNav);
   const dest = pending;
-  if (!dest.here) saveRecent({ lat: dest.lat, lon: dest.lon, name: dest.name });
+  if (previewNav && travelMode === 'pedestrian') preloadWalk(previewNav, origin, dest);
+  if (!dest.here) saveRecent(origin && previewNav ? routeEntry(origin, dest, travelMode) : place(dest));
   closeSearch();
   // Eigen vertrekpunt: de route alleen tonen, niet navigeren vanaf je huidige positie
   if (origin && previewNav) {
-    if (!dest.here) saveRoute(origin, dest, travelMode);
     showConcept({ nav: previewNav, origin, dest, mode: travelMode });
     previewNav = null;
     return;
@@ -1753,7 +1850,6 @@ function confirmPreview() {
     state.nav = previewNav;
     state.navStart = previewNav.shape[0];
     previewNav = null;
-    state.barOn = false;
     state.lastRouteAt = Date.now();
     if (DEMO) demo.along = 0;
     setMode('nav');
@@ -1768,7 +1864,7 @@ function confirmPreview() {
 function viewPreview() {
   if (!pending) return;
   const dest = pending;
-  if (!dest.here) saveRecent({ lat: dest.lat, lon: dest.lon, name: dest.name });
+  if (!dest.here) saveRecent(place(dest));
   closeSearch();
   stopFollowing();
   // Onderin alleen naam en adres, met het potloodje om alsnog een route te plannen
@@ -1792,8 +1888,13 @@ function viewPreview() {
 function flyToView() {
   if (!viewDest) return;
   stopFollowing();
-  map.flyTo({ center: [viewDest.lon, viewDest.lat], zoom: 16, pitch: state.pitch,
-    padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: 1500 });
+  const at = [viewDest.lon, viewDest.lat];
+  const cam = { center: at, zoom: 16, pitch: state.pitch, padding: { top: 0, bottom: 0, left: 0, right: 0 } };
+  // Ver weg: meteen springen. Een vlucht laadt onderweg op elk zoomniveau kaarttegels
+  // die je nauwelijks ziet, en de plek zelf komt dan pas als laatste binnen.
+  const c = map.getCenter();
+  if (dist([c.lng, c.lat], at) > 15000) map.jumpTo(cam);
+  else map.flyTo({ ...cam, duration: 1200 });
 }
 
 // Terug naar je eigen positie of een route gestart: het bekijken stopt
@@ -1980,7 +2081,6 @@ const fetchRoute = async (dest, start = null) => (await fetchRoutes(dest, start)
 async function startRoute(dest) {
   if (!state.fix) { toast('Nog geen GPS-positie. Probeer het zo opnieuw.'); return; }
   state.dest = dest;
-  state.barOn = false;
   state.routing = true;
   state.lastRouteAt = Date.now();
   toast('Route berekenen…', 2000);
@@ -2019,7 +2119,6 @@ function stopRoute() {
   state.navStart = null;
   drawRouteEnds();
   state.dest = null;
-  state.barOn = false;
   clearConcept();
   setRouteLine([]);
   setMode('idle');
@@ -2051,7 +2150,6 @@ function showConcept(c) {
   setRouteLine([]);
   state.concept = c;
   state.dest = c.dest;
-  state.barOn = false;
   drawConcept();
   stopFollowing();
   const [a, b] = c.nav.shape;
@@ -2082,6 +2180,7 @@ function setMode(mode) {
   $('bottom-idle').hidden = nav;
   // Tijdens het bekijken van een plek blijft alleen dat paneel staan
   if (viewDest) $('bottom-nav').hidden = $('bottom-idle').hidden = true;
+  renderBar();
 }
 
 // Valhalla-manoeuvretypes -> korte Nederlandse tekst en icoon
