@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '33';
+const VERSION = '34';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -143,7 +143,12 @@ const isMapTile = u => /\/planet\/[^/]+\/\d+\/\d+\/\d+\.pbf$|\/terrarium\/\d+\/\
 let mapCache = null;
 const openMapCache = () => mapCache || (mapCache = caches.open(MAP_CACHE).catch(() => null));
 const storedTiles = new Set();
-openMapCache().then(c => c && c.keys()).then(keys => { for (const r of keys || []) if (isMapTile(r.url)) storedTiles.add(r.url); }).catch(() => {});
+const storedReady = openMapCache().then(c => c && c.keys())
+  .then(keys => { for (const r of keys || []) if (isMapTile(r.url)) storedTiles.add(r.url); }).catch(() => {});
+
+// Kaarttegels haalt MapLibre zelf op, op de achtergrond (snel). Alleen tegels die langs een
+// wandelroute zijn opgeslagen gaan via 'offline://', zodat ze uit de opslag komen.
+const transformRequest = url => (storedTiles.has(url) ? { url: toOffline(url) } : undefined);
 
 // Stijlbestanden, symbolen en letters per sessie in het geheugen: elke nieuwe (kleine) kaart
 // hoeft er dan niet opnieuw op te wachten
@@ -172,8 +177,6 @@ async function loadMapFile(url, type) {
   if (!res.ok) throw new Error(`Kaartbestand niet gevonden (${res.status})`);
   if (type === 'json') {
     const data = await res.json();
-    // De tegeladressen uit de TileJSON ook via 'offline://'
-    if (Array.isArray(data.tiles)) data.tiles = data.tiles.map(toOffline);
     return data;
   }
   return res.arrayBuffer();
@@ -182,6 +185,7 @@ async function loadMapFile(url, type) {
 maplibregl.addProtocol('offline', async params => {
   const url = params.url.replace(/^offline:\/\//, 'https://');
   if (isMapTile(url)) return { data: await loadMapFile(url, params.type) };
+  // Stijl, symbolen en letters: één keer per sessie ophalen
   const key = params.type + ' ' + url;
   if (!memo.has(key)) memo.set(key, loadMapFile(url, params.type).catch(e => { memo.delete(key); throw e; }));
   const data = await memo.get(key);
@@ -211,9 +215,9 @@ function corridorTiles(nav, z) {
   return [...keys].map(k => k.split('/').map(Number));
 }
 
-// Bestanden opslaan, vier tegelijk; wat er al is wordt overgeslagen.
+// Bestanden opslaan; wat er al is wordt overgeslagen.
 // Geeft ook terug hoeveel er niet gelukt zijn.
-async function storeAll(cacheName, urls) {
+async function storeAll(cacheName, urls, parallel = 2) {
   const cache = await caches.open(cacheName);
   let i = 0, missing = 0;
   const next = async () => {
@@ -229,7 +233,8 @@ async function storeAll(cacheName, urls) {
       } catch (e) { missing++; /* volgende keer opnieuw */ }
     }
   };
-  await Promise.all([next(), next(), next(), next()]);
+  // Twee tegelijk: de kaart die je op dat moment bekijkt gaat voor
+  await Promise.all(Array.from({ length: parallel }, next));
   return { cache, missing };
 }
 
@@ -272,6 +277,13 @@ async function preloadMap(nav, relief) {
 async function preloadWalk(nav, from, to) {
   try { await caches.open(MAP_CACHE); } catch (e) { return; }
   const relief = mapKind === 'terrain';
+  // Eerst de kaart die je nu ziet laten laden, dan pas opslaan voor onderweg
+  await new Promise(r => {
+    const t0 = Date.now();
+    const ck = () => { let ok = false; try { ok = map.isSourceLoaded('openmaptiles'); } catch (e) { /* nog niet */ }
+      if (ok || Date.now() - t0 > 8000) r(); else setTimeout(ck, 300); };
+    setTimeout(ck, 500);
+  });
   toast('Kaart voor onderweg opslaan…', 3000);
   const [mapMissing, trailMissing] = await Promise.all([preloadMap(nav, relief).catch(() => Infinity), preloadTrails(nav).catch(() => Infinity)]);
   const km = fmtDist(Math.min(80000, nav.total));
@@ -387,7 +399,7 @@ try { if (MAP_KINDS.includes(localStorage.getItem('mapKind'))) mapKind = localSt
 // Tot zoomniveau 13 (circa 12 m per pixel): scherp genoeg voor reliëf en de helft lichter
 // om onderweg op te slaan dan niveau 14. Loopt via offline:// zodat het zonder bereik werkt.
 const DEM_URL = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png';
-const DEM = { type: 'raster-dem', tiles: [toOffline(DEM_URL)], encoding: 'terrarium', tileSize: 256, maxzoom: 13 };
+const DEM = { type: 'raster-dem', tiles: [DEM_URL], encoding: 'terrarium', tileSize: 256, maxzoom: 13 };
 // Luchtfoto van PDOK: open data, alleen Nederland
 const PHOTO = { type: 'raster', tiles: ['https://service.pdok.nl/hwh/luchtfotorgb/wmts/v1_0/Actueel_orthoHR/EPSG:3857/{z}/{x}/{y}.jpeg'],
   tileSize: 256, maxzoom: 19, bounds: [3.2, 50.7, 7.3, 53.6] };
@@ -544,10 +556,12 @@ async function updateTrails(m) {
     if (m.getLayoutProperty(id, 'visibility') !== show) m.setLayoutProperty(id, 'visibility', show);
   }
   if (show === 'none') return;
-  const b = m.getBounds();
+  // Alleen het gebied rond het midden (1 km naar elke kant). De randen van het beeld tellen
+  // niet mee: bij een gekantelde 3D-kaart reiken die tot de horizon, tientallen kilometers ver.
+  const c = m.getCenter(), dLat = 1000 / 111320, dLon = dLat / Math.cos(rad(c.lat));
   const keys = [];
-  for (let x = tileX(b.getWest()); x <= tileX(b.getEast()); x++) {
-    for (let y = tileY(b.getNorth()); y <= tileY(b.getSouth()); y++) keys.push([x, y]);
+  for (let x = tileX(c.lng - dLon); x <= tileX(c.lng + dLon); x++) {
+    for (let y = tileY(c.lat + dLat); y <= tileY(c.lat - dLat); y++) keys.push([x, y]);
   }
   // Alleen opnieuw tekenen als er andere tegels in beeld komen (de kaart beweegt elke seconde mee)
   const key = keys.join(';');
@@ -560,17 +574,34 @@ async function updateTrails(m) {
   if (src && m._trailKey === key) src.setData({ type: 'FeatureCollection', features });
 }
 
+// Iets doen zodra de kaarttegels in beeld binnen zijn. Niet via 'idle': tijdens het
+// navigeren beweegt de kaart elke seconde mee en komt die nooit.
+function onSettled(m, fn) {
+  let timer = null;
+  const check = () => {
+    timer = null;
+    let ready = false;
+    try { ready = m.isStyleLoaded() && m.isSourceLoaded('openmaptiles'); } catch (e) { /* stijl nog niet klaar */ }
+    if (ready) fn(); else timer = setTimeout(check, 300);
+  };
+  const kick = () => { if (!timer) timer = setTimeout(check, 200); };
+  m.on('moveend', kick);
+  m.on('idle', kick);
+  m.on('sourcedata', e => { if (e.tile) kick(); });
+}
+
+// Eerst de gewone kaart, dan de wandelroutes
 function watchTrails(m) {
-  m.on('style.load', () => { m._trailKey = null; updateTrails(m); });
-  m.on('moveend', () => updateTrails(m));
+  m.on('style.load', () => { m._trailKey = null; });
+  onSettled(m, () => updateTrails(m));
 }
 
 // Soorten wandelroutes aan of uit; geldt voor alle kaarten
 function setTrailType(key, on) {
   trailOff = on ? trailOff.filter(k => k !== key) : [...new Set([...trailOff, key])];
   try { localStorage.setItem('trailOff', JSON.stringify(trailOff)); } catch (e) { /* geen opslag */ }
-  for (const m of [map, pmap, pickmap]) {
-    if (!m || !m.getLayer('trails')) continue;
+  for (const m of [map]) {
+    if (!m.getLayer('trails')) continue;
     m.setFilter('trails', trailFilter());
     m.setFilter('trails-label', ['all', trailFilter(), ['!=', ['get', 'ref'], '']]);
   }
@@ -627,19 +658,22 @@ function addPublicLayer(m) {
 }
 
 // Opnieuw zoeken zodra er nieuwe kaarttegels binnen zijn
+// Pas als de kaart klaar is met laden, en alleen ingezoomd (vanaf 15) waar je gebouwen ziet:
+// het doorzoeken van alle gebouwen is zwaar en mag het laden niet ophouden
 function watchPublicBuildings(m) {
-  let timer;
+  let fresh = false;
   m.on('style.load', () => addPublicLayer(m));
-  m.on('sourcedata', e => {
-    if (e.sourceId !== 'openmaptiles' || !e.tile) return;
-    clearTimeout(timer);
-    timer = setTimeout(() => findPublicBuildings(m), 400);
+  m.on('sourcedata', e => { if (e.sourceId === 'openmaptiles' && e.tile) fresh = true; });
+  onSettled(m, () => {
+    if (!fresh || m.getZoom() < 15) return;
+    fresh = false;
+    findPublicBuildings(m);
   });
 }
 
 // Geheugen sparen: scherpte maximaal 2x en een beperkte voorraad kaarttegels
 const PIXEL_RATIO = Math.min(devicePixelRatio || 1, 2);
-const SMALL_MAP = { pixelRatio: PIXEL_RATIO, maxTileCacheSize: 30 };
+const SMALL_MAP = { pixelRatio: PIXEL_RATIO, maxTileCacheSize: 30, transformRequest };
 
 // Kaart half gekanteld: 50% van de maximale kanteling (60°) geeft wat perspectief
 const PITCH = 30;
@@ -648,6 +682,7 @@ const map = new maplibregl.Map({
   style: theme() === 'dark' ? PLACEHOLDER_DARK : PLACEHOLDER_LIGHT,
   pixelRatio: PIXEL_RATIO,
   maxTileCacheSize: 80,
+  transformRequest,
   center: [5.1214, 52.0907],
   zoom: 15,
   pitch: PITCH,
@@ -738,13 +773,13 @@ function drawRouteEnds() {
 
 map.on('style.load', () => { addRouteLayers(map, routeCoords); addRouteEnds(map); addConceptLayers(map); });
 
-// De kleine kaarten (routeoverzicht, plek kiezen) krijgen geen 3D-terrein:
-// drie kaarten met terrein tegelijk kost de iPhone te veel geheugen
+// De kleine kaarten (routeoverzicht, plek kiezen) zijn altijd de gewone kaart: geen reliëf,
+// luchtfoto of wandelroutes. Die maken ze traag en kosten de iPhone veel geheugen.
 async function currentStyle(small = false) {
   const dark = theme() === 'dark';
-  const style = styleFor(await (dark ? darkStyle() : lightStyle()), mapKind, dark);
-  if (small) delete style.terrain;
-  return style;
+  await storedReady;
+  const base = await (dark ? darkStyle() : lightStyle());
+  return small ? base : styleFor(base, mapKind, dark);
 }
 
 function setMapKind(kind) {
@@ -756,8 +791,9 @@ function setMapKind(kind) {
 async function applyTheme() {
   map.setStyle(await currentStyle(), { diff: false });
   const small = await currentStyle(true);
-  if (pmap) pmap.setStyle(small, { diff: false });
-  if (pickmap) pickmap.setStyle(small, { diff: false });
+  // De kleine kaarten veranderen alleen mee met licht en donker
+  if (pmap && pmap._dark !== theme()) { pmap._dark = theme(); pmap.setStyle(small, { diff: false }); }
+  if (pickmap && pickmap._dark !== theme()) { pickmap._dark = theme(); pickmap.setStyle(small, { diff: false }); }
   renderBar();
 }
 darkQuery.addEventListener('change', applyTheme);
@@ -801,6 +837,27 @@ function targetZoom(kmh) {
   return 14.5;
 }
 
+// Grote sprong (verder dan 15 km): eerst alleen de gewone kaart laden, het 3D-reliëf pas
+// als die er staat. Anders wacht alles op hoogtetegels en zie je lang een lege kaart.
+function farJump(to) {
+  const c = map.getCenter();
+  if (dist([c.lng, c.lat], to) <= 15000) return false;
+  if (map.getTerrain()) {
+    map.setTerrain(null);
+    if (map.getLayer('hillshade')) map.setLayoutProperty('hillshade', 'visibility', 'none');
+    const restore = () => {
+      let ready = false;
+      try { ready = map.isSourceLoaded('openmaptiles'); } catch (e) { /* nieuwe stijl: die heeft zijn eigen reliëf */ return; }
+      if (!ready) { setTimeout(restore, 300); return; }
+      if (mapKind !== 'terrain' || !map.getSource('dem') || map.getTerrain()) return;
+      map.setTerrain({ source: 'dem', exaggeration: 1.2 });
+      if (map.getLayer('hillshade')) map.setLayoutProperty('hillshade', 'visibility', 'visible');
+    };
+    setTimeout(restore, 300);
+  }
+  return true;
+}
+
 function updateCamera(p, duration = 1000) {
   // Achter het zoekscherm hoeft de live kaart niet mee te bewegen: dan heeft de
   // routekaart de telefoon voor zich alleen. Bij het sluiten volgt hij meteen weer.
@@ -809,6 +866,7 @@ function updateCamera(p, duration = 1000) {
     marker.setLngLat(p).setRotation(state.heading || 0);
     return;
   }
+  if (farJump(p)) duration = 0;
   state.zoom += (targetZoom(state.speedKmh) - state.zoom) * 0.25;
   const h = map.getContainer().clientHeight;
   map.easeTo({
@@ -1030,7 +1088,7 @@ function setTravelMode(mode) {
   travelMode = mode;
   try { localStorage.setItem('travelMode', mode); } catch (e) { /* geen opslag */ }
   document.querySelectorAll('.modes button').forEach(b => b.setAttribute('aria-checked', String(b.dataset.mode === mode)));
-  for (const m of [map, pmap, pickmap]) updateTrails(m);
+  updateTrails(map);
 }
 
 // Laatst gekozen bestemmingen, per toestel bewaard
@@ -1682,7 +1740,7 @@ async function ensurePreviewMap() {
   if (pmap || $('search').hidden) return;
   pmap = new maplibregl.Map({ container: 'pmap', style, interactive: false, attributionControl: false,
     center: state.fix ? [state.fix.lon, state.fix.lat] : [5.1214, 52.0907], zoom: 12, ...SMALL_MAP });
-  watchTrails(pmap);
+  pmap._dark = theme();
   pmap.on('style.load', () => {
     const dark = theme() === 'dark';
     addRouteLayers(pmap, []);
@@ -1746,17 +1804,14 @@ async function showPreview(dest, note) {
     return;
   }
   try {
-    const n = state.nav, c = state.concept;
+    const c = state.concept;
     let coords, dist, time, routes = null;
     if (c && dest === c.dest && origin === c.origin && c.mode === travelMode) {
       previewNav = c.nav;
       coords = c.nav.shape; dist = c.nav.total; time = c.nav.time;
-    } else if (n && dest === state.dest && n.mode === travelMode && !origin) {
-      // Huidige route: alleen het stuk dat nog komt
-      coords = routeCoords.length ? routeCoords : n.shape;
-      dist = Math.max(0, n.total - n.along);
-      time = n.time * (n.total ? dist / n.total : 0);
     } else {
+      // Ook bij de route die al loopt opnieuw rekenen, vanaf waar je nu bent: dan zie je
+      // na een wissel van vervoer altijd een verse route met alternatieven
       if (!state.fix && !origin) throw new Error('Nog geen GPS-positie');
       noRoute('Route berekenen…');
       // Opgeslagen wandeling: de bewaarde route, zonder internet. Anders de snelste plus
@@ -1797,8 +1852,7 @@ async function showPickMap() {
     pickmap = new maplibregl.Map({ container: 'pickmap', style: await currentStyle(true), center, zoom, ...SMALL_MAP,
       attributionControl: false, dragRotate: false, pitchWithRotate: false });
     pickmap.touchZoomRotate.disableRotation();
-    watchPublicBuildings(pickmap);
-    watchTrails(pickmap);
+    pickmap._dark = theme();
   } else {
     pickmap.resize();
     pickmap.jumpTo({ center, zoom });
@@ -1847,9 +1901,11 @@ function confirmPreview() {
   // Echte navigatie: de live kaart volgt meteen weer je eigen positie
   follow();
   if (previewNav) {
+    // Zelfde bestemming opnieuw berekend: het blauwe beginpunt blijft waar je vertrok
+    const same = state.nav && state.dest && state.dest.name === dest.name;
+    state.navStart = same && state.navStart || previewNav.shape[0];
     state.dest = dest;
     state.nav = previewNav;
-    state.navStart = previewNav.shape[0];
     previewNav = null;
     state.lastRouteAt = Date.now();
     if (DEMO) demo.along = 0;
@@ -1893,8 +1949,7 @@ function flyToView() {
   const cam = { center: at, zoom: 16, pitch: state.pitch, padding: { top: 0, bottom: 0, left: 0, right: 0 } };
   // Ver weg: meteen springen. Een vlucht laadt onderweg op elk zoomniveau kaarttegels
   // die je nauwelijks ziet, en de plek zelf komt dan pas als laatste binnen.
-  const c = map.getCenter();
-  if (dist([c.lng, c.lat], at) > 15000) map.jumpTo(cam);
+  if (farJump(at)) map.jumpTo(cam);
   else map.flyTo({ ...cam, duration: 1200 });
 }
 
@@ -2156,7 +2211,7 @@ function showConcept(c) {
   const [a, b] = c.nav.shape;
   const h = map.getContainer().clientHeight;
   map.easeTo({ center: a, bearing: b ? bearing(a, b) : 0, zoom: 15.5, pitch: state.pitch,
-    padding: { top: Math.round(h * 0.4), bottom: 0, left: 0, right: 0 }, duration: 800 });
+    padding: { top: Math.round(h * 0.4), bottom: 0, left: 0, right: 0 }, duration: farJump(a) ? 0 : 800 });
   $('eta').textContent = fmtClock(new Date(Date.now() + c.nav.time * 1000));
   $('remain-time').textContent = fmtDuration(c.nav.time);
   $('remain-dist').textContent = fmtDist(c.nav.total);
