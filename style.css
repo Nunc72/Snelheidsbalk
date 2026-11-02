@@ -132,12 +132,14 @@ body.nobar .instr:not([hidden]) ~ .toast { top: calc(env(safe-area-inset-top) + 
 .roundbtn:disabled { opacity: .35; }
 .stopbig { background: #E5484D; }
 .okbig { background: #008000; }
+.viewbig { background: #1F6FE0; }
+.viewpin { width: 22px; height: 22px; border-radius: 50%; background: #E5484D; border: 4px solid #fff; box-shadow: 0 1px 6px rgba(0,0,0,.3); }
 /* Kaartsoort: klein tandwiel tussen de rode en de groene knop */
-.mapset { position: relative; }
-.setbtn { width: 44px; height: 44px; border-radius: 50%; background: #F1F0EC; color: #3a3a3c; display: flex; align-items: center; justify-content: center; }
+.mapset { position: relative; flex: none; }
+.setbtn { width: 40px; height: 40px; border-radius: 50%; background: #F1F0EC; color: #3a3a3c; display: flex; align-items: center; justify-content: center; }
 .setbtn .ti { font-size: 24px; }
 .mapmenu {
-  position: absolute; bottom: 54px; left: 50%; transform: translateX(-50%); z-index: 3;
+  position: absolute; top: 48px; right: 0; z-index: 10;
   background: #fff; border-radius: 14px; box-shadow: 0 4px 20px rgba(0,0,0,.18); padding: 6px; min-width: 170px; width: max-content; max-width: calc(100vw - 32px);
 }
 .mapmenu button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 12px; border-radius: 9px; font-size: 16px; text-align: left; }
@@ -172,12 +174,13 @@ body.nobar .instr:not([hidden]) ~ .toast { top: calc(env(safe-area-inset-top) + 
 .alttag.sel { color: #1F6FE0; }
 .alttag .ti { font-size: 14px; color: #2E9E4F; }
 .af { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; border: 0; padding: 0; }
-.modes { display: flex; gap: 8px; padding: 10px 16px; border-bottom: 1px solid #eee; }
+.moderow { display: flex; gap: 8px; align-items: center; padding: 10px 16px; border-bottom: 1px solid #eee; }
+.modes { flex: 1; display: flex; gap: 8px; }
 .modes button { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 9px 0; border-radius: 10px; background: #F1F0EC; color: #3a3a3c; font-size: 15px; }
 .modes button[aria-checked="true"] { background: #1F6FE0; color: #fff; }
 .modes .ti { font-size: 20px; }
 /* Vervoer pas tonen als er een bestemming gekozen is; de tabs alleen bij een leeg zoekveld */
-#search:has(#preview[hidden]) .modes { display: none; }
+#search:has(#preview[hidden]) .moderow { display: none; }
 #search:not(:has(#preview[hidden])) .tabs,
 #search:not([data-field="from"]):has(#q:not(:placeholder-shown)) .tabs,
 #search[data-field="from"]:has(#qfrom:not(:placeholder-shown)) .tabs { display: none; }
@@ -278,7 +281,7 @@ body.nobar .instr:not([hidden]) ~ .toast { top: calc(env(safe-area-inset-top) + 
   .sheet-head { border-bottom-color: #2c2c2e; }
   .sheet-head input { background: #1c1c1e; color: #f2f2f7; }
   .sheet-head button { color: #5EA0FF; }
-    .modes { border-bottom-color: #2c2c2e; }
+    .moderow { border-bottom-color: #2c2c2e; }
   .modes button { background: #1c1c1e; color: #c7c7cc; }
   .tabs { border-bottom-color: #2c2c2e; }
   .tabs button { color: #8e8e93; }

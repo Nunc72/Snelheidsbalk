@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '24';
+const VERSION = '25';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -472,6 +472,7 @@ const markerEl = document.createElement('div');
 markerEl.className = 'car marker';
 markerEl.innerHTML = '<div><div></div></div>';
 const marker = new maplibregl.Marker({ element: markerEl, rotationAlignment: 'map' });
+let viewMarker = null;   // rode stip op een bestemming die je alleen bekijkt (verrekijker)
 
 let routeCoords = [];
 const lineFeature = coords => ({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: {} });
@@ -546,6 +547,7 @@ map.on('zoomstart', e => { if (e.originalEvent) stopFollowing(); });
 map.on('rotatestart', e => { if (e.originalEvent) stopFollowing(); });
 
 function follow() {
+  if (viewMarker) { viewMarker.remove(); viewMarker = null; }
   state.following = true;
   $('car').hidden = false;
   $('recenter').hidden = true;
@@ -1506,6 +1508,7 @@ async function confirmPick() {
 
 function confirmPreview() {
   if (!pending) return;
+  if (viewMarker) { viewMarker.remove(); viewMarker = null; }
   const dest = pending;
   if (!dest.here) saveRecent({ lat: dest.lat, lon: dest.lon, name: dest.name });
   closeSearch();
@@ -1531,6 +1534,24 @@ function confirmPreview() {
   }
 }
 
+// Verrekijker: naar de bestemming op de live kaart, zonder navigatie en zonder routelijn.
+// Met de richtknop ga je terug naar je eigen positie.
+function viewPreview() {
+  if (!pending) return;
+  const dest = pending;
+  if (!dest.here) saveRecent({ lat: dest.lat, lon: dest.lon, name: dest.name });
+  closeSearch();
+  stopFollowing();
+  const at = [dest.lon, dest.lat];
+  if (!viewMarker) {
+    const el = document.createElement('div');
+    el.className = 'viewpin';
+    viewMarker = new maplibregl.Marker({ element: el });
+  }
+  viewMarker.setLngLat(at).addTo(map);
+  map.flyTo({ center: at, zoom: 16, pitch: state.pitch, padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: 1500 });
+}
+
 function submitSearch() {
   if (firstRecent && $('preview').hidden) chooseRecent(firstRecent);
   else if (firstResult && !$('results').hidden && $('results').children.length) choose(firstResult);
@@ -1542,6 +1563,7 @@ $('edit').addEventListener('click', openSearch);
 $('qback').addEventListener('click', () => { setTravelMode(modeAtOpen); closeSearch(); });
 $('stop').addEventListener('click', () => { stopRoute(); closeSearch(); });
 $('qok').addEventListener('click', confirmPreview);
+$('qview').addEventListener('click', viewPreview);
 
 // Kaartsoort kiezen met het tandwiel tussen de rode en de groene knop
 function toggleMapMenu(open) {
