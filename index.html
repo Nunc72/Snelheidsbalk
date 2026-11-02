@@ -15,7 +15,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
-<link rel="stylesheet" href="style.css?v=25">
+<link rel="stylesheet" href="style.css?v=26">
 </head>
 <body>
 <div id="map"></div>
@@ -51,6 +51,13 @@
   <div><div class="eta" id="eta">--:--</div><div class="lbl">aankomst</div></div>
   <div class="mid"><div class="min" id="remain-time">-- min</div><div class="lbl" id="remain-dist">-- km</div></div>
   <button class="edit" id="edit" aria-label="Bestemming wijzigen"><i class="ti ti-pencil" aria-hidden="true"></i></button>
+  </div>
+</div>
+
+<div class="card bottom" id="bottom-view" hidden>
+  <div class="nav">
+    <div class="vtext"><div class="vname" id="vname"></div><div class="lbl vaddr" id="vaddr"></div></div>
+    <button class="edit" id="vedit" aria-label="Bestemming wijzigen"><i class="ti ti-pencil" aria-hidden="true"></i></button>
   </div>
 </div>
 
@@ -129,6 +136,6 @@
 </div>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-<script src="app.js?v=25"></script>
+<script src="app.js?v=26"></script>
 </body>
 </html>

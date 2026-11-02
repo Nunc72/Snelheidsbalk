@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '25';
+const VERSION = '26';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -473,6 +473,7 @@ markerEl.className = 'car marker';
 markerEl.innerHTML = '<div><div></div></div>';
 const marker = new maplibregl.Marker({ element: markerEl, rotationAlignment: 'map' });
 let viewMarker = null;   // rode stip op een bestemming die je alleen bekijkt (verrekijker)
+let viewDest = null;     // die bestemming zelf
 
 let routeCoords = [];
 const lineFeature = coords => ({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: {} });
@@ -547,7 +548,7 @@ map.on('zoomstart', e => { if (e.originalEvent) stopFollowing(); });
 map.on('rotatestart', e => { if (e.originalEvent) stopFollowing(); });
 
 function follow() {
-  if (viewMarker) { viewMarker.remove(); viewMarker = null; }
+  endView();
   state.following = true;
   $('car').hidden = false;
   $('recenter').hidden = true;
@@ -1112,7 +1113,8 @@ function updateClear() {
 function openSearch() {
   const navigating = !!(state.nav || state.concept);
   $('search').hidden = false;
-  $('q').value = navigating && state.dest ? state.dest.name : '';
+  const viewing = !navigating && viewDest;
+  $('q').value = navigating && state.dest ? state.dest.name : viewing ? viewDest.name : '';
   $('q-postcode').value = '';
   $('q-city').value = '';
   $('results').innerHTML = '';
@@ -1138,6 +1140,7 @@ function openSearch() {
   }
   updateClear();
   if (navigating) showPreview(state.dest);
+  else if (viewing) showPreview(viewDest);
   else {
     showRecent();
     // Op iOS opent het toetsenbord alleen als focus direct binnen de tik gebeurt
@@ -1508,7 +1511,7 @@ async function confirmPick() {
 
 function confirmPreview() {
   if (!pending) return;
-  if (viewMarker) { viewMarker.remove(); viewMarker = null; }
+  endView();
   const dest = pending;
   if (!dest.here) saveRecent({ lat: dest.lat, lon: dest.lon, name: dest.name });
   closeSearch();
@@ -1542,6 +1545,13 @@ function viewPreview() {
   if (!dest.here) saveRecent({ lat: dest.lat, lon: dest.lon, name: dest.name });
   closeSearch();
   stopFollowing();
+  // Onderin alleen naam en adres, met het potloodje om alsnog een route te plannen
+  viewDest = dest;
+  const [title, ...rest] = withoutPostcode(dest.name).split(', ');
+  $('vname').textContent = title;
+  $('vaddr').textContent = rest.join(', ');
+  $('bottom-view').hidden = false;
+  $('bottom-idle').hidden = $('bottom-nav').hidden = true;
   const at = [dest.lon, dest.lat];
   if (!viewMarker) {
     const el = document.createElement('div');
@@ -1550,6 +1560,15 @@ function viewPreview() {
   }
   viewMarker.setLngLat(at).addTo(map);
   map.flyTo({ center: at, zoom: 16, pitch: state.pitch, padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: 1500 });
+}
+
+// Terug naar je eigen positie of een route gestart: het bekijken stopt
+function endView() {
+  if (viewMarker) { viewMarker.remove(); viewMarker = null; }
+  if (!viewDest) return;
+  viewDest = null;
+  $('bottom-view').hidden = true;
+  setMode(state.nav ? 'nav' : state.concept ? 'concept' : 'idle');
 }
 
 function submitSearch() {
@@ -1564,6 +1583,16 @@ $('qback').addEventListener('click', () => { setTravelMode(modeAtOpen); closeSea
 $('stop').addEventListener('click', () => { stopRoute(); closeSearch(); });
 $('qok').addEventListener('click', confirmPreview);
 $('qview').addEventListener('click', viewPreview);
+$('vedit').addEventListener('click', openSearch);
+
+// Richtknop altijd los boven het onderste paneel, hoe hoog dat ook is (kleine iPhones)
+const bottomCards = ['bottom-idle', 'bottom-nav', 'bottom-view'].map($);
+function placeRecenter() {
+  const h = Math.max(0, ...bottomCards.filter(c => !c.hidden).map(c => c.offsetHeight));
+  document.documentElement.style.setProperty('--bottomh', h + 'px');
+}
+const bottomWatch = new ResizeObserver(placeRecenter);
+bottomCards.forEach(c => bottomWatch.observe(c));
 
 // Kaartsoort kiezen met het tandwiel tussen de rode en de groene knop
 function toggleMapMenu(open) {
@@ -1809,6 +1838,8 @@ function setMode(mode) {
   $('bottom-nav').hidden = !nav;
   $('destlbl').textContent = nav && state.dest ? withoutPostcode(state.dest.name) : '';
   $('bottom-idle').hidden = nav;
+  // Tijdens het bekijken van een plek blijft alleen dat paneel staan
+  if (viewDest) $('bottom-nav').hidden = $('bottom-idle').hidden = true;
 }
 
 // Valhalla-manoeuvretypes -> korte Nederlandse tekst en icoon

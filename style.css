@@ -107,6 +107,11 @@ body.nobar .instr:not([hidden]) ~ .toast { top: calc(env(safe-area-inset-top) + 
 .lbl { font-size: 14px; color: #6b6b6b; }
 .edit { width: 46px; height: 46px; border-radius: 50%; background: #F1F0EC; color: #1c1c1e; display: flex; align-items: center; justify-content: center; }
 .edit .ti { font-size: 22px; }
+/* Bekeken plek (verrekijker): naam en adres met het potloodje */
+.vtext { min-width: 0; flex: 1; margin-right: 12px; }
+.vname { font-size: 19px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vaddr { margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vaddr:empty { display: none; }
 
 /* Zoekscherm */
 .icon-btn { width: 40px; height: 40px; flex: none; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
@@ -208,7 +213,8 @@ body.nobar .instr:not([hidden]) ~ .toast { top: calc(env(safe-area-inset-top) + 
 
 .recenter {
   position: absolute; right: 16px; z-index: 6;
-  bottom: calc(env(safe-area-inset-bottom) + 120px);
+  /* Altijd los boven het onderste paneel; --bottomh zet app.js op de hoogte daarvan */
+  bottom: calc(env(safe-area-inset-bottom) + 24px + var(--bottomh, 108px));
   width: 52px; height: 52px; border-radius: 50%; background: #fff; color: #1F6FE0;
   display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 10px rgba(0,0,0,.18);
 }
