@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '28';
+const VERSION = '29';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -308,9 +308,56 @@ const tileLat = y => deg(Math.atan(Math.sinh(Math.PI * (1 - 2 * y / 2 ** TRAIL_Z
 const tileLon = x => x / 2 ** TRAIL_Z * 360 - 180;
 
 // Routes in een gebied, belangrijkste eerst (internationaal, nationaal, regionaal, lokaal)
-async function trailRoutes(w, s, e, n) {
+function trailListUrl(w, s, e, n) {
   const bbox = [...toMerc(w, s), ...toMerc(e, n)].map(Math.round).join(',');
-  return (await (await fetch(`${WMT}/list/by_area?bbox=${bbox}&limit=100`)).json()).results || [];
+  return `${WMT}/list/by_area?bbox=${bbox}&limit=100`;
+}
+// Per routetegel: de lijnen en de lijst met routenamen
+const trailTileUrls = (x, y) => [`${WMT}/tiles/${TRAIL_Z}/${x}/${y}.json`,
+  trailListUrl(tileLon(x), tileLat(y + 1), tileLon(x + 1), tileLat(y))];
+
+// Routetegels gaan naar de schijfopslag van de browser (niet het werkgeheugen),
+// zodat vooraf geladen tegels ook zonder bereik werken
+const TRAIL_CACHE = 'trail-tiles-v1';
+async function trailJson(url) {
+  let cache = null;
+  try { cache = await caches.open(TRAIL_CACHE); } catch (e) { /* geen opslag */ }
+  const hit = cache && await cache.match(url);
+  if (hit) return hit.json();
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Wandelroutes laden lukt niet');
+  if (cache) cache.put(url, res.clone()).catch(() => {});
+  return res.json();
+}
+
+// Bij een wandelroute: tegels langs de eerste 80 km alvast opslaan (circa twee dagen lopen)
+async function preloadTrails(nav) {
+  let cache;
+  try { cache = await caches.open(TRAIL_CACHE); } catch (e) { return; }
+  const keys = new Set();
+  const m = 800, dLat = m / 111320;
+  for (let i = 0; i < nav.shape.length && nav.cum[i] <= 80000; i++) {
+    const [lon, lat] = nav.shape[i], dLon = dLat / Math.cos(rad(lat));
+    for (const x of [tileX(lon - dLon), tileX(lon + dLon)]) {
+      for (const y of [tileY(lat + dLat), tileY(lat - dLat)]) keys.add(x + '/' + y);
+    }
+  }
+  let done = 0;
+  for (const key of keys) {
+    const [x, y] = key.split('/').map(Number);
+    for (const url of trailTileUrls(x, y)) {
+      if (await cache.match(url)) continue;
+      try {
+        const res = await fetch(url);
+        if (res.ok) await cache.put(url, res);
+      } catch (e) { /* volgende keer opnieuw */ }
+    }
+    done++;
+  }
+  // Oude tegels opruimen: hooguit 300 bestanden (circa 150 tegels) bewaren
+  const all = await cache.keys();
+  for (const req of all.slice(0, Math.max(0, all.length - 300))) await cache.delete(req);
+  if (done) toast(`Wandelroutes langs ${fmtDist(Math.min(80000, nav.total))} opgeslagen`, 3000);
 }
 
 const trailTiles = new Map();
@@ -318,9 +365,10 @@ function loadTrailTile(x, y) {
   const key = x + '/' + y;
   if (!trailTiles.has(key)) {
     const p = (async () => {
+      const [tileUrl, listUrl] = trailTileUrls(x, y);
       const [tile, routes] = await Promise.all([
-        fetch(`${WMT}/tiles/${TRAIL_Z}/${x}/${y}.json`).then(r => r.json()),
-        trailRoutes(tileLon(x), tileLat(y + 1), tileLon(x + 1), tileLat(y)).catch(() => []),
+        trailJson(tileUrl),
+        trailJson(listUrl).then(d => d.results || []).catch(() => []),
       ]);
       const info = new Map(routes.map(r => [r.id, r]));
       const out = [];
@@ -1554,6 +1602,7 @@ async function confirmPick() {
 function confirmPreview() {
   if (!pending) return;
   endView();
+  if (previewNav && travelMode === 'pedestrian') preloadTrails(previewNav);
   const dest = pending;
   if (!dest.here) saveRecent({ lat: dest.lat, lon: dest.lon, name: dest.name });
   closeSearch();
@@ -1659,17 +1708,16 @@ async function showTrailLegend() {
     // Alleen 3 km rond de bestemming (zonder bestemming: rond het midden van de kaart).
     // De lijst per gebied geeft maximaal 100 routes, dus we kijken ook in de routetegels zelf.
     const at = pending || viewDest || state.dest || (({ lng, lat }) => ({ lon: lng, lat }))(map.getCenter());
-    const dLat = 3000 / 111320, dLon = dLat / Math.cos(rad(at.lat));
-    const [w, s, e, n] = [at.lon - dLon, at.lat - dLat, at.lon + dLon, at.lat + dLat];
-    const routes = await trailRoutes(w, s, e, n);
-    // Een routetegel kan breder zijn dan het gebied: alleen lijnen die er echt in liggen tellen mee
-    const inside = ([x, y]) => x >= w && x <= e && y >= s && y <= n;
-    present = new Set(routes.map(r => r.group));
-    for (let x = tileX(w); x <= tileX(e); x++) {
-      for (let y = tileY(n); y <= tileY(s); y++) {
-        for (const f of await loadTrailTile(x, y).catch(() => [])) {
+    // Elke soort route die door de cirkel van 3 km loopt, ook als er geen knikpunt in ligt
+    const c = [at.lon, at.lat], dLat = 3000 / 111320, dLon = dLat / Math.cos(rad(at.lat));
+    const crosses = l => l.some((p, i) => i && projectOnSegment(c, l[i - 1], p).d <= 3000);
+    present = new Set();
+    for (let x = tileX(at.lon - dLon); x <= tileX(at.lon + dLon); x++) {
+      for (let y = tileY(at.lat + dLat); y <= tileY(at.lat - dLat); y++) {
+        for (const f of await loadTrailTile(x, y)) {
+          if (present.has(f.properties.g)) continue;
           const lines = f.geometry.type === 'LineString' ? [f.geometry.coordinates] : f.geometry.coordinates;
-          if (lines.some(l => l.some(inside))) present.add(f.properties.g);
+          if (lines.some(crosses)) present.add(f.properties.g);
         }
       }
     }
