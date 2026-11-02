@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '26';
+const VERSION = '27';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -1360,7 +1360,7 @@ function drawPreview() {
     features: (routes || []).map((r, i) => ({ ...lineFeature(r.shape), properties: { i } })).filter((_, i) => i !== sel) });
   pmap.getSource('ends').setData(previewEnds(start, dest));
   const all = (routes || []).flatMap(r => r.shape);
-  if (!all.length) all.push(...(coords.length ? coords : [[dest.lon, dest.lat]]));
+  if (!all.length) all.push(...(coords.length ? coords : [start, [dest.lon, dest.lat]].filter(Boolean)));
   const b = all.reduce((bb, c) => bb.extend(c), new maplibregl.LngLatBounds(all[0], all[0]));
   pmap.resize();
   pmap.fitBounds(b, { padding: 36, duration: 0, maxZoom: 16 });
@@ -1414,6 +1414,8 @@ async function ensurePreviewMap() {
   });
 }
 
+const MAX_DIST = { bicycle: 150000, pedestrian: 100000 };
+
 async function showPreview(dest, note) {
   pending = dest;
   firstResult = null;
@@ -1427,6 +1429,20 @@ async function showPreview(dest, note) {
   previewNav = null;
   const seq = ++previewSeq;
   await ensurePreviewMap();
+  // Zonder route: oude lijnen weg, alleen begin- en eindpunt
+  const noRoute = msg => {
+    const from = origin || state.fix;
+    previewData = { coords: [], dest, start: from && [from.lon, from.lat], routes: null, sel: 0, note };
+    drawPreview();
+    $('psum').textContent = msg;
+  };
+  // Fietsen en lopen rekent de routedienst niet verder dan 150 en 100 km hemelsbreed.
+  // Dan geen route en blijft de groene knop uit; de verrekijker werkt wel.
+  const from = origin || state.fix, max = MAX_DIST[travelMode];
+  if (max && from && dist([from.lon, from.lat], [dest.lon, dest.lat]) > max) {
+    noRoute(`Te ver om te ${travelMode === 'bicycle' ? 'fietsen' : 'lopen'} (meer dan ${max / 1000} km)`);
+    return;
+  }
   try {
     const n = state.nav, c = state.concept;
     let coords, dist, time, routes = null;
@@ -1440,6 +1456,7 @@ async function showPreview(dest, note) {
       time = n.time * (n.total ? dist / n.total : 0);
     } else {
       if (!state.fix && !origin) throw new Error('Nog geen GPS-positie');
+      noRoute('Route berekenen…');
       // Snelste route plus maximaal twee alternatieven
       routes = await fetchRoutes(dest, origin, 2);
       if (seq !== previewSeq) return;
@@ -1453,7 +1470,7 @@ async function showPreview(dest, note) {
     previewSummary(note, time, dist);
     $('qok').disabled = false;
   } catch (e) {
-    if (seq === previewSeq) $('psum').textContent = 'Route berekenen lukt niet: ' + e.message;
+    if (seq === previewSeq) noRoute('Route berekenen lukt niet: ' + e.message);
   }
 }
 
@@ -1523,6 +1540,8 @@ function confirmPreview() {
     return;
   }
   clearConcept();
+  // Echte navigatie: de live kaart volgt meteen weer je eigen positie
+  follow();
   if (previewNav) {
     state.dest = dest;
     state.nav = previewNav;
