@@ -108,9 +108,10 @@ body.nobar .instr:not([hidden]) ~ .toast { top: calc(env(safe-area-inset-top) + 
 .edit { width: 46px; height: 46px; border-radius: 50%; background: #F1F0EC; color: #1c1c1e; display: flex; align-items: center; justify-content: center; }
 .edit .ti { font-size: 22px; }
 /* Bekeken plek (verrekijker): naam en adres met het potloodje */
-.vtext { min-width: 0; flex: 1; margin-right: 12px; }
-.vname { font-size: 19px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.vaddr { margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vtext { min-width: 0; flex: 1; margin-right: 12px; text-align: left; display: block; }
+.vtext:active { opacity: .6; }
+.vname { display: block; font-size: 19px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vaddr { display: block; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .vaddr:empty { display: none; }
 
 /* Zoekscherm */

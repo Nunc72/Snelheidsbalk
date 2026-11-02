@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '29';
+const VERSION = '30';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -129,6 +129,111 @@ function toast(msg, ms = 3500) {
 window.addEventListener('error', e => toast('Fout: ' + (e.message || e.type) + (e.lineno ? ` (regel ${e.lineno})` : ''), 10000));
 window.addEventListener('unhandledrejection', e => toast('Fout: ' + (e.reason && e.reason.message || e.reason), 10000));
 
+// ---------- Kaart ook zonder bereik ----------
+// Alle kaartbestanden van OpenFreeMap lopen via het eigen adres 'offline://'. Zo haalt de app
+// ze uit de opslag van de browser als er geen bereik is: stijl, letters en symbolen worden
+// onderweg bewaard, kaarttegels alleen als ze vooraf zijn opgeslagen (langs een wandelroute).
+const MAP_CACHE = 'map-offline-v1';
+const OFM_TILEJSON = 'https://tiles.openfreemap.org/planet';
+const toOffline = u => u.replace(/^https:\/\//, 'offline://');
+const isMapTile = u => /\/planet\/[^/]+\/\d+\/\d+\/\d+\.pbf$/.test(u);
+
+async function mapFetch(url) {
+  let cache = null;
+  try { cache = await caches.open(MAP_CACHE); } catch (e) { /* geen opslag */ }
+  // Letters en tegels veranderen niet: eerst uit de opslag. De rest eerst vers van internet.
+  if (cache && (isMapTile(url) || url.includes('/fonts/'))) {
+    const hit = await cache.match(url);
+    if (hit) return hit;
+  }
+  try {
+    const res = await fetch(url);
+    if (res.ok && cache && !isMapTile(url)) cache.put(url, res.clone()).catch(() => {});
+    return res;
+  } catch (e) {
+    const hit = cache && await cache.match(url);
+    if (hit) return hit;
+    throw e;
+  }
+}
+
+maplibregl.addProtocol('offline', async params => {
+  const res = await mapFetch(params.url.replace(/^offline:\/\//, 'https://'));
+  if (!res.ok) throw new Error(`Kaartbestand niet gevonden (${res.status})`);
+  if (params.type === 'json') {
+    const data = await res.json();
+    // De tegeladressen uit de TileJSON ook via 'offline://'
+    if (Array.isArray(data.tiles)) data.tiles = data.tiles.map(toOffline);
+    return { data };
+  }
+  return { data: await res.arrayBuffer() };
+});
+
+function offlineStyle(style) {
+  style.glyphs = toOffline(style.glyphs);
+  if (typeof style.sprite === 'string') style.sprite = toOffline(style.sprite);
+  const omt = style.sources.openmaptiles;
+  if (omt && omt.url) style.sources.openmaptiles = { ...omt, url: toOffline(omt.url) };
+  return style;
+}
+
+const tileAt = (lon, lat, z) => [Math.floor((lon + 180) / 360 * 2 ** z),
+  Math.floor((1 - Math.log(Math.tan(rad(lat)) + 1 / Math.cos(rad(lat))) / Math.PI) / 2 * 2 ** z)];
+
+// Tegels langs de eerste 80 km van een route (circa twee dagen lopen), 800 m aan weerszijden
+function corridorTiles(nav, z) {
+  const keys = new Set(), dLat = 800 / 111320;
+  for (let i = 0; i < nav.shape.length && nav.cum[i] <= 80000; i++) {
+    const [lon, lat] = nav.shape[i], dLon = dLat / Math.cos(rad(lat));
+    const [x1, y1] = tileAt(lon - dLon, lat + dLat, z), [x2, y2] = tileAt(lon + dLon, lat - dLat, z);
+    for (let x = x1; x <= x2; x++) for (let y = y1; y <= y2; y++) keys.add(x + '/' + y);
+  }
+  return [...keys].map(k => k.split('/').map(Number));
+}
+
+// Bestanden opslaan, vier tegelijk; wat er al is wordt overgeslagen
+async function storeAll(cacheName, urls) {
+  const cache = await caches.open(cacheName);
+  let i = 0;
+  const next = async () => {
+    while (i < urls.length) {
+      const url = urls[i++];
+      if (await cache.match(url)) continue;
+      try {
+        const res = await fetch(url);
+        if (res.ok) await cache.put(url, res);
+      } catch (e) { /* volgende keer opnieuw */ }
+    }
+  };
+  await Promise.all([next(), next(), next(), next()]);
+  return cache;
+}
+
+// De kaart zelf: zoomniveau 10 tot 14 (14 is het scherpste; verder inzoomen gebruikt die tegels),
+// plus de letters van de drie lettertypes
+async function preloadMap(nav) {
+  const tiles = (await (await mapFetch(OFM_TILEJSON)).json()).tiles[0];
+  const urls = [];
+  for (let z = 10; z <= 14; z++) {
+    for (const [x, y] of corridorTiles(nav, z)) urls.push(tiles.replace('{z}', z).replace('{x}', x).replace('{y}', y));
+  }
+  for (const font of ['Noto Sans Regular', 'Noto Sans Bold', 'Noto Sans Italic']) {
+    for (const range of ['0-255', '256-511', '8192-8447']) urls.push(`https://tiles.openfreemap.org/fonts/${font}/${range}.pbf`);
+  }
+  const cache = await storeAll(MAP_CACHE, urls);
+  // Hooguit 1500 kaarttegels bewaren (circa 60 MB); de oudste eruit
+  const stored = (await cache.keys()).filter(r => isMapTile(r.url));
+  for (const r of stored.slice(0, Math.max(0, stored.length - 1500))) await cache.delete(r);
+}
+
+// Bij een wandelroute: kaart en wandelroutes langs de eerste 80 km opslaan
+async function preloadWalk(nav) {
+  try { await caches.open(MAP_CACHE); } catch (e) { return; }
+  toast('Kaart voor onderweg opslaan…', 3000);
+  await Promise.all([preloadMap(nav).catch(() => {}), preloadTrails(nav).catch(() => {})]);
+  toast(`Kaart en wandelroutes voor ${fmtDist(Math.min(80000, nav.total))} opgeslagen`, 3000);
+}
+
 // ---------- Kaart ----------
 // Donkere kaart: de standaard 'dark'-stijl is bijna zwart. Deze kleuren maken hem
 // iets lichter, met beter zichtbare straten, groene parken en blauwig water.
@@ -169,7 +274,7 @@ const PLACEHOLDER_DARK = { version: 8, sources: {}, layers: [{ id: 'background',
 let darkStyleCache = null;
 async function darkStyle() {
   if (darkStyleCache) return darkStyleCache;
-  const style = await (await fetch(STYLES.dark)).json();
+  const style = offlineStyle(await (await mapFetch(STYLES.dark)).json());
   for (const layer of style.layers) {
     const paint = DARK_PAINT[layer.id];
     if (paint) layer.paint = { ...layer.paint, ...paint };
@@ -203,7 +308,7 @@ const PLACEHOLDER_LIGHT = { version: 8, sources: {}, layers: [{ id: 'background'
 let lightStyleCache = null;
 async function lightStyle() {
   if (lightStyleCache) return lightStyleCache;
-  const style = await (await fetch(STYLES.light)).json();
+  const style = offlineStyle(await (await mapFetch(STYLES.light)).json());
   for (const layer of style.layers) {
     const paint = LIGHT_PAINT[layer.id];
     if (paint) layer.paint = { ...layer.paint, ...paint };
@@ -330,34 +435,12 @@ async function trailJson(url) {
   return res.json();
 }
 
-// Bij een wandelroute: tegels langs de eerste 80 km alvast opslaan (circa twee dagen lopen)
+// Wandelroutes langs de eerste 80 km; hooguit 300 bestanden (circa 150 tegels) bewaren
 async function preloadTrails(nav) {
-  let cache;
-  try { cache = await caches.open(TRAIL_CACHE); } catch (e) { return; }
-  const keys = new Set();
-  const m = 800, dLat = m / 111320;
-  for (let i = 0; i < nav.shape.length && nav.cum[i] <= 80000; i++) {
-    const [lon, lat] = nav.shape[i], dLon = dLat / Math.cos(rad(lat));
-    for (const x of [tileX(lon - dLon), tileX(lon + dLon)]) {
-      for (const y of [tileY(lat + dLat), tileY(lat - dLat)]) keys.add(x + '/' + y);
-    }
-  }
-  let done = 0;
-  for (const key of keys) {
-    const [x, y] = key.split('/').map(Number);
-    for (const url of trailTileUrls(x, y)) {
-      if (await cache.match(url)) continue;
-      try {
-        const res = await fetch(url);
-        if (res.ok) await cache.put(url, res);
-      } catch (e) { /* volgende keer opnieuw */ }
-    }
-    done++;
-  }
-  // Oude tegels opruimen: hooguit 300 bestanden (circa 150 tegels) bewaren
+  const urls = corridorTiles(nav, TRAIL_Z).flatMap(([x, y]) => trailTileUrls(x, y));
+  const cache = await storeAll(TRAIL_CACHE, urls);
   const all = await cache.keys();
   for (const req of all.slice(0, Math.max(0, all.length - 300))) await cache.delete(req);
-  if (done) toast(`Wandelroutes langs ${fmtDist(Math.min(80000, nav.total))} opgeslagen`, 3000);
 }
 
 const trailTiles = new Map();
@@ -522,7 +605,8 @@ watchPublicBuildings(map);
 watchTrails(map);
 // Kaart weggevallen (meestal geheugen): melden; MapLibre tekent hem opnieuw zodra het kan
 map.on('webglcontextlost', () => toast('De kaart is even weggevallen (geheugen). Hij komt vanzelf terug.', 8000));
-map.on('error', e => { if (!map.isStyleLoaded()) toast('Kaart laden lukt niet: ' + (e.error && e.error.message || 'onbekende fout'), 10000); });
+// Alleen fouten van de stijl zelf; een ontbrekende kaarttegel (bijv. zonder bereik) is geen melding waard
+map.on('error', e => { if (!map.isStyleLoaded() && !e.sourceId && !e.tile) toast('Kaart laden lukt niet: ' + (e.error && e.error.message || 'onbekende fout'), 10000); });
 
 const markerEl = document.createElement('div');
 markerEl.className = 'car marker';
@@ -604,7 +688,9 @@ map.on('zoomstart', e => { if (e.originalEvent) stopFollowing(); });
 map.on('rotatestart', e => { if (e.originalEvent) stopFollowing(); });
 
 function follow() {
-  endView();
+  // Een bekeken plek (verrekijker) blijft onderin staan; alleen tijdens navigatie
+  // gaat het navigatiepaneel weer voor
+  if (state.nav) endView();
   state.following = true;
   $('car').hidden = false;
   $('recenter').hidden = true;
@@ -1602,7 +1688,7 @@ async function confirmPick() {
 function confirmPreview() {
   if (!pending) return;
   endView();
-  if (previewNav && travelMode === 'pedestrian') preloadTrails(previewNav);
+  if (previewNav && travelMode === 'pedestrian') preloadWalk(previewNav);
   const dest = pending;
   if (!dest.here) saveRecent({ lat: dest.lat, lon: dest.lon, name: dest.name });
   closeSearch();
@@ -1652,7 +1738,15 @@ function viewPreview() {
     viewMarker = new maplibregl.Marker({ element: el });
   }
   viewMarker.setLngLat(at).addTo(map);
-  map.flyTo({ center: at, zoom: 16, pitch: state.pitch, padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: 1500 });
+  flyToView();
+}
+
+// Tik op naam en adres onderin: terug naar de bekeken plek
+function flyToView() {
+  if (!viewDest) return;
+  stopFollowing();
+  map.flyTo({ center: [viewDest.lon, viewDest.lat], zoom: 16, pitch: state.pitch,
+    padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: 1500 });
 }
 
 // Terug naar je eigen positie of een route gestart: het bekijken stopt
@@ -1677,6 +1771,7 @@ $('stop').addEventListener('click', () => { stopRoute(); closeSearch(); });
 $('qok').addEventListener('click', confirmPreview);
 $('qview').addEventListener('click', viewPreview);
 $('vedit').addEventListener('click', openSearch);
+$('vgo').addEventListener('click', flyToView);
 
 // Richtknop altijd los boven het onderste paneel, hoe hoog dat ook is (kleine iPhones)
 const bottomCards = ['bottom-idle', 'bottom-nav', 'bottom-view'].map($);
@@ -2076,3 +2171,6 @@ function startDemo() {
 }
 
 renderBar();
+
+// De app zelf ook zonder bereik kunnen openen (zie sw.js)
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
