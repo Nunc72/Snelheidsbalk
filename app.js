@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '32';
+const VERSION = '33';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -802,6 +802,9 @@ function targetZoom(kmh) {
 }
 
 function updateCamera(p, duration = 1000) {
+  // Achter het zoekscherm hoeft de live kaart niet mee te bewegen: dan heeft de
+  // routekaart de telefoon voor zich alleen. Bij het sluiten volgt hij meteen weer.
+  if (!$('search').hidden) return;
   if (!state.following) {
     marker.setLngLat(p).setRotation(state.heading || 0);
     return;
@@ -1394,9 +1397,10 @@ function updateClear() {
 }
 
 function openSearch() {
-  const navigating = !!(state.nav || state.concept);
+  // Een bekeken plek (verrekijker) gaat voor op een route die nog loopt
+  const viewing = !!viewDest;
+  const navigating = !viewing && !!(state.nav || state.concept);
   $('search').hidden = false;
-  const viewing = !navigating && viewDest;
   $('q').value = navigating && state.dest ? state.dest.name : viewing ? viewDest.name : '';
   $('q-postcode').value = '';
   $('q-city').value = '';
@@ -1417,7 +1421,7 @@ function openSearch() {
   setTravelMode(travelMode);
   listTab = 'recent';
   document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === 'recent')));
-  if (state.concept) {
+  if (state.concept && !viewing) {
     origin = state.concept.origin;
     $('qfrom').value = origin.name;
     showFrom();
@@ -1437,14 +1441,11 @@ function closeSearch() {
   $('qfrom').blur();
   $('search').hidden = true;
   previewSeq++;
-  // Kleine kaarten opruimen: elke kaart houdt een eigen stuk grafisch geheugen vast,
-  // en op de iPhone is dat beperkt. Ze worden bij de volgende keer opnieuw gemaakt.
-  if (pmap) {
-    previewTags.forEach(t => t.remove());
-    previewTags = [];
-    pmap.remove();
-    pmap = null;
-  }
+  if (state.following && state.fix) updateCamera([state.fix.lon, state.fix.lat], 0);
+  // De routekaart blijft bestaan: opnieuw opbouwen kost op de iPhone seconden.
+  // De kaart om een plek te kiezen gaat weg; die is groter en wordt minder vaak gebruikt.
+  previewTags.forEach(t => t.remove());
+  previewTags = [];
   if (pickmap) { pickmap.remove(); pickmap = null; }
 }
 
