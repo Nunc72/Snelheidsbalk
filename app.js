@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '27';
+const VERSION = '28';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -343,6 +343,8 @@ function loadTrailTile(x, y) {
     })();
     p.catch(() => trailTiles.delete(key));
     trailTiles.set(key, p);
+    // Hooguit 12 tegels bewaren (de oudste eruit)
+    if (trailTiles.size > 12) trailTiles.delete(trailTiles.keys().next().value);
   }
   return trailTiles.get(key);
 }
@@ -447,11 +449,17 @@ function watchPublicBuildings(m) {
   });
 }
 
+// Geheugen sparen: scherpte maximaal 2x en een beperkte voorraad kaarttegels
+const PIXEL_RATIO = Math.min(devicePixelRatio || 1, 2);
+const SMALL_MAP = { pixelRatio: PIXEL_RATIO, maxTileCacheSize: 30 };
+
 // Kaart half gekanteld: 50% van de maximale kanteling (60°) geeft wat perspectief
 const PITCH = 30;
 const map = new maplibregl.Map({
   container: 'map',
   style: theme() === 'dark' ? PLACEHOLDER_DARK : PLACEHOLDER_LIGHT,
+  pixelRatio: PIXEL_RATIO,
+  maxTileCacheSize: 80,
   center: [5.1214, 52.0907],
   zoom: 15,
   pitch: PITCH,
@@ -1153,6 +1161,15 @@ function closeSearch() {
   $('qfrom').blur();
   $('search').hidden = true;
   previewSeq++;
+  // Kleine kaarten opruimen: elke kaart houdt een eigen stuk grafisch geheugen vast,
+  // en op de iPhone is dat beperkt. Ze worden bij de volgende keer opnieuw gemaakt.
+  if (pmap) {
+    previewTags.forEach(t => t.remove());
+    previewTags = [];
+    pmap.remove();
+    pmap = null;
+  }
+  if (pickmap) { pickmap.remove(); pickmap = null; }
 }
 
 function describe(props) {
@@ -1384,8 +1401,10 @@ function selectAlt(i) {
 
 async function ensurePreviewMap() {
   if (pmap) { pmap.resize(); return; }
-  pmap = new maplibregl.Map({ container: 'pmap', style: await currentStyle(true), interactive: false, attributionControl: false,
-    center: state.fix ? [state.fix.lon, state.fix.lat] : [5.1214, 52.0907], zoom: 12 });
+  const style = await currentStyle(true);
+  if (pmap || $('search').hidden) return;
+  pmap = new maplibregl.Map({ container: 'pmap', style, interactive: false, attributionControl: false,
+    center: state.fix ? [state.fix.lon, state.fix.lat] : [5.1214, 52.0907], zoom: 12, ...SMALL_MAP });
   watchTrails(pmap);
   pmap.on('style.load', () => {
     const dark = theme() === 'dark';
@@ -1404,15 +1423,16 @@ async function ensurePreviewMap() {
       'circle-color': ['match', ['get', 'kind'], 'start', '#1F6FE0', '#E5484D'] } });
     drawPreview();
   });
-  // De kaart is niet te verschuiven, maar tikken op een grijze route kiest hem wel
-  pmap.getContainer().addEventListener('click', e => {
-    if (!pmap.getLayer('alts-line')) return;
-    const r = pmap.getContainer().getBoundingClientRect();
-    const x = e.clientX - r.left, y = e.clientY - r.top;
-    const f = pmap.queryRenderedFeatures([[x - 14, y - 14], [x + 14, y + 14]], { layers: ['alts-line'] })[0];
-    if (f) selectAlt(f.properties.i);
-  });
 }
+
+// De kaart is niet te verschuiven, maar tikken op een grijze route kiest hem wel
+$('pmap').addEventListener('click', e => {
+  if (!pmap || !pmap.getLayer('alts-line')) return;
+  const r = $('pmap').getBoundingClientRect();
+  const x = e.clientX - r.left, y = e.clientY - r.top;
+  const f = pmap.queryRenderedFeatures([[x - 14, y - 14], [x + 14, y + 14]], { layers: ['alts-line'] })[0];
+  if (f) selectAlt(f.properties.i);
+});
 
 const MAX_DIST = { bicycle: 150000, pedestrian: 100000 };
 
@@ -1440,6 +1460,11 @@ async function showPreview(dest, note) {
   // Dan geen route en blijft de groene knop uit; de verrekijker werkt wel.
   const from = origin || state.fix, max = MAX_DIST[travelMode];
   if (max && from && dist([from.lon, from.lat], [dest.lon, dest.lat]) > max) {
+    // Een lopende route of conceptroute naar deze plek vervalt dan helemaal
+    if ((state.nav || state.concept) && state.dest && state.dest.lat === dest.lat && state.dest.lon === dest.lon) {
+      stopRoute();
+      $('stop').style.visibility = 'hidden';
+    }
     noRoute(`Te ver om te ${travelMode === 'bicycle' ? 'fietsen' : 'lopen'} (meer dan ${max / 1000} km)`);
     return;
   }
@@ -1490,7 +1515,7 @@ async function showPickMap() {
     center = at ? [at.lon, at.lat] : [5.1214, 52.0907];
   }
   if (!pickmap) {
-    pickmap = new maplibregl.Map({ container: 'pickmap', style: await currentStyle(true), center, zoom,
+    pickmap = new maplibregl.Map({ container: 'pickmap', style: await currentStyle(true), center, zoom, ...SMALL_MAP,
       attributionControl: false, dragRotate: false, pitchWithRotate: false });
     pickmap.touchZoomRotate.disableRotation();
     watchPublicBuildings(pickmap);
@@ -1631,16 +1656,20 @@ async function showTrailLegend() {
   $('legnote').textContent = 'zoeken…';
   let present;
   try {
-    // De lijst per gebied geeft maximaal 100 routes; bij een klein gebied kijken we
-    // daarom ook in de routetegels zelf, zodat geen soort ontbreekt
-    const b = (pmap || map).getBounds();
-    const routes = await trailRoutes(b.getWest(), b.getSouth(), b.getEast(), b.getNorth());
+    // Alleen 3 km rond de bestemming (zonder bestemming: rond het midden van de kaart).
+    // De lijst per gebied geeft maximaal 100 routes, dus we kijken ook in de routetegels zelf.
+    const at = pending || viewDest || state.dest || (({ lng, lat }) => ({ lon: lng, lat }))(map.getCenter());
+    const dLat = 3000 / 111320, dLon = dLat / Math.cos(rad(at.lat));
+    const [w, s, e, n] = [at.lon - dLon, at.lat - dLat, at.lon + dLon, at.lat + dLat];
+    const routes = await trailRoutes(w, s, e, n);
+    // Een routetegel kan breder zijn dan het gebied: alleen lijnen die er echt in liggen tellen mee
+    const inside = ([x, y]) => x >= w && x <= e && y >= s && y <= n;
     present = new Set(routes.map(r => r.group));
-    const xs = [tileX(b.getWest()), tileX(b.getEast())], ys = [tileY(b.getNorth()), tileY(b.getSouth())];
-    if ((xs[1] - xs[0] + 1) * (ys[1] - ys[0] + 1) <= 6) {
-      for (let x = xs[0]; x <= xs[1]; x++) {
-        for (let y = ys[0]; y <= ys[1]; y++) {
-          (await loadTrailTile(x, y).catch(() => [])).forEach(f => present.add(f.properties.g));
+    for (let x = tileX(w); x <= tileX(e); x++) {
+      for (let y = tileY(n); y <= tileY(s); y++) {
+        for (const f of await loadTrailTile(x, y).catch(() => [])) {
+          const lines = f.geometry.type === 'LineString' ? [f.geometry.coordinates] : f.geometry.coordinates;
+          if (lines.some(l => l.some(inside))) present.add(f.properties.g);
         }
       }
     }
@@ -1649,7 +1678,7 @@ async function showTrailLegend() {
   }
   if (seq !== legendSeq) return;
   const types = TRAIL_TYPES.filter(t => present.has(t.key));
-  $('legnote').textContent = types.length ? 'in dit gebied' : 'geen in dit gebied';
+  $('legnote').textContent = types.length ? 'binnen 3 km' : 'geen binnen 3 km';
   for (const t of types) {
     const row = document.createElement('label');
     row.className = 'legrow';
