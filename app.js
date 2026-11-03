@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '35';
+const VERSION = '36';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -742,8 +742,9 @@ function drawRouteEnds() {
 
 map.on('style.load', () => { addRouteLayers(map, routeCoords); addRouteEnds(map); addConceptLayers(map); });
 
-// De kleine kaarten (routeoverzicht, plek kiezen) zijn altijd de gewone kaart: geen reliëf,
-// luchtfoto of wandelroutes. Die maken ze traag en kosten de iPhone veel geheugen.
+// De kleine routeoverzichtkaart is altijd de gewone kaart: geen reliëf, luchtfoto of
+// wandelroutes. Die maken hem traag en kosten de iPhone veel geheugen. De grote zoekkaart
+// volgt wel de gekozen kaartsoort, zodat je in 3D je punten kunt kiezen.
 async function currentStyle(small = false) {
   const dark = theme() === 'dark';
   await storedReady;
@@ -762,8 +763,12 @@ async function applyTheme() {
   const small = await currentStyle(true);
   // De kleine kaarten veranderen alleen mee met licht en donker
   if (pmap && pmap._dark !== theme()) { pmap._dark = theme(); pmap.setStyle(small, { diff: false }); }
-  // De grote zoekkaart is snel opnieuw gemaakt
-  if (msmap && msmap._dark !== theme()) { msmap.remove(); msmap = null; if (!$('mapsearch').hidden) openMapSearch(ms.kind, ms.back, ms.row); }
+  // De grote zoekkaart krijgt een nieuwe stijl; de lagen komen terug via style.load
+  if (msmap && (msmap._dark !== theme() || msmap._kind !== mapKind)) {
+    msmap._dark = theme();
+    msmap._kind = mapKind;
+    msmap.setStyle(await currentStyle(), { diff: false });
+  }
   renderBar();
 }
 darkQuery.addEventListener('change', applyTheme);
@@ -2117,6 +2122,7 @@ async function openMapSearch(kind, back, row = 0) {
   const routeCoords = kind === 'row' && previewData ? previewData.coords : ms.legs.flat();
   const all = [...routeCoords, ...ms.pts.map(ll)];
   msmap.resize();
+  msmap.jumpTo({ pitch: 0 });
   if (target) msmap.jumpTo({ center: ll(target), zoom: 15.5 });
   else if (all.length) {
     const b = all.reduce((bb, c) => bb.extend(c), new maplibregl.LngLatBounds(all[0], all[0]));
@@ -2125,22 +2131,39 @@ async function openMapSearch(kind, back, row = 0) {
     const c = map.getCenter();
     msmap.jumpTo({ center: c, zoom: 15 });
   }
+  msTilt(false);
   msDraw();
   ms.legs.forEach((l, i) => { if (!l) computeLeg(i); });
 }
 
 async function ensureMsMap() {
   if (msmap) return;
-  const style = await currentStyle(true);
+  const style = await currentStyle();
   if (msmap || $('mapsearch').hidden) return;
   const c = state.fix ? [state.fix.lon, state.fix.lat] : map.getCenter().toArray();
   msmap = new maplibregl.Map({ container: 'msmap', style, center: c, zoom: 15, ...SMALL_MAP,
     attributionControl: false, dragRotate: false, pitchWithRotate: false });
   msmap.touchZoomRotate.disableRotation();
   msmap._dark = theme();
+  msmap._kind = mapKind;
   const m = msmap;
+  m.on('style.load', () => { addMsLayers(m); msDraw(); msMove(true); msTilt(true); });
   await new Promise(r => m.once('style.load', r));
-  if (msmap !== m) return;
+  let raf = 0;
+  m.on('move', () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; msMove(); }); });
+}
+
+// Kantelen kan alleen in 3D: twee vingers samen omhoog of omlaag. Plat blijft plat,
+// dan valt de pin precies op de plek die je recht van boven ziet.
+const MS_PITCH = 50;
+function msTilt(animate) {
+  if (!msmap) return;
+  const relief = mapKind === 'terrain';
+  msmap.setMaxPitch(relief ? 70 : 0);
+  if (relief && msmap.getPitch() < 5) msmap.easeTo({ pitch: MS_PITCH, duration: animate ? 600 : 0 });
+}
+
+function addMsLayers(m) {
   const dark = theme() === 'dark';
   m.addSource('old', { type: 'geojson', data: EMPTY_FC });
   m.addLayer({ id: 'old-line', type: 'line', source: 'old', layout: { 'line-cap': 'round', 'line-join': 'round' },
@@ -2152,9 +2175,7 @@ async function ensureMsMap() {
   m.addLayer({ id: 'guide', type: 'line', source: 'guide', layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: { 'line-color': dark ? '#f2f2f7' : '#1c1c1e', 'line-width': 2.2, 'line-dasharray': [3, 2.5], 'line-opacity': 0.75 } });
   m.addSource('pts', { type: 'geojson', data: EMPTY_FC });
-  m.addLayer({ id: 'pts', type: 'circle', source: 'pts', paint: endsPaint(dark, 9, 8, 7, 3.5) });
-  let raf = 0;
-  m.on('move', () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; msMove(); }); });
+  m.addLayer({ id: 'pts', type: 'circle', source: 'pts', paint: { ...endsPaint(dark, 9, 8, 7, 3.5), 'circle-pitch-alignment': 'map' } });
 }
 
 // Tekent de route, de punten en (tijdens een wijziging) de oude stukken in grijs
