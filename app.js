@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '34';
+const VERSION = '35';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -49,7 +49,7 @@ const state = {
   following: true,
   zoom: 16,
   pitch: 30,          // kanteling van de kaart; met twee vingers aan te passen
-  concept: null,      // getoonde route vanaf een ander vertrekpunt: { nav, origin, dest, mode }
+  concept: null,      // getoonde route vanaf een ander vertrekpunt: { nav, stops, mode }
   nav: null,          // actieve route
   dest: null,
   lastRouteAt: 0,
@@ -156,7 +156,7 @@ const memo = new Map();
 
 async function mapFetch(url) {
   const cache = await openMapCache();
-  // Opgeslagen tegels (langs een wandelroute) en letters veranderen niet: eerst uit de opslag
+  // Opgeslagen tegels (langs een gedownloade route) en letters veranderen niet: eerst uit de opslag
   if (cache && (storedTiles.has(url) || url.includes('/fonts/'))) {
     const hit = await cache.match(url);
     if (hit) return hit;
@@ -261,43 +261,17 @@ async function preloadMap(nav, relief) {
   const stored = (await cache.keys()).filter(r => isMapTile(r.url));
   const gone = stored.slice(0, Math.max(0, stored.length - 2000)).map(r => r.url);
   for (const url of gone) { await cache.delete(url); storedTiles.delete(url); }
-  // Oudere opgeslagen wandelingen die daardoor niet meer compleet zijn, gaan van de lijst
+  // Gedownloade routes die daardoor niet meer compleet zijn, moeten opnieuw gedownload worden
   if (gone.length) {
     const goneSet = new Set(gone);
-    for (const w of loadWalks()) {
-      const n = await walkNav(w);
-      if (!n || walkTileUrls(n, tiles, w.relief).some(u => goneSet.has(u))) await deleteWalk(w);
+    for (const r of loadSaved().filter(x => x.offline)) {
+      const n = await savedNav(r);
+      if (!n || walkTileUrls(n, tiles, r.relief).some(u => goneSet.has(u))) {
+        storeSaved(loadSaved().map(x => (x.id === r.id ? { ...x, offline: false } : x)));
+      }
     }
   }
   return missing;
-}
-
-// Bij een wandelroute: kaart en wandelroutes langs de eerste 80 km opslaan.
-// Is alles binnen, dan komt de wandeling bij de tab Routes.
-async function preloadWalk(nav, from, to) {
-  try { await caches.open(MAP_CACHE); } catch (e) { return; }
-  const relief = mapKind === 'terrain';
-  // Eerst de kaart die je nu ziet laten laden, dan pas opslaan voor onderweg
-  await new Promise(r => {
-    const t0 = Date.now();
-    const ck = () => { let ok = false; try { ok = map.isSourceLoaded('openmaptiles'); } catch (e) { /* nog niet */ }
-      if (ok || Date.now() - t0 > 8000) r(); else setTimeout(ck, 300); };
-    setTimeout(ck, 500);
-  });
-  toast('Kaart voor onderweg opslaan…', 3000);
-  const [mapMissing, trailMissing] = await Promise.all([preloadMap(nav, relief).catch(() => Infinity), preloadTrails(nav).catch(() => Infinity)]);
-  const km = fmtDist(Math.min(80000, nav.total));
-  if (mapMissing > 0 || trailMissing > 0) {
-    toast(`Kaart voor onderweg niet helemaal opgeslagen (geen bereik?). Start de route nog eens om het af te maken.`, 6000);
-    return;
-  }
-  // Vanaf je eigen positie: het beginpunt krijgt de naam van het adres daar
-  if (!from) {
-    const [lon, lat] = nav.shape[0];
-    from = { lat, lon, name: await placeName(lat, lon) };
-  }
-  try { await saveWalk(nav, from, to, relief); } catch (e) { /* geen opslag */ }
-  toast(`Kaart en wandelroutes voor ${km} opgeslagen, te vinden bij Routes`, 4000);
 }
 
 // ---------- Kaart ----------
@@ -718,8 +692,6 @@ const markerEl = document.createElement('div');
 markerEl.className = 'car marker';
 markerEl.innerHTML = '<div><div></div></div>';
 const marker = new maplibregl.Marker({ element: markerEl, rotationAlignment: 'map' });
-let viewMarker = null;   // rode stip op een bestemming die je alleen bekijkt (verrekijker)
-let viewDest = null;     // die bestemming zelf
 
 let routeCoords = [];
 const lineFeature = coords => ({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: {} });
@@ -741,34 +713,31 @@ function addConceptLayers(m) {
     layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: { 'line-color': dark ? '#3D8BFF' : '#1F6FE0', 'line-width': 8, 'line-dasharray': [0, 2] } });
   m.addLayer({ id: 'concept-ends', type: 'circle', source: 'concept', filter: ['==', ['geometry-type'], 'Point'],
-    paint: { 'circle-radius': ['match', ['get', 'kind'], 'start', 13, 10], 'circle-stroke-width': 4, 'circle-stroke-color': '#ffffff',
-      'circle-color': ['match', ['get', 'kind'], 'start', dark ? '#3D8BFF' : '#1F6FE0', '#E5484D'],
-      'circle-pitch-alignment': 'map' } });
+    paint: { ...endsPaint(dark), 'circle-pitch-alignment': 'map' } });
   drawConcept();
 }
 
 // Wordt ook opnieuw aangeroepen na een wissel tussen licht en donker
-// Begin (blauw) en eind (rood) van de lopende route, net als bij de conceptroute
+// Begin (blauw), tussenstops (wit) en eind (rood) van de lopende route, net als bij de conceptroute
 function addRouteEnds(m) {
   const dark = theme() === 'dark';
   m.addSource('route-ends', { type: 'geojson', data: EMPTY_FC });
-  m.addLayer({ id: 'route-ends', type: 'circle', source: 'route-ends',
-    paint: { 'circle-radius': ['match', ['get', 'kind'], 'start', 13, 10], 'circle-stroke-width': 4, 'circle-stroke-color': '#ffffff',
-      'circle-color': ['match', ['get', 'kind'], 'start', dark ? '#3D8BFF' : '#1F6FE0', '#E5484D'],
-      'circle-pitch-alignment': 'map' } });
+  m.addLayer({ id: 'route-ends', type: 'circle', source: 'route-ends', paint: { ...endsPaint(dark), 'circle-pitch-alignment': 'map' } });
   drawRouteEnds();
 }
 
-let endsFor = null;
+let endsFor = null, endsLeg = -1;
 function drawRouteEnds() {
   const src = map.getSource('route-ends');
   const n = state.nav;
   endsFor = n;
+  endsLeg = n ? n.legIdx : -1;
   if (!src) return;
   if (!n) { src.setData(EMPTY_FC); return; }
-  // Het beginpunt blijft waar je vertrok, ook als de route onderweg opnieuw berekend is
-  const point = (pt, kind) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: pt }, properties: { kind } });
-  src.setData({ type: 'FeatureCollection', features: [point(state.navStart || n.shape[0], 'start'), point(n.shape[n.shape.length - 1], 'end')] });
+  // Het beginpunt blijft waar je vertrok, ook als de route onderweg opnieuw berekend is;
+  // tussenstops alleen die nog komen
+  const vias = n.legs.slice(n.legIdx, -1).map(l => n.shape[l.endIdx]);
+  src.setData(stopPoints([state.navStart || n.shape[0], ...vias, n.shape[n.shape.length - 1]]));
 }
 
 map.on('style.load', () => { addRouteLayers(map, routeCoords); addRouteEnds(map); addConceptLayers(map); });
@@ -793,7 +762,8 @@ async function applyTheme() {
   const small = await currentStyle(true);
   // De kleine kaarten veranderen alleen mee met licht en donker
   if (pmap && pmap._dark !== theme()) { pmap._dark = theme(); pmap.setStyle(small, { diff: false }); }
-  if (pickmap && pickmap._dark !== theme()) { pickmap._dark = theme(); pickmap.setStyle(small, { diff: false }); }
+  // De grote zoekkaart is snel opnieuw gemaakt
+  if (msmap && msmap._dark !== theme()) { msmap.remove(); msmap = null; if (!$('mapsearch').hidden) openMapSearch(ms.kind, ms.back, ms.row); }
   renderBar();
 }
 darkQuery.addEventListener('change', applyTheme);
@@ -818,9 +788,6 @@ map.on('zoomstart', e => { if (e.originalEvent) stopFollowing(); });
 map.on('rotatestart', e => { if (e.originalEvent) stopFollowing(); });
 
 function follow() {
-  // Een bekeken plek (verrekijker) blijft onderin staan; alleen tijdens navigatie
-  // gaat het navigatiepaneel weer voor
-  if (state.nav) endView();
   state.following = true;
   $('car').hidden = false;
   $('recenter').hidden = true;
@@ -889,7 +856,8 @@ function renderBar() {
   const bar = $('bar'), lim = $('lim');
   document.body.classList.toggle('nobar', !barShown());
   $('spd').textContent = state.fix ? Math.round(state.speedKmh) : '–';
-  $('destlbl').hidden = state.speedKmh > 10;
+  // Bij een route met tussenstops blijft de regel met de stop en de tijd ernaartoe staan
+  $('destlbl').hidden = state.speedKmh > 10 && !(state.nav && state.nav.legs.length > 1);
   let bg = '#48484A', fg = '#fff';
   if (state.limit) {
     const c = scaleColor(state.speedKmh, state.limit);
@@ -1055,31 +1023,27 @@ $('startbtn').addEventListener('click', () => {
   startGps();
 });
 
-// ---------- Bestemming kiezen (Photon) ----------
+// ---------- De route: een lijst adresregels ----------
+// Vertrekpunt, tussenstops en bestemming. Een lege regel is null; je eigen positie is HERE.
+const HERE = { here: true, name: 'Huidige locatie' };
+let stops = [HERE, null];
+const filled = () => stops.filter(Boolean);
+// Je eigen positie met de coördinaten van nu
+const hereNow = () => state.fix && { here: true, name: 'Huidige locatie', lat: state.fix.lat, lon: state.fix.lon };
+const resolveStop = s => (s && s.here ? hereNow() : s);
+const lastPlace = () => filled().filter(s => !s.here).pop() || null;
+
 let searchTimer, searchSeq = 0;
-let pending = null;      // gekozen bestemming, wordt pas gestart met het vinkje
-let streetCtx = null;    // gekozen straat zonder huisnummer: { street, city }
+let streetCtx = null;    // gekozen straat zonder huisnummer: { street, city, dest }
 let firstResult = null;  // bovenste zoekresultaat, voor Enter
 let firstRecent = null;  // bovenste passende recente bestemming, gaat voor bij Enter
 let modeAtOpen = 'auto';
-let origin = null;       // gekozen vertrekpunt; null = huidige locatie
-let activeField = 'to';  // welk veld de lijsten en suggesties vult: 'to' (Naar) of 'from' (Van)
-const field = () => $(activeField === 'from' ? 'qfrom' : 'q');
-function setField(which) {
-  activeField = which;
-  $('search').dataset.field = which;
-}
+let editRow = 1;         // de adresregel die het tekst-zoekscherm invult
+let textFrom = 'home';   // vanwaar het tekst-zoekscherm kwam: 'home' of 'overview'
+const field = () => $('q');
 
-// Een gekozen plek gaat naar het veld waar je in zit
-function useChoice(d, note) {
-  if (activeField === 'from') {
-    origin = d;
-    if (pending) showPreview(pending, note); else showRecent();
-  } else {
-    showPreview(d, note);
-  }
-}
 const MODE_LABEL = { auto: 'auto', bicycle: 'fiets', pedestrian: 'lopen' };
+const MODE_ICON = { auto: 'ti-car', bicycle: 'ti-bike', pedestrian: 'ti-walk' };
 
 let travelMode = 'auto';
 try { travelMode = localStorage.getItem('travelMode') || 'auto'; } catch (e) { /* geen opslag */ }
@@ -1116,55 +1080,116 @@ function deleteRecent(d) {
   try { localStorage.setItem('recent', JSON.stringify(loadRecent().filter(r => r.name !== d.name))); } catch (e) { /* geen opslag */ }
 }
 
-// Een route met een eigen vertrekpunt (stippellijn) staat als één regel bij Recent,
+// Een route met tussenstops of een eigen vertrekpunt staat als één regel bij Recent,
 // en kan net als een bestemming favoriet worden
-const place = d => ({ lat: d.lat, lon: d.lon, name: d.name });
-const routeEntry = (from, to, mode) => ({ from: place(from), to: place(to), mode, name: `${from.name} → ${to.name}` });
-const shortName = d => favLabel(d) || d.name.split(', ')[0];
+const place = d => (d.here ? HERE : { lat: d.lat, lon: d.lon, name: d.name });
+const routeEntry = (list, mode) => ({ stops: list.map(place), mode, name: list.map(s => s.name).join(' → ') });
+// Oude regels hadden alleen van en naar
+const stopsOf = d => d.stops || (d.from ? [d.from, d.to] : null);
+const shortName = d => (d.here ? 'Huidige locatie' : favLabel(d) || d.name.split(', ')[0]);
+const routeText = list => list.map(shortName).join(' → ');
 
 // Vroeger stonden deze routes in een eigen tab; eenmalig naar Recent verhuizen
 try {
   const old = JSON.parse(localStorage.getItem('routes') || 'null');
   if (Array.isArray(old)) {
-    const moved = old.filter(r => r.from && r.to).map(r => routeEntry(r.from, r.to, r.mode));
+    const moved = old.filter(r => r.from && r.to).map(r => routeEntry([r.from, r.to], r.mode));
     const names = new Set(moved.map(r => r.name));
     localStorage.setItem('recent', JSON.stringify([...loadRecent().filter(d => !names.has(d.name)), ...moved].slice(0, 30)));
     localStorage.removeItem('routes');
   }
 } catch (e) { /* geen opslag */ }
 
-// ---------- Opgeslagen wandelroutes (tab Routes) ----------
-// Alleen wandelingen waarvan de kaart voor de eerste 80 km (of de hele route) compleet
-// is opgeslagen. De route zelf staat in de browseropslag, zodat hij ook zonder bereik opent.
-const WALK_CACHE = 'walks-v1';
-const walkKey = w => w.from.name + '|' + w.to.name;
-const walkUrl = id => `${location.origin}/__walk/${id}.json`;
-function loadWalks() {
-  try { return JSON.parse(localStorage.getItem('walks') || '[]'); } catch (e) { return []; }
+// ---------- Tab Routes: gestarte routes, met download voor onderweg zonder bereik ----------
+// Elke gestarte route komt hier. Het download-icoontje slaat de kaart langs de eerste 80 km op
+// (bij Lopen ook de wandelroutes); daarna is het blauw en opent de route ook zonder bereik.
+const ROUTE_CACHE = 'walks-v1';
+const routeUrl = id => `${location.origin}/__walk/${id}.json`;
+const routeKey = r => r.mode + '|' + r.stops.map(s => s.name).join('|');
+function loadSaved() {
+  try { return JSON.parse(localStorage.getItem('savedRoutes') || '[]'); } catch (e) { return []; }
 }
-function saveWalks(list) {
-  try { localStorage.setItem('walks', JSON.stringify(list)); } catch (e) { /* geen opslag */ }
+function storeSaved(list) {
+  try { localStorage.setItem('savedRoutes', JSON.stringify(list)); } catch (e) { /* geen opslag */ }
 }
-async function saveWalk(nav, from, to, relief) {
-  const id = Date.now().toString(36);
-  const cache = await caches.open(WALK_CACHE);
-  await cache.put(walkUrl(id), new Response(JSON.stringify({ ...nav, idx: 0, along: 0, off: 0, arrivedAt: 0 })));
-  const item = { id, from: place(from), to: place(to), km: Math.round(nav.total / 100) / 10, relief };
-  const old = loadWalks().filter(w => walkKey(w) === walkKey(item));
-  saveWalks([item, ...loadWalks().filter(w => walkKey(w) !== walkKey(item))].slice(0, 20));
-  for (const w of old) cache.delete(walkUrl(w.id));
-}
-async function deleteWalk(w) {
-  saveWalks(loadWalks().filter(x => x.id !== w.id));
-  try { (await caches.open(WALK_CACHE)).delete(walkUrl(w.id)); } catch (e) { /* geen opslag */ }
-}
-async function walkNav(w) {
+// Opgeslagen wandelingen van vroeger worden routes die al gedownload zijn
+try {
+  const walks = JSON.parse(localStorage.getItem('walks') || 'null');
+  if (Array.isArray(walks)) {
+    storeSaved([...walks.map(w => ({ id: w.id, stops: [place(w.from), place(w.to)], mode: 'pedestrian', km: w.km, offline: true, relief: w.relief })),
+      ...loadSaved()].slice(0, 30));
+    localStorage.removeItem('walks');
+  }
+} catch (e) { /* geen opslag */ }
+
+// Een route van vroeger heeft nog geen etappes: dan is het er één
+const freshNav = nav => ({ legs: [{ endIdx: nav.shape.length - 1, time: nav.time, begin: 0, end: nav.total }],
+  ...nav, idx: 0, along: 0, off: 0, arrivedAt: 0, legIdx: 0 });
+async function savedNav(r) {
   try {
-    const hit = await (await caches.open(WALK_CACHE)).match(walkUrl(w.id));
+    const hit = await (await caches.open(ROUTE_CACHE)).match(routeUrl(r.id));
     return hit ? await hit.json() : null;
   } catch (e) { return null; }
 }
+async function dropSavedNav(id) {
+  try { (await caches.open(ROUTE_CACHE)).delete(routeUrl(id)); } catch (e) { /* geen opslag */ }
+}
 
+// Je eigen positie als vertrekpunt krijgt de naam van het adres daar
+async function rememberRoute(list, mode, nav) {
+  const fixed = await Promise.all(list.map(async s => (s.here ? { lat: s.lat, lon: s.lon, name: await placeName(s.lat, s.lon) } : place(s))));
+  const item = { id: Date.now().toString(36), stops: fixed, mode, km: Math.round(nav.total / 100) / 10, offline: false };
+  const all = loadSaved();
+  const old = all.find(r => routeKey(r) === routeKey(item));
+  if (old) Object.assign(item, { id: old.id, offline: old.offline, relief: old.relief });
+  const next = [item, ...all.filter(r => routeKey(r) !== routeKey(item))];
+  for (const r of next.slice(30)) dropSavedNav(r.id);
+  storeSaved(next.slice(0, 30));
+}
+
+function deleteSaved(r) {
+  storeSaved(loadSaved().filter(x => x.id !== r.id));
+  dropSavedNav(r.id);
+}
+
+async function downloadRoute(r, btn) {
+  if (btn.classList.contains('busy')) return;
+  if (r.offline) { toast('Deze route staat op je telefoon en werkt ook zonder bereik'); return; }
+  btn.classList.add('busy');
+  btn.innerHTML = '<i class="ti ti-loader-2" aria-hidden="true"></i>';
+  try {
+    const nav = await savedNav(r) || (await fetchRoutes(r.stops, 0, r.mode))[0];
+    const relief = mapKind === 'terrain';
+    const [a, b] = await Promise.all([preloadMap(nav, relief).catch(() => Infinity),
+      r.mode === 'pedestrian' ? preloadTrails(nav).catch(() => Infinity) : 0]);
+    if (a || b) {
+      toast('Niet alles kon worden opgeslagen (geen bereik?). Tik nog eens op het icoontje om het af te maken.', 6000);
+    } else {
+      await (await caches.open(ROUTE_CACHE)).put(routeUrl(r.id), new Response(JSON.stringify(freshNav(nav))));
+      storeSaved(loadSaved().map(x => (x.id === r.id ? { ...x, offline: true, relief } : x)));
+      toast(`Kaart${r.mode === 'pedestrian' ? ' en wandelroutes' : ''} voor ${fmtDist(Math.min(80000, nav.total))} opgeslagen`, 4000);
+    }
+  } catch (e) {
+    toast('Downloaden lukt niet: ' + e.message, 6000);
+  }
+  if (!$('search').hidden && listTab === 'routes') showRecent();
+}
+
+// Sta je bij het beginpunt, dan navigeer je vanaf je eigen positie; zonder bereik
+// komt de gedownloade route uit de opslag
+let savedPick = null;
+const sigOf = (list, mode) => mode + '|' + list.map(s => (s.here ? 'here' : s.name)).join('|');
+async function openSaved(r) {
+  const nav = r.offline ? await savedNav(r) : null;
+  const list = r.stops.map(place);
+  if (state.fix && dist([state.fix.lon, state.fix.lat], [list[0].lon, list[0].lat]) < 300) list[0] = HERE;
+  savedPick = nav && { nav, sig: sigOf(list, r.mode) };
+  setTravelMode(r.mode);
+  stops = list;
+  showOverview();
+}
+
+// ---------- Lijsten ----------
 // Naar links vegen over een regel: verwijderen of hernoemen. De regel schuift opzij
 // en laat de actie eronder zien; voorbij 80 px gaat de actie door.
 function swipeable(li, action, onSwipe) {
@@ -1172,7 +1197,7 @@ function swipeable(li, action, onSwipe) {
   li.dataset.action = action;
   let start = null, dx = 0, active = false;
   li.addEventListener('pointerdown', e => {
-    if (e.target.closest('.grip, input, .renok') || li.classList.contains('editing')) return;
+    if (e.target.closest('.grip, input, .renok, .dl') || li.classList.contains('editing')) return;
     start = { x: e.clientX, y: e.clientY, id: e.pointerId };
     dx = 0;
     active = false;
@@ -1223,7 +1248,7 @@ function editLabel(li, d) {
   const text = row.querySelector('.rtext');
   text.innerHTML = '<input class="rename" type="text" enterkeyhint="done" aria-label="Naam van deze favoriet">';
   const input = text.querySelector('input');
-  input.value = favLabel(d) || (d.from ? `${shortName(d.from)} → ${shortName(d.to)}` : d.name.split(', ')[0]);
+  input.value = favLabel(d) || (stopsOf(d) ? routeText(stopsOf(d)) : d.name.split(', ')[0]);
   const ok = document.createElement('button');
   ok.type = 'button';
   ok.className = 'renok';
@@ -1242,7 +1267,7 @@ function editLabel(li, d) {
 }
 function toggleFav(d) {
   const favs = loadFavs();
-  saveFavs(isFav(d) ? favs.filter(f => f.name !== d.name) : [...favs, d.from ? routeEntry(d.from, d.to, d.mode) : place(d)]);
+  saveFavs(isFav(d) ? favs.filter(f => f.name !== d.name) : [...favs, stopsOf(d) ? routeEntry(stopsOf(d), d.mode) : place(d)]);
 }
 
 // Een regel in de lijst: klik kiest de bestemming, het sterretje maakt hem (geen) favoriet,
@@ -1250,8 +1275,9 @@ function toggleFav(d) {
 function recentItem(d, { star = false, handle = false } = {}) {
   // Met een eigen naam staat die bovenaan en het hele adres eronder
   const label = favLabel(d);
-  // Een route: van → naar, met het vervoer eronder
-  const route = d.from && `${shortName(d.from)} → ${shortName(d.to)}`;
+  // Een route: van → (via →) naar, met het vervoer eronder
+  const list = stopsOf(d);
+  const route = list && routeText(list);
   const [first, ...rest] = route ? (label ? [label, route + ' · ' + MODE_LABEL[d.mode]] : [route, MODE_LABEL[d.mode] || ''])
     : label ? [label, d.name] : d.name.split(', ');
   const li = document.createElement('li');
@@ -1277,14 +1303,19 @@ function recentItem(d, { star = false, handle = false } = {}) {
     });
     li.firstElementChild.appendChild(btn);
   }
-  if (handle) makeDraggable(li, li.querySelector('.grip'));
+  if (handle) {
+    makeDraggable(li, li.querySelector('.grip'), ul => {
+      const byName = new Map(loadFavs().map(f => [f.name, f]));
+      saveFavs([...ul.querySelectorAll('li[data-name]')].map(el => byName.get(el.dataset.name)).filter(Boolean));
+    });
+  }
   li.dataset.name = d.name;
   return li;
 }
 
-// Favorieten sorteren door aan de greep te slepen (werkt met vinger en muis).
+// Sorteren door aan de greep te slepen (werkt met vinger en muis).
 // Luistert op window: een verplaatst element verliest anders zijn pointer.
-function makeDraggable(li, grip) {
+function makeDraggable(li, grip, onDrop) {
   grip.addEventListener('click', e => e.stopPropagation());
   grip.addEventListener('pointerdown', e => {
     e.preventDefault();
@@ -1319,10 +1350,9 @@ function makeDraggable(li, grip) {
       window.removeEventListener('pointercancel', up);
       li.classList.remove('dragging');
       li.style.transform = '';
-      const byName = new Map(loadFavs().map(f => [f.name, f]));
       li.dataset.swiped = '1';
       setTimeout(() => delete li.dataset.swiped, 300);
-      saveFavs([...ul.querySelectorAll('li[data-name]')].map(el => byName.get(el.dataset.name)).filter(Boolean));
+      onDrop(ul);
     };
     window.addEventListener('pointermove', move, { passive: false });
     window.addEventListener('pointerup', up);
@@ -1330,73 +1360,152 @@ function makeDraggable(li, grip) {
   });
 }
 
-function chooseRecent(d) {
-  if (d.from) { openRoute(d); return; }
-  streetCtx = null;
-  field().value = d.name;
-  field().blur();
-  updateClear();
-  useChoice(d);
+// Een gekozen plek gaat in de adresregel die je aan het invullen bent
+function useChoice(d, note) {
+  stops[editRow] = d;
+  savedPick = null;
+  showOverview(note);
 }
 
-// Bovenaan de lijst voor het Van-veld: terug naar vertrekken vanaf je eigen positie
+// Een route uit de lijst vervangt alle regels; een plek vult de regel
+function chooseRecent(d) {
+  const list = stopsOf(d);
+  if (list) {
+    stops = list.map(place);
+    if (d.mode) setTravelMode(d.mode);
+    savedPick = null;
+    showOverview();
+    return;
+  }
+  streetCtx = null;
+  useChoice(place(d));
+}
+
+// Bovenaan de lijst bij het vertrekpunt: je eigen positie
 function hereItem() {
   const li = document.createElement('li');
   li.className = 'recent here';
   li.innerHTML = '<div class="row"><i class="ti ti-current-location" aria-hidden="true"></i><div class="rtext"><div class="r1">Huidige locatie</div></div></div>';
-  li.addEventListener('click', () => {
-    $('qfrom').value = '';
-    $('qfrom').blur();
-    updateClear();
-    origin = null;
-    if (pending) showPreview(pending);
-  });
+  li.addEventListener('click', () => useChoice(HERE));
   return li;
 }
 
-// Opgeslagen wandeling: openen toont het overzicht met de bewaarde route, ook zonder bereik
-function walkItem(w) {
+function savedItem(r) {
   const li = document.createElement('li');
   li.className = 'recent';
-  li.innerHTML = '<div class="row"><i class="ti ti-walk" aria-hidden="true"></i><div class="rtext"><div class="r1"></div><div class="r2"></div></div>'
-    + '<i class="ti ti-download offl" aria-label="Offline beschikbaar"></i></div>';
-  li.querySelector('.r1').textContent = `${shortName(w.from)} → ${shortName(w.to)}`;
-  li.querySelector('.r2').textContent = `${String(w.km).replace('.', ',')} km` + (w.relief ? ' · met 3D-reliëf' : '');
-  li.addEventListener('click', () => { if (!li.dataset.swiped) openWalk(w); });
-  swipeable(li, 'Verwijderen', () => swipeAway(li, () => { deleteWalk(w); showRecent(); }));
+  li.innerHTML = `<div class="row"><i class="ti ${MODE_ICON[r.mode] || 'ti-route'}" aria-hidden="true"></i><div class="rtext"><div class="r1"></div><div class="r2"></div></div>`
+    + `<button type="button" class="dl${r.offline ? ' on' : ''}"><i class="ti ti-download" aria-hidden="true"></i></button></div>`;
+  li.querySelector('.r1').textContent = routeText(r.stops);
+  li.querySelector('.r2').textContent = `${String(r.km).replace('.', ',')} km · ${MODE_LABEL[r.mode]}` + (r.offline ? ' · ook zonder bereik' : '');
+  const dl = li.querySelector('.dl');
+  dl.setAttribute('aria-label', r.offline ? 'Opgeslagen voor zonder bereik' : 'Kaart downloaden voor zonder bereik');
+  dl.addEventListener('click', e => { e.stopPropagation(); downloadRoute(r, dl); });
+  li.addEventListener('click', () => { if (!li.dataset.swiped) openSaved(r); });
+  swipeable(li, 'Verwijderen', () => swipeAway(li, () => { deleteSaved(r); showRecent(); }));
   return li;
 }
 
-// Sta je bij het beginpunt, dan navigeer je meteen vanaf je eigen positie
-let walkPick = null;
-async function openWalk(w) {
-  const nav = await walkNav(w);
-  if (!nav) { toast('Deze route is niet meer opgeslagen'); deleteWalk(w); showRecent(); return; }
-  const near = state.fix && dist([state.fix.lon, state.fix.lat], nav.shape[0]) < 300;
-  walkPick = { to: w.to, nav };
-  openRoute({ from: near ? null : w.from, to: w.to, mode: 'pedestrian' });
+// ---------- In de buurt: plekken per soort, dichtstbij eerst (Photon) ----------
+const NEAR = {
+  fuel: { label: 'Tanken', icon: 'ti-gas-station', tags: { amenity: ['fuel'] } },
+  food: { label: 'Eten', icon: 'ti-tools-kitchen-2', tags: { amenity: ['restaurant', 'cafe', 'fast_food', 'pub', 'biergarten', 'ice_cream'] } },
+  sleep: { label: 'Slapen', icon: 'ti-bed', tags: { tourism: ['hotel', 'guest_house', 'hostel', 'motel', 'camp_site', 'chalet'] } },
+  culture: { label: 'Cultuur', icon: 'ti-building-arch', tags: { tourism: ['museum', 'gallery', 'attraction'], amenity: ['theatre', 'arts_centre', 'cinema'] } },
+  history: { label: 'Historie', icon: 'ti-building-castle',
+    tags: { historic: ['castle', 'monument', 'ruins', 'archaeological_site', 'fort', 'manor', 'city_gate', 'memorial'], man_made: ['windmill'] } },
+};
+const KIND_NL = {
+  fuel: 'Tankstation', charging_station: 'Laadpaal', restaurant: 'Restaurant', cafe: 'Café', fast_food: 'Snackbar', pub: 'Kroeg',
+  biergarten: 'Biergarten', ice_cream: 'IJssalon', hotel: 'Hotel', guest_house: 'B&B', hostel: 'Hostel', motel: 'Motel',
+  camp_site: 'Camping', chalet: 'Vakantiehuisje', museum: 'Museum', gallery: 'Galerie', attraction: 'Bezienswaardigheid',
+  theatre: 'Theater', arts_centre: 'Kunstcentrum', cinema: 'Bioscoop', castle: 'Kasteel', monument: 'Monument', ruins: 'Ruïne',
+  archaeological_site: 'Archeologie', fort: 'Fort', manor: 'Landhuis', city_gate: 'Stadspoort', memorial: 'Gedenkteken', windmill: 'Molen',
+};
+let nearCat = 'fuel';
+try { nearCat = localStorage.getItem('nearCat') || 'fuel'; } catch (e) { /* geen opslag */ }
+const nearMemo = new Map();
+
+// Rond je eigen positie; zonder GPS rond het midden van de kaart
+function nearCentre() {
+  if (state.fix) return { lat: state.fix.lat, lon: state.fix.lon };
+  const c = map.getCenter();
+  return { lat: c.lat, lon: c.lng };
 }
 
-function showFrom() {
-  $('fromwrap').hidden = false;
-  $('swap').hidden = false;
+async function fetchNear(cat, at, km) {
+  const include = Object.entries(NEAR[cat].tags).flatMap(([k, vs]) => vs.map(v => `osm.${k}.${v}`)).join(',');
+  const params = new URLSearchParams({ lat: at.lat.toFixed(5), lon: at.lon.toFixed(5), radius: km, include, limit: '40' });
+  const res = await fetch(`${PHOTON.replace('/api/', '/reverse')}?${params}`);
+  if (!res.ok) throw new Error('dienst bezet (' + res.status + ')');
+  return (await res.json()).features.filter(f => f.properties.name).map(f => {
+    const pr = f.properties;
+    const [lon, lat] = f.geometry.coordinates;
+    const street = [pr.street, pr.housenumber].filter(Boolean).join(' ');
+    const city = pr.city || pr.town || pr.village || '';
+    return { lat, lon, title: pr.name, sub: [KIND_NL[pr.osm_value] || '', street, city].filter(Boolean).join(' · '),
+      name: [pr.name, street, city].filter(Boolean).join(', '), d: dist([at.lon, at.lat], [lon, lat]) };
+  }).sort((a, b) => a.d - b.d).slice(0, 25);
 }
 
-function openRoute(r) {
-  origin = r.from;
-  $('qfrom').value = r.from ? r.from.name : '';
-  $('q').value = r.to.name;
-  showFrom();
-  setField('to');
-  streetCtx = null;
-  setTravelMode(r.mode);
-  updateClear();
-  showPreview(r.to);
+function renderCats() {
+  const el = $('cats');
+  el.hidden = listTab !== 'near';
+  if (el.hidden || el.childElementCount) {
+    el.querySelectorAll('button').forEach(b => b.setAttribute('aria-checked', String(b.dataset.cat === nearCat)));
+    return;
+  }
+  for (const [key, c] of Object.entries(NEAR)) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.setAttribute('role', 'radio');
+    b.dataset.cat = key;
+    b.setAttribute('aria-checked', String(key === nearCat));
+    b.innerHTML = `<i class="ti ${c.icon}" aria-hidden="true"></i>${c.label}`;
+    b.addEventListener('click', () => {
+      nearCat = key;
+      try { localStorage.setItem('nearCat', key); } catch (e) { /* geen opslag */ }
+      renderCats();
+      showNear();
+    });
+    el.appendChild(b);
+  }
+}
+
+async function showNear() {
+  const seq = ++searchSeq;
+  const ul = $('results');
+  ul.innerHTML = '<li class="empty">Zoeken in de buurt…</li>';
+  const at = nearCentre(), cat = nearCat;
+  const key = cat + '|' + at.lat.toFixed(2) + '|' + at.lon.toFixed(2);
+  try {
+    if (!nearMemo.has(key)) {
+      nearMemo.set(key, (async () => {
+        // Eerst dichtbij; is daar weinig, dan verder weg kijken
+        const close = await fetchNear(cat, at, 4);
+        return close.length >= 6 ? close : fetchNear(cat, at, 25);
+      })().catch(e => { nearMemo.delete(key); throw e; }));
+    }
+    const list = await nearMemo.get(key);
+    if (seq !== searchSeq) return;
+    ul.innerHTML = list.length ? '' : '<li class="empty">Niets gevonden in de buurt.</li>';
+    for (const p of list) {
+      const li = document.createElement('li');
+      li.className = 'recent';
+      li.innerHTML = `<div class="row"><i class="ti ${NEAR[cat].icon}" aria-hidden="true"></i><div class="rtext"><div class="r1"></div><div class="r2"></div></div><span class="dist"></span></div>`;
+      li.querySelector('.r1').textContent = p.title;
+      li.querySelector('.r2').textContent = p.sub;
+      li.querySelector('.dist').textContent = fmtDist(p.d);
+      li.addEventListener('click', () => useChoice({ lat: p.lat, lon: p.lon, name: p.name }));
+      ul.appendChild(li);
+    }
+  } catch (e) {
+    if (seq === searchSeq) ul.innerHTML = '<li class="empty">Zoeken in de buurt lukt nu niet: ' + e.message + '</li>';
+  }
 }
 
 // Recente bestemmingen waarin elk getypt woord het begin van een woord is
 // ("heem" en "rotter" vinden "Heemraadssingel, Rotterdam", "raad" niet)
-const fold = t => t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+const fold = t => t.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 function matchRecent(q) {
   const words = fold(q).split(/[\s,]+/).filter(Boolean);
   if (!words.length) return [];
@@ -1409,13 +1518,13 @@ function matchRecent(q) {
   }).slice(0, 5);
 }
 
-// Bij een leeg zoekveld de tab Recent of Favorieten tonen
+// Bij een leeg zoekveld: Recent, Favorieten, In de buurt of Routes
 let listTab = 'recent';
 function setListTab(tab) {
   listTab = tab;
   document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === tab)));
-  // Toetsenbord weg, anders valt de kaart erachter
-  if (tab === 'map') field().blur();
+  // In de buurt en Routes: toetsenbord weg, dan zie je de hele lijst
+  if (tab === 'near' || tab === 'routes') field().blur();
   showRecent();
 }
 
@@ -1425,18 +1534,17 @@ function showRecent() {
   firstRecent = null;
   const ul = $('results');
   ul.innerHTML = '';
-  $('preview').hidden = true;
-  $('pick').hidden = listTab !== 'map';
-  if (listTab === 'map') { showPickMap(); return; }
+  renderCats();
+  if (listTab === 'near') { showNear(); return; }
   if (listTab === 'routes') {
-    const walks = loadWalks();
-    if (!walks.length) ul.innerHTML = '<li class="empty">Nog geen opgeslagen wandelroutes. Start een route met Lopen; de kaart voor onderweg wordt dan opgeslagen en de route verschijnt hier.</li>';
-    for (const w of walks) ul.appendChild(walkItem(w));
+    const saved = loadSaved();
+    if (!saved.length) ul.innerHTML = '<li class="empty">Nog geen routes. Elke route die je start komt hier. Met het download-icoontje rechts sla je de kaart op voor onderweg zonder bereik.</li>';
+    for (const r of saved) ul.appendChild(savedItem(r));
     return;
   }
   const fav = listTab === 'fav';
   const list = fav ? loadFavs() : loadRecent();
-  if (!fav && activeField === 'from') ul.appendChild(hereItem());
+  if (!fav && (editRow === 0 || !stops.some(s => s && s.here))) ul.appendChild(hereItem());
   if (!list.length) {
     ul.insertAdjacentHTML('beforeend', `<li class="empty">${fav ? 'Nog geen favorieten. Tik bij Recent op het sterretje om er een toe te voegen.' : 'Nog geen recente bestemmingen.'}</li>`);
     return;
@@ -1451,60 +1559,85 @@ function showRecent() {
 
 function updateClear() {
   $('qclear').hidden = !$('q').value;
-  $('qfromclear').hidden = !$('qfrom').value;
 }
 
-function openSearch() {
-  // Een bekeken plek (verrekijker) gaat voor op een route die nog loopt
-  const viewing = !!viewDest;
-  const navigating = !viewing && !!(state.nav || state.concept);
+// ---------- Het zoekscherm: tekst zoeken, overzicht en zoeken op kaart ----------
+const PANES = ['textpane', 'overview', 'mapsearch'];
+function showPane(id) {
+  for (const p of PANES) $(p).hidden = p !== id;
+  toggleMapMenu(false);
+  // Vervoer en kaartinstellingen staan in het overzicht en bovenin bij zoeken op kaart
+  const row = $('moderow');
+  if (id === 'mapsearch') $('mstop').appendChild(row);
+  else if (id === 'overview' && row.parentElement !== $('overview')) $('overview').insertBefore(row, $('preview'));
+}
+
+function openSheet() {
   $('search').hidden = false;
-  $('q').value = navigating && state.dest ? state.dest.name : viewing ? viewDest.name : '';
-  $('q-postcode').value = '';
-  $('q-city').value = '';
-  $('results').innerHTML = '';
-  $('preview').hidden = true;
-  $('pick').hidden = true;
-  $('qfrom').value = '';
-  $('fromwrap').hidden = true;
-  $('swap').hidden = true;
-  origin = null;
-  setField('to');
-  pending = null;
-  walkPick = null;
+  modeAtOpen = travelMode;
+  setTravelMode(travelMode);
+  savedPick = null;
   streetCtx = null;
   firstResult = null;
   firstRecent = null;
-  modeAtOpen = travelMode;
-  setTravelMode(travelMode);
-  listTab = 'recent';
-  document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === 'recent')));
-  if (state.concept && !viewing) {
-    origin = state.concept.origin;
-    $('qfrom').value = origin.name;
-    showFrom();
-  }
+}
+
+// Tekst zoeken voor één adresregel
+function showText(row, from) {
+  editRow = row;
+  textFrom = from;
+  showPane('textpane');
+  // Leeg veld, zodat de tabs te zien zijn; het huidige adres staat er grijs in
+  const s = stops[row];
+  const q = $('q');
+  q.value = '';
+  q.placeholder = s ? withoutPostcode(s.name) : row === 0 && stops.length > 1 ? 'Vertrekpunt zoeken' : row === stops.length - 1 ? 'Zoek adres of plaats' : 'Tussenstop zoeken';
+  $('q-postcode').value = '';
+  $('q-city').value = '';
+  streetCtx = null;
   updateClear();
-  if (navigating) showPreview(state.dest);
-  else if (viewing) showPreview(viewDest);
-  else {
-    showRecent();
-    // Op iOS opent het toetsenbord alleen als focus direct binnen de tik gebeurt
-    $('q').focus();
+  if (listTab === 'near' || listTab === 'routes') listTab = 'recent';
+  document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === listTab)));
+  showRecent();
+  // Op iOS opent het toetsenbord alleen als focus direct binnen de tik gebeurt
+  q.focus();
+}
+
+// Waarheen?: alleen de bestemming invullen, vertrek is je eigen positie
+function openSearch() {
+  openSheet();
+  stops = [HERE, null];
+  listTab = 'recent';
+  showText(1, 'home');
+}
+
+// Potloodje: het overzicht van de route die loopt (of bekeken wordt)
+function editRoute() {
+  openSheet();
+  const n = state.nav, c = state.concept;
+  if (n) {
+    setTravelMode(n.mode);
+    stops = [HERE, ...n.legStops.slice(n.legIdx).map(place)];
+  } else if (c) {
+    setTravelMode(c.mode);
+    stops = c.stops.map(place);
+  } else {
+    stops = [HERE, null];
   }
+  showOverview();
 }
 
 function closeSearch() {
   $('q').blur();
-  $('qfrom').blur();
   $('search').hidden = true;
   previewSeq++;
+  ms.seq++;
   if (state.following && state.fix) updateCamera([state.fix.lon, state.fix.lat], 0);
   // De routekaart blijft bestaan: opnieuw opbouwen kost op de iPhone seconden.
-  // De kaart om een plek te kiezen gaat weg; die is groter en wordt minder vaak gebruikt.
+  // De grote kaart om te zoeken gaat weg; die kost veel geheugen.
   previewTags.forEach(t => t.remove());
   previewTags = [];
-  if (pickmap) { pickmap.remove(); pickmap = null; }
+  if (msmap) { msmap.remove(); msmap = null; }
 }
 
 function describe(props) {
@@ -1531,8 +1664,17 @@ function dedupe(features) {
   return [...byKey.values()];
 }
 
-// Kiezen uit de suggesties neemt de waarde over en toont het routeoverzicht;
-// bij een straat zonder huisnummer kun je het nummer er nog achter typen.
+// Bij een straat zonder huisnummer kun je het nummer er nog achter typen;
+// de straat zelf staat dan als enige keuze in de lijst
+function streetItem() {
+  const li = document.createElement('li');
+  li.innerHTML = '<div class="r1"></div><div class="r2">Typ het huisnummer, of tik hier voor de straat zelf</div>';
+  li.querySelector('.r1').textContent = streetCtx.dest.name;
+  const d = streetCtx.dest;
+  li.addEventListener('click', () => { streetCtx = null; useChoice(d); });
+  return li;
+}
+
 function choose(f) {
   const p = f.properties;
   const { title, sub } = describe(p);
@@ -1544,30 +1686,29 @@ function choose(f) {
     q.value = p.name + ' ';
     q.focus();
     q.setSelectionRange(q.value.length, q.value.length);
-  } else {
-    streetCtx = null;
-    q.value = dest.name;
-    q.blur();
+    updateClear();
+    searchSeq++;
+    $('results').replaceChildren(streetItem());
+    return;
   }
-  updateClear();
+  streetCtx = null;
+  q.blur();
   useChoice(dest);
 }
 
 function searchQuery() {
   let q = field().value.trim();
-  const extra = activeField === 'to' ? [$('q-postcode').value, $('q-city').value].map(v => v.trim()).filter(Boolean) : [];
+  const extra = [$('q-postcode').value, $('q-city').value].map(v => v.trim()).filter(Boolean);
   if (extra.length) q = [q, ...extra].join(' ');
   else if (streetCtx && streetCtx.city && !q.toLowerCase().includes(streetCtx.city.toLowerCase())) q += ', ' + streetCtx.city;
   return q;
 }
 
-// Huisnummer achter een gekozen straat: geen lijst, maar het overzicht en de
-// knoppen laten staan en de route bijwerken naar het juiste huisnummer.
-async function resolveHouse(num, seq) {
+// Huisnummer achter een gekozen straat opzoeken
+async function resolveHouse(num, seq, go) {
   const { street, city, dest: streetDest } = streetCtx;
   const params = new URLSearchParams({ q: `${street} ${num}, ${city}`, limit: '10' });
   if (state.fix) { params.set('lat', state.fix.lat); params.set('lon', state.fix.lon); }
-  $('psum').textContent = 'Huisnummer zoeken…';
   try {
     const data = await (await fetch(`${PHOTON}?${params}`)).json();
     if (seq !== searchSeq) return;
@@ -1575,15 +1716,26 @@ async function resolveHouse(num, seq) {
     const houses = data.features.filter(f => f.properties.housenumber && f.properties.street === street);
     const norm = f => f.properties.housenumber.toLowerCase().replace(/\s+/g, '');
     const f = houses.find(h => norm(h) === want) || houses.find(h => new RegExp('^' + want + '(\\D|$)').test(norm(h)));
+    const ul = $('results');
     if (f) {
       const { title, sub } = describe(f.properties);
       const [lon, lat] = f.geometry.coordinates;
-      useChoice({ lat, lon, name: [title, sub].filter(Boolean).join(', ') }, title);
+      const d = { lat, lon, name: [title, sub].filter(Boolean).join(', ') };
+      if (go) { streetCtx = null; useChoice(d, title); return; }
+      const li = document.createElement('li');
+      li.innerHTML = '<div class="r1"></div><div class="r2"></div>';
+      li.querySelector('.r1').textContent = title;
+      li.querySelector('.r2').textContent = sub;
+      li.addEventListener('click', () => { streetCtx = null; field().blur(); useChoice(d, title); });
+      firstResult = { house: d, title };
+      ul.replaceChildren(li, streetItem());
     } else {
-      useChoice(streetDest, `Nummer ${num} niet gevonden, route naar de straat`);
+      if (go) { streetCtx = null; useChoice(streetDest, `Nummer ${num} niet gevonden, route naar de straat`); return; }
+      ul.replaceChildren(streetItem());
+      ul.insertAdjacentHTML('afterbegin', `<li class="empty">Nummer ${num} niet gevonden</li>`);
     }
   } catch (e) {
-    if (seq === searchSeq) $('psum').textContent = 'Zoeken lukt nu niet. Controleer je verbinding.';
+    if (seq === searchSeq) $('results').innerHTML = '<li class="empty">Zoeken lukt nu niet. Controleer je verbinding.</li>';
   }
 }
 
@@ -1593,8 +1745,8 @@ async function search() {
   const v = field().value;
   if (streetCtx && v.startsWith(streetCtx.street)) {
     const num = v.slice(streetCtx.street.length).trim();
-    if (num) resolveHouse(num, seq);
-    else if ((activeField === 'from' ? origin : pending) !== streetCtx.dest) useChoice(streetCtx.dest);
+    if (num) resolveHouse(num, seq, false);
+    else ul.replaceChildren(streetItem());
     return;
   }
   const q = searchQuery();
@@ -1603,11 +1755,7 @@ async function search() {
   firstRecent = recents[0] || null;
   firstResult = null;
   ul.innerHTML = '';
-  $('pick').hidden = true;
-  if (recents.length) {
-    $('preview').hidden = true;
-    for (const d of recents) ul.appendChild(recentItem(d));
-  }
+  for (const d of recents) ul.appendChild(recentItem(d));
   if (q.length < 3) return;
   const params = new URLSearchParams({ q, limit: '12' });
   if (state.fix) { params.set('lat', state.fix.lat); params.set('lon', state.fix.lon); }
@@ -1620,7 +1768,6 @@ async function search() {
       .filter(f => { const { title, sub } = describe(f.properties); return !known.has([title, sub].filter(Boolean).join(', ')); })
       .slice(0, 8);
     firstResult = features[0] || null;
-    $('preview').hidden = true;
     if (!features.length && !recents.length) { ul.innerHTML = '<li class="empty">Niets gevonden</li>'; return; }
     for (const f of features) {
       const { title, sub } = describe(f.properties);
@@ -1650,14 +1797,82 @@ function onSearchInput() {
   searchTimer = setTimeout(search, 300);
 }
 
-// ---------- Routeoverzicht in de dialoog ----------
+function submitSearch() {
+  if (streetCtx) {
+    const num = field().value.slice(streetCtx.street.length).trim();
+    if (num) resolveHouse(num, ++searchSeq, true);
+    else { const d = streetCtx.dest; streetCtx = null; useChoice(d); }
+  } else if (firstRecent) chooseRecent(firstRecent);
+  else if (firstResult) choose(firstResult);
+}
+
+// ---------- Overzicht: adresregels en de route ----------
 let pmap = null, previewNav = null, previewSeq = 0, previewData = null;
 
-function previewEnds(start, dest) {
-  const pts = [];
-  if (start) pts.push({ type: 'Feature', geometry: { type: 'Point', coordinates: start }, properties: { kind: 'start' } });
-  pts.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [dest.lon, dest.lat] }, properties: { kind: 'end' } });
-  return { type: 'FeatureCollection', features: pts };
+const pointFeature = (pt, kind) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: pt }, properties: { kind } });
+// Begin blauw, tussenstops wit met blauwe rand, eind rood
+function stopPoints(pts) {
+  return { type: 'FeatureCollection', features: pts.map((p, i) => pointFeature(Array.isArray(p) ? p : [p.lon, p.lat],
+    i === 0 ? 'start' : i === pts.length - 1 ? 'end' : 'via')) };
+}
+function endsPaint(dark, start = 13, end = 10, via = 9, width = 4) {
+  const blue = dark ? '#3D8BFF' : '#1F6FE0';
+  return { 'circle-radius': ['match', ['get', 'kind'], 'start', start, 'via', via, 'ghost', via, end], 'circle-stroke-width': width,
+    'circle-stroke-color': ['match', ['get', 'kind'], 'via', blue, 'ghost', '#A9B4C2', '#ffffff'],
+    'circle-color': ['match', ['get', 'kind'], 'start', blue, 'via', '#ffffff', 'ghost', '#ffffff', '#E5484D'],
+    'circle-opacity': ['match', ['get', 'kind'], 'ghost', 0.7, 1], 'circle-stroke-opacity': ['match', ['get', 'kind'], 'ghost', 0.8, 1] };
+}
+
+function renderStops(fresh = -1) {
+  const ul = $('stops');
+  ul.innerHTML = '';
+  stops.forEach((s, i) => {
+    const li = document.createElement('li');
+    li.className = 'stop';
+    li.dataset.i = i;
+    const kind = i === 0 ? 'start' : i === stops.length - 1 ? 'end' : 'via';
+    li.innerHTML = '<span class="grip" aria-label="Verslepen"><i class="ti ti-grip-vertical" aria-hidden="true"></i></span>'
+      + `<span class="sdot k-${kind}" aria-hidden="true"></span>`
+      + `<button type="button" class="sfield${!s ? ' empty' : s.here ? ' here' : ''}${i === fresh ? ' new' : ''}"></button>`
+      + '<button type="button" class="sbtn" aria-label="Kies op de kaart"><i class="ti ti-map-pin" aria-hidden="true"></i></button>'
+      + '<button type="button" class="sbtn x" aria-label="Regel weghalen"><i class="ti ti-x" aria-hidden="true"></i></button>';
+    li.querySelector('.sfield').textContent = s ? withoutPostcode(s.name)
+      : i === fresh ? 'Zoek adres of kies op kaart' : kind === 'start' ? 'Vertrekpunt' : kind === 'end' ? 'Bestemming' : 'Tussenstop';
+    li.querySelector('.sfield').addEventListener('click', () => { if (!li.dataset.swiped) showText(i, 'overview'); });
+    li.querySelector('.sbtn').addEventListener('click', () => openMapSearch('row', 'overview', i));
+    li.querySelector('.x').addEventListener('click', () => removeRow(i));
+    makeDraggable(li, li.querySelector('.grip'), list => {
+      const order = [...list.children].map(el => stops[+el.dataset.i]);
+      const moved = order.some((s2, k) => s2 !== stops[k]);
+      stops = order;
+      renderStops();
+      if (moved) { savedPick = null; computePreview(); }
+    });
+    ul.appendChild(li);
+  });
+}
+
+// Weghalen; er blijven altijd twee regels (vertrek en bestemming), dan wordt de regel leeg
+function removeRow(i) {
+  if (stops.length > 2) stops.splice(i, 1); else stops[i] = null;
+  savedPick = null;
+  renderStops();
+  computePreview();
+}
+
+// De grijze +: een lege regel vóór de bestemming
+function addRow() {
+  stops.splice(stops.length - 1, 0, null);
+  renderStops(stops.length - 2);
+  const ul = $('stops');
+  ul.scrollTop = ul.scrollHeight;
+}
+
+function showOverview(note) {
+  showPane('overview');
+  while (stops.length < 2) stops.push(null);
+  renderStops();
+  computePreview(note);
 }
 
 // Geschat brandstofverbruik (liter): per stuk route de gemiddelde snelheid, met het
@@ -1706,21 +1921,25 @@ function drawAltTags() {
 
 function drawPreview() {
   if (!pmap || !previewData || !pmap.getSource('route')) return;
-  const { coords, dest, start, routes, sel } = previewData;
+  const { coords, pts, routes, sel } = previewData;
   pmap.getSource('route').setData(lineFeature(coords));
   pmap.getSource('alts').setData({ type: 'FeatureCollection',
     features: (routes || []).map((r, i) => ({ ...lineFeature(r.shape), properties: { i } })).filter((_, i) => i !== sel) });
-  pmap.getSource('ends').setData(previewEnds(start, dest));
+  pmap.getSource('ends').setData(stopPoints(pts));
   const all = (routes || []).flatMap(r => r.shape);
-  if (!all.length) all.push(...(coords.length ? coords : [start, [dest.lon, dest.lat]].filter(Boolean)));
-  const b = all.reduce((bb, c) => bb.extend(c), new maplibregl.LngLatBounds(all[0], all[0]));
+  if (!all.length) all.push(...(coords.length ? coords : pts.map(p => [p.lon, p.lat])));
   pmap.resize();
-  pmap.fitBounds(b, { padding: 36, duration: 0, maxZoom: 16 });
+  if (all.length) {
+    const b = all.reduce((bb, c) => bb.extend(c), new maplibregl.LngLatBounds(all[0], all[0]));
+    pmap.fitBounds(b, { padding: 36, duration: 0, maxZoom: 16 });
+  }
   drawAltTags();
 }
 
-function previewSummary(note, time, dist) {
-  $('psum').textContent = (note ? note + ' · ' : '') + `${fmtDuration(time)} · ${fmtDist(dist)} · ${MODE_LABEL[travelMode]}`;
+function previewSummary(note, time, d) {
+  const n = filled().length - 2;
+  $('psum').textContent = (note ? note + ' · ' : '') + `${fmtDuration(time)} · ${fmtDist(d)} · ${MODE_LABEL[travelMode]}`
+    + (n > 0 ? ` · ${n} ${n === 1 ? 'tussenstop' : 'tussenstops'}` : '');
 }
 
 // Andere route kiezen: tik op het label of op de grijze lijn
@@ -1752,114 +1971,64 @@ async function ensurePreviewMap() {
       paint: { 'line-color': dark ? DARK_BG : '#ffffff', 'line-width': 6 } }, 'route-casing');
     pmap.addLayer({ id: 'alts-line', type: 'line', source: 'alts', layout: { 'line-cap': 'round', 'line-join': 'round' },
       paint: { 'line-color': dark ? '#5A6270' : '#A9B4C2', 'line-width': 3.5 } }, 'route-casing');
-    pmap.addSource('ends', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-    pmap.addLayer({ id: 'ends', type: 'circle', source: 'ends', paint: {
-      'circle-radius': 8, 'circle-stroke-width': 3, 'circle-stroke-color': '#ffffff',
-      'circle-color': ['match', ['get', 'kind'], 'start', '#1F6FE0', '#E5484D'] } });
+    pmap.addSource('ends', { type: 'geojson', data: EMPTY_FC });
+    pmap.addLayer({ id: 'ends', type: 'circle', source: 'ends', paint: endsPaint(dark, 8, 8, 6, 3) });
     drawPreview();
   });
 }
 
-// De kaart is niet te verschuiven, maar tikken op een grijze route kiest hem wel
+// Tik op een grijze route kiest hem; elders op de kaart: de route aanpassen op de grote kaart
 $('pmap').addEventListener('click', e => {
-  if (!pmap || !pmap.getLayer('alts-line')) return;
-  const r = $('pmap').getBoundingClientRect();
-  const x = e.clientX - r.left, y = e.clientY - r.top;
-  const f = pmap.queryRenderedFeatures([[x - 14, y - 14], [x + 14, y + 14]], { layers: ['alts-line'] })[0];
-  if (f) selectAlt(f.properties.i);
+  if (e.target.closest('.alttag')) return;
+  if (pmap && pmap.getLayer('alts-line')) {
+    const r = $('pmap').getBoundingClientRect();
+    const x = e.clientX - r.left, y = e.clientY - r.top;
+    const f = pmap.queryRenderedFeatures([[x - 14, y - 14], [x + 14, y + 14]], { layers: ['alts-line'] })[0];
+    if (f) { selectAlt(f.properties.i); return; }
+  }
+  openMapSearch('edit', 'overview');
 });
 
 const MAX_DIST = { bicycle: 150000, pedestrian: 100000 };
 
-async function showPreview(dest, note) {
-  pending = dest;
-  firstResult = null;
-  firstRecent = null;
-  $('results').innerHTML = '';
-  $('pick').hidden = true;
-  $('preview').hidden = false;
-  $('stop').style.visibility = state.nav || state.concept ? 'visible' : 'hidden';
+async function computePreview(note) {
+  const list = filled();
   $('qok').disabled = true;
-  $('psum').textContent = 'Route berekenen…';
   previewNav = null;
   const seq = ++previewSeq;
   await ensurePreviewMap();
-  // Zonder route: oude lijnen weg, alleen begin- en eindpunt
+  if (seq !== previewSeq) return;
+  const pts = list.map(resolveStop);
   const noRoute = msg => {
-    const from = origin || state.fix;
-    previewData = { coords: [], dest, start: from && [from.lon, from.lat], routes: null, sel: 0, note };
+    previewData = { coords: [], pts: pts.filter(Boolean), routes: null, sel: 0, note };
     drawPreview();
     $('psum').textContent = msg;
   };
-  // Fietsen en lopen rekent de routedienst niet verder dan 150 en 100 km hemelsbreed.
-  // Dan geen route en blijft de groene knop uit; de verrekijker werkt wel.
-  const from = origin || state.fix, max = MAX_DIST[travelMode];
-  if (max && from && dist([from.lon, from.lat], [dest.lon, dest.lat]) > max) {
-    // Een lopende route of conceptroute naar deze plek vervalt dan helemaal
-    if ((state.nav || state.concept) && state.dest && state.dest.lat === dest.lat && state.dest.lon === dest.lon) {
-      stopRoute();
-      $('stop').style.visibility = 'hidden';
-    }
-    noRoute(`Te ver om te ${travelMode === 'bicycle' ? 'fietsen' : 'lopen'} (meer dan ${max / 1000} km)`);
-    return;
-  }
+  if (list.length < 2) { noRoute(list.length ? 'Vul nog een adres in' : 'Kies waar je heen wilt'); return; }
+  if (pts.some(p => !p)) { noRoute('Nog geen GPS-positie voor "Huidige locatie"'); return; }
+  // Fietsen en lopen rekent de routedienst niet verder dan 150 en 100 km hemelsbreed
+  const max = MAX_DIST[travelMode];
+  const span = pts.slice(1).reduce((s, p, i) => s + dist([pts[i].lon, pts[i].lat], [p.lon, p.lat]), 0);
+  if (max && span > max) { noRoute(`Te ver om te ${travelMode === 'bicycle' ? 'fietsen' : 'lopen'} (meer dan ${max / 1000} km)`); return; }
+  noRoute('Route berekenen…');
   try {
-    const c = state.concept;
-    let coords, dist, time, routes = null;
-    if (c && dest === c.dest && origin === c.origin && c.mode === travelMode) {
-      previewNav = c.nav;
-      coords = c.nav.shape; dist = c.nav.total; time = c.nav.time;
-    } else {
-      // Ook bij de route die al loopt opnieuw rekenen, vanaf waar je nu bent: dan zie je
-      // na een wissel van vervoer altijd een verse route met alternatieven
-      if (!state.fix && !origin) throw new Error('Nog geen GPS-positie');
-      noRoute('Route berekenen…');
-      // Opgeslagen wandeling: de bewaarde route, zonder internet. Anders de snelste plus
-      // maximaal twee alternatieven
-      const w = walkPick;
-      routes = w && w.to.name === dest.name && travelMode === 'pedestrian' ? [w.nav] : await fetchRoutes(dest, origin, 2);
-      if (seq !== previewSeq) return;
-      const r = routes[0];
-      previewNav = r;
-      coords = r.shape; dist = r.total; time = r.time;
-    }
-    const start = coords[0] || (origin ? [origin.lon, origin.lat] : state.fix && [state.fix.lon, state.fix.lat]);
-    previewData = { coords, dest, start, routes, sel: 0, note };
+    // Gedownloade route: zonder internet uit de opslag. Anders de snelste, en bij alleen
+    // vertrek en bestemming maximaal twee alternatieven
+    const sp = savedPick;
+    const routes = sp && sp.sig === sigOf(list, travelMode) ? [freshNav(sp.nav)] : await fetchRoutes(pts, 2);
+    if (seq !== previewSeq) return;
+    for (const r of routes) r.legStops = pts.slice(1);
+    previewNav = routes[0];
+    previewData = { coords: previewNav.shape, pts, routes, sel: 0, note };
     drawPreview();
-    previewSummary(note, time, dist);
+    previewSummary(note, previewNav.time, previewNav.total);
     $('qok').disabled = false;
   } catch (e) {
     if (seq === previewSeq) noRoute('Route berekenen lukt niet: ' + e.message);
   }
 }
 
-// ---------- Bestemming kiezen op de kaart ----------
-// De pin staat vast in het midden; je schuift en zoomt de kaart eronder.
-let pickmap = null;
-
-async function showPickMap() {
-  const chosen = activeField === 'from' ? origin : pending;
-  let center, zoom = 15;
-  if (!chosen && !state.following) {
-    // Je keek op de live kaart naar een eigen plek: daar verder kiezen, net zo ver ingezoomd
-    center = map.getCenter().toArray();
-    zoom = map.getZoom();
-  } else {
-    const at = chosen || (activeField === 'from' ? state.fix : state.dest || state.fix);
-    center = at ? [at.lon, at.lat] : [5.1214, 52.0907];
-  }
-  if (!pickmap) {
-    pickmap = new maplibregl.Map({ container: 'pickmap', style: await currentStyle(true), center, zoom, ...SMALL_MAP,
-      attributionControl: false, dragRotate: false, pitchWithRotate: false });
-    pickmap.touchZoomRotate.disableRotation();
-    pickmap._dark = theme();
-  } else {
-    pickmap.resize();
-    pickmap.jumpTo({ center, zoom });
-  }
-}
-
-// Naam van de gekozen plek: dichtstbijzijnde adres, anders de coördinaten
+// Naam van een plek: dichtstbijzijnde adres, anders de coördinaten
 async function placeName(lat, lon) {
   try {
     const data = await (await fetch(`${PHOTON.replace('/api/', '/reverse')}?lat=${lat}&lon=${lon}&limit=1`)).json();
@@ -1872,113 +2041,373 @@ async function placeName(lat, lon) {
   return `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
 }
 
-async function confirmPick() {
-  const { lng: lon, lat } = pickmap.getCenter();
-  $('pickok').disabled = true;
-  const name = await placeName(lat, lon);
-  $('pickok').disabled = false;
-  if ($('pick').hidden) return;
-  streetCtx = null;
-  field().value = name;
-  updateClear();
-  useChoice({ lat, lon, name });
-}
-
 function confirmPreview() {
-  if (!pending) return;
-  endView();
-  const dest = pending;
-  if (previewNav && travelMode === 'pedestrian') preloadWalk(previewNav, origin, dest);
-  if (!dest.here) saveRecent(origin && previewNav ? routeEntry(origin, dest, travelMode) : place(dest));
+  if (!previewNav) return;
+  const list = filled();
+  const nav = previewNav;
+  previewNav = null;
+  const fromHere = list[0].here;
+  saveRecent(fromHere && list.length === 2 ? place(list[1]) : routeEntry(list, travelMode));
+  rememberRoute(nav.legStops ? [resolveStop(list[0]), ...nav.legStops] : list.map(resolveStop), travelMode, nav);
   closeSearch();
-  // Eigen vertrekpunt: de route alleen tonen, niet navigeren vanaf je huidige positie
-  if (origin && previewNav) {
-    showConcept({ nav: previewNav, origin, dest, mode: travelMode });
-    previewNav = null;
+  // Eigen vertrekpunt: de route alleen tonen (gestippeld), niet navigeren
+  if (!fromHere) {
+    showConcept({ nav, stops: list, mode: travelMode });
     return;
   }
   clearConcept();
   // Echte navigatie: de live kaart volgt meteen weer je eigen positie
   follow();
-  if (previewNav) {
-    // Zelfde bestemming opnieuw berekend: het blauwe beginpunt blijft waar je vertrok
-    const same = state.nav && state.dest && state.dest.name === dest.name;
-    state.navStart = same && state.navStart || previewNav.shape[0];
-    state.dest = dest;
-    state.nav = previewNav;
-    previewNav = null;
-    state.lastRouteAt = Date.now();
-    if (DEMO) demo.along = 0;
-    setMode('nav');
-    if (state.fix) updateNav([state.fix.lon, state.fix.lat]);
-  } else if (!(state.nav && dest === state.dest)) {
-    startRoute(dest);
-  }
+  // Zelfde bestemming opnieuw berekend: het blauwe beginpunt blijft waar je vertrok
+  const dest = list[list.length - 1];
+  const same = state.nav && state.dest && state.dest.name === dest.name;
+  state.navStart = same && state.navStart || nav.shape[0];
+  state.dest = dest;
+  state.nav = nav;
+  nav.legIdx = 0;
+  shownLeg = -1;
+  state.lastRouteAt = Date.now();
+  if (DEMO) demo.along = 0;
+  setMode('nav');
+  if (state.fix) updateNav([state.fix.lon, state.fix.lat]);
 }
 
-// Verrekijker: naar de bestemming op de live kaart, zonder navigatie en zonder routelijn.
-// Met de richtknop ga je terug naar je eigen positie.
-function viewPreview() {
-  if (!pending) return;
-  const dest = pending;
-  if (!dest.here) saveRecent(place(dest));
+// ---------- Zoeken op kaart ----------
+// De pin staat vast in het midden; je schuift de kaart eronder. Drie soorten:
+// 'build' (vanaf home: punten zetten en verder kiezen), 'edit' (de hele route aanpassen)
+// en 'row' (één adresregel kiezen, met de route erbij).
+let msmap = null;
+const ms = { kind: 'build', back: 'home', row: 0, prefix: [], pts: [], legs: [], action: null, hover: { type: 'free' }, seq: 0, ui: '' };
+const ll = p => [p.lon, p.lat];
+
+async function openMapSearch(kind, back, row = 0) {
+  ms.kind = kind;
+  ms.back = back;
+  ms.row = row;
+  ms.action = null;
+  ms.hover = { type: 'free' };
+  ms.ui = '';
+  ms.seq++;
+  ms.prefix = [];
+  ms.pts = [];
+  ms.legs = [];
+  const list = filled();
+  if (kind === 'build') {
+    ms.prefix = list;
+  } else if (kind === 'edit') {
+    // Zonder GPS kan je eigen positie niet op de kaart; die blijft dan gewoon vooraan
+    if (list[0] && list[0].here && !state.fix) ms.prefix = [list[0]];
+    ms.pts = list.slice(ms.prefix.length).map(resolveStop).filter(Boolean);
+    // De berekende route meteen tonen, per etappe; anders etappe voor etappe uitrekenen
+    const n = previewData && previewData.routes && previewData.routes[previewData.sel];
+    ms.legs = ms.pts.slice(1).map(() => null);
+    if (n && n.legs && n.legs.length === ms.legs.length && !ms.prefix.length) {
+      let from = 0;
+      ms.legs = n.legs.map(l => { const s = n.shape.slice(from, l.endIdx + 1); from = l.endIdx; return s; });
+    }
+  } else {
+    ms.pts = list.map(resolveStop).filter(Boolean);
+  }
+  showPane('mapsearch');
+  await ensureMsMap();
+  if (!msmap) return;
+  // Waar de kaart begint
+  const target = kind === 'row' ? stops[row] && resolveStop(stops[row]) || resolveStop(stops[row - 1]) || hereNow()
+    : kind === 'build' ? hereNow() : null;
+  const routeCoords = kind === 'row' && previewData ? previewData.coords : ms.legs.flat();
+  const all = [...routeCoords, ...ms.pts.map(ll)];
+  msmap.resize();
+  if (target) msmap.jumpTo({ center: ll(target), zoom: 15.5 });
+  else if (all.length) {
+    const b = all.reduce((bb, c) => bb.extend(c), new maplibregl.LngLatBounds(all[0], all[0]));
+    msmap.fitBounds(b, { padding: { top: 90, bottom: 190, left: 40, right: 40 }, duration: 0, maxZoom: 16 });
+  } else {
+    const c = map.getCenter();
+    msmap.jumpTo({ center: c, zoom: 15 });
+  }
+  msDraw();
+  ms.legs.forEach((l, i) => { if (!l) computeLeg(i); });
+}
+
+async function ensureMsMap() {
+  if (msmap) return;
+  const style = await currentStyle(true);
+  if (msmap || $('mapsearch').hidden) return;
+  const c = state.fix ? [state.fix.lon, state.fix.lat] : map.getCenter().toArray();
+  msmap = new maplibregl.Map({ container: 'msmap', style, center: c, zoom: 15, ...SMALL_MAP,
+    attributionControl: false, dragRotate: false, pitchWithRotate: false });
+  msmap.touchZoomRotate.disableRotation();
+  msmap._dark = theme();
+  const m = msmap;
+  await new Promise(r => m.once('style.load', r));
+  if (msmap !== m) return;
+  const dark = theme() === 'dark';
+  m.addSource('old', { type: 'geojson', data: EMPTY_FC });
+  m.addLayer({ id: 'old-line', type: 'line', source: 'old', layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: { 'line-color': dark ? '#5A6270' : '#A9B4C2', 'line-width': 6 } });
+  addRouteLayers(m, []);
+  m.setPaintProperty('route-casing', 'line-width', 10);
+  m.setPaintProperty('route-line', 'line-width', 6);
+  m.addSource('guide', { type: 'geojson', data: EMPTY_FC });
+  m.addLayer({ id: 'guide', type: 'line', source: 'guide', layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: { 'line-color': dark ? '#f2f2f7' : '#1c1c1e', 'line-width': 2.2, 'line-dasharray': [3, 2.5], 'line-opacity': 0.75 } });
+  m.addSource('pts', { type: 'geojson', data: EMPTY_FC });
+  m.addLayer({ id: 'pts', type: 'circle', source: 'pts', paint: endsPaint(dark, 9, 8, 7, 3.5) });
+  let raf = 0;
+  m.on('move', () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; msMove(); }); });
+}
+
+// Tekent de route, de punten en (tijdens een wijziging) de oude stukken in grijs
+function msDraw() {
+  if (!msmap || !msmap.getSource('pts')) return;
+  const a = ms.action;
+  const oldLegs = new Set();
+  if (a && a.type === 'insert') oldLegs.add(a.i);
+  if (a && (a.type === 'move' || a.type === 'remove')) { oldLegs.add(a.i - 1); oldLegs.add(a.i); }
+  let solid;
+  if (ms.kind === 'row') solid = previewData && previewData.coords.length ? [lineFeature(previewData.coords)] : [];
+  else solid = ms.legs.map((l, i) => (l && !oldLegs.has(i) ? lineFeature(l) : null)).filter(Boolean);
+  msmap.getSource('route').setData({ type: 'FeatureCollection', features: solid });
+  msmap.getSource('old').setData({ type: 'FeatureCollection',
+    features: [...oldLegs].filter(i => ms.legs[i]).map(i => lineFeature(ms.legs[i])) });
+  const fc = stopPoints(ms.pts);
+  // Vanaf home zijn de gezette punten tussenstops na je eigen positie
+  if (ms.kind === 'build') fc.features.forEach(f => { f.properties.kind = 'via'; });
+  if (a && (a.type === 'move' || a.type === 'remove')) fc.features[a.i].properties.kind = 'ghost';
+  // Je eigen positie altijd als blauwe stip, ook als die (nog) geen adresregel is
+  const me = hereNow();
+  if (me && !ms.pts.some(p => p.here)) fc.features.unshift(pointFeature(ll(me), 'start'));
+  msmap.getSource('pts').setData(fc);
+  msMove(true);
+}
+
+// Waar staat de pin: op een punt, op de route, of vrij. Daarbij hoort het actiekaartje.
+function msHover() {
+  if (ms.kind === 'row' || ms.action) return { type: 'free' };
+  const cv = msmap.getCanvas();
+  const c = { x: cv.clientWidth / 2, y: cv.clientHeight / 2 };
+  let best = null;
+  ms.pts.forEach((p, i) => {
+    const q = msmap.project(ll(p));
+    const d = Math.hypot(q.x - c.x, q.y - c.y);
+    if (d < 24 && (!best || d < best.d)) best = { type: 'wp', i, d };
+  });
+  if (best) return best;
+  ms.legs.forEach((l, i) => {
+    const line = l || [ll(ms.pts[i]), ll(ms.pts[i + 1])];
+    const step = Math.max(1, Math.ceil(line.length / 400));
+    let prev = msmap.project(line[0]);
+    for (let k = step; k < line.length + step - 1; k += step) {
+      const q = msmap.project(line[Math.min(k, line.length - 1)]);
+      const dx = q.x - prev.x, dy = q.y - prev.y, len2 = dx * dx + dy * dy;
+      const t = len2 ? Math.max(0, Math.min(1, ((c.x - prev.x) * dx + (c.y - prev.y) * dy) / len2)) : 0;
+      const d = Math.hypot(prev.x + t * dx - c.x, prev.y + t * dy - c.y);
+      if (d < 16 && (!best || d < best.d)) best = { type: 'seg', i, d };
+      prev = q;
+    }
+  });
+  return best || { type: 'free' };
+}
+
+function msMove(force) {
+  if (!msmap || !msmap.getSource('guide')) return;
+  ms.hover = msHover();
+  const c = msmap.getCenter().toArray();
+  const a = ms.action, P = ms.pts;
+  let guide = [];
+  if (a && a.type === 'insert') guide = [[ll(P[a.i]), c, ll(P[a.i + 1])]];
+  else if (a && a.type === 'move') guide = [[P[a.i - 1] && ll(P[a.i - 1]), c, P[a.i + 1] && ll(P[a.i + 1])].filter(Boolean)];
+  else if (a && a.type === 'remove' && P[a.i - 1] && P[a.i + 1]) guide = [[ll(P[a.i - 1]), ll(P[a.i + 1])]];
+  else if (!a && ms.kind === 'build' && P.length && ms.hover.type === 'free') guide = [[ll(P[P.length - 1]), c]];
+  // Etappes die nog berekend worden: een rechte hulplijn
+  if (ms.kind !== 'row') ms.legs.forEach((l, i) => { if (!l) guide.push([ll(P[i]), ll(P[i + 1])]); });
+  msmap.getSource('guide').setData({ type: 'FeatureCollection', features: guide.filter(g => g.length > 1).map(lineFeature) });
+  msUi(force);
+}
+
+const actBtn = (cls, icon, label, fn) => {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'roundbtn ' + cls;
+  b.setAttribute('aria-label', label);
+  b.innerHTML = `<i class="ti ${icon}" aria-hidden="true"></i>`;
+  b.addEventListener('click', e => { e.stopPropagation(); fn(); });
+  return b;
+};
+const ACT_TEXT = { insert: ['ti-plus', 'Punt'], move: ['ti-arrows-move', 'Verplaats'], remove: ['ti-minus', 'Verwijder'] };
+
+// Knoppen en hint; alleen opnieuw opbouwen als er iets verandert
+function msUi(force) {
+  const a = ms.action, h = ms.hover;
+  const key = [ms.kind, a && a.type, h.type, h.i, ms.pts.length].join('|');
+  if (key === ms.ui && !force) return;
+  ms.ui = key;
+  $('mbtns').classList.toggle('dim', !!a);
+  $('msadd').hidden = ms.kind === 'row' || !!a || h.type !== 'free';
+  const card = $('actcard');
+  card.replaceChildren();
+  if (a) {
+    const [icon, text] = ACT_TEXT[a.type];
+    const lbl = document.createElement('span');
+    lbl.className = 'lbltxt';
+    lbl.innerHTML = `<i class="ti ${icon}" aria-hidden="true"></i>${text}`;
+    const sep = document.createElement('span');
+    sep.className = 'sep';
+    card.append(lbl, sep, actBtn('addbig', 'ti-arrow-back-up', 'Annuleren', msCancel), actBtn('okbig', 'ti-check', 'Bevestigen', msConfirm));
+  } else if (h.type === 'seg') {
+    card.append(actBtn('viewbig', 'ti-plus', 'Hier een routepunt invoegen', () => msStart({ type: 'insert', i: h.i })));
+  } else if (h.type === 'wp') {
+    card.append(actBtn('yellowbig', 'ti-minus', 'Dit punt verwijderen', () => msStart({ type: 'remove', i: h.i })),
+      actBtn('addbig', 'ti-arrows-move', 'Dit punt verplaatsen', () => msStart({ type: 'move', i: h.i })));
+  }
+  card.hidden = !card.childElementCount;
+  const hint = a && a.type === 'insert' ? 'Schuif de kaart naar het nieuwe punt'
+    : a && a.type === 'move' ? 'Schuif de kaart naar de nieuwe plek'
+    : a && a.type === 'remove' ? 'Punt verwijderen?'
+    : ms.kind === 'row' ? 'Schuif de kaart tot de pin op de goede plek staat'
+    : ms.kind === 'build' && !ms.pts.length ? 'Schuif de kaart tot de pin goed staat' : '';
+  $('mshint').textContent = hint;
+  $('mshint').hidden = !hint;
+}
+
+function msStart(action) {
+  ms.action = action;
+  // Verwijderen gebeurt op de plek zelf; bij invoegen en verplaatsen schuif je daarna de kaart
+  msDraw();
+}
+function msCancel() {
+  ms.action = null;
+  msDraw();
+}
+
+// Een nieuw punt op de plek van de pin; de naam (het adres) komt erachteraan
+function pinPlace() {
+  const { lng: lon, lat } = msmap.getCenter();
+  const p = { lat, lon, name: `${lat.toFixed(5)}, ${lon.toFixed(5)}` };
+  p.naming = placeName(lat, lon).then(n => { p.name = n; });
+  return p;
+}
+
+function msConfirm() {
+  const a = ms.action;
+  if (!a) return;
+  const P = ms.pts, L = ms.legs;
+  const redo = [];
+  if (a.type === 'insert') {
+    P.splice(a.i + 1, 0, pinPlace());
+    L.splice(a.i, 1, null, null);
+    redo.push(a.i, a.i + 1);
+  } else if (a.type === 'move') {
+    P[a.i] = pinPlace();
+    if (a.i > 0) { L[a.i - 1] = null; redo.push(a.i - 1); }
+    if (a.i < L.length) { L[a.i] = null; redo.push(a.i); }
+  } else {
+    P.splice(a.i, 1);
+    if (a.i === 0) L.splice(0, 1);
+    else if (a.i >= L.length) L.splice(a.i - 1, 1);
+    else { L.splice(a.i - 1, 2, null); redo.push(a.i - 1); }
+  }
+  ms.action = null;
+  msDraw();
+  redo.forEach(computeLeg);
+}
+
+// De blauwe +: hier een punt zetten en verder kiezen; het stuk ernaartoe wordt meteen berekend
+function msAdd() {
+  if (ms.action || ms.kind === 'row') return;
+  ms.pts.push(pinPlace());
+  if (ms.pts.length > 1) {
+    ms.legs.push(null);
+    computeLeg(ms.legs.length - 1);
+  }
+  msDraw();
+}
+
+// Eén etappe over de weg uitrekenen; klopt de etappe daarna niet meer (punt verplaatst), dan vervalt hij
+async function computeLeg(i) {
+  const a = ms.pts[i], b = ms.pts[i + 1], seq = ms.seq;
+  if (!a || !b) return;
+  try {
+    const [r] = await fetchRoutes([a, b], 0);
+    if (seq !== ms.seq) return;
+    const j = ms.pts.findIndex((p, k) => p === a && ms.pts[k + 1] === b);
+    if (j < 0 || j >= ms.legs.length) return;
+    ms.legs[j] = r.shape;
+    msDraw();
+  } catch (e) { /* de rechte hulplijn blijft staan */ }
+}
+
+const cleanPlace = p => (p.here ? HERE : { lat: p.lat, lon: p.lon, name: p.name });
+
+async function msOk() {
+  if (ms.action || !msmap) return;
+  if (ms.kind === 'row') {
+    const p = pinPlace();
+    stops[ms.row] = p;
+  } else {
+    // Vanaf home: de plek onder de pin is het laatste punt (tenzij je daar net een punt zette)
+    const last = ms.pts[ms.pts.length - 1];
+    const c = msmap.getCenter().toArray();
+    if (ms.kind === 'build' && ms.hover.type === 'free' && (!last || dist(ll(last), c) > 15)) ms.pts.push(pinPlace());
+    if (ms.kind === 'build' && !ms.pts.length) return;
+    stops = [...ms.prefix, ...ms.pts];
+  }
+  const naming = stops.filter(s => s && s.naming).map(s => s.naming);
+  if (naming.length) {
+    $('msok').disabled = true;
+    await Promise.all(naming);
+    $('msok').disabled = false;
+  }
+  stops = stops.map(s => s && cleanPlace(s));
+  savedPick = null;
+  showOverview();
+}
+
+function msBack() {
+  if (ms.action) { msCancel(); return; }
+  ms.seq++;
+  if (ms.back === 'overview') { showPane('overview'); renderStops(); return; }
+  if (ms.back === 'text') { showPane('textpane'); $('q').focus(); return; }
+  setTravelMode(modeAtOpen);
   closeSearch();
-  stopFollowing();
-  // Onderin alleen naam en adres, met het potloodje om alsnog een route te plannen
-  viewDest = dest;
-  const [title, ...rest] = withoutPostcode(dest.name).split(', ');
-  $('vname').textContent = title;
-  $('vaddr').textContent = rest.join(', ');
-  $('bottom-view').hidden = false;
-  $('bottom-idle').hidden = $('bottom-nav').hidden = true;
-  const at = [dest.lon, dest.lat];
-  if (!viewMarker) {
-    const el = document.createElement('div');
-    el.className = 'viewpin';
-    viewMarker = new maplibregl.Marker({ element: el });
-  }
-  viewMarker.setLngLat(at).addTo(map);
-  flyToView();
 }
 
-// Tik op naam en adres onderin: terug naar de bekeken plek
-function flyToView() {
-  if (!viewDest) return;
-  stopFollowing();
-  const at = [viewDest.lon, viewDest.lat];
-  const cam = { center: at, zoom: 16, pitch: state.pitch, padding: { top: 0, bottom: 0, left: 0, right: 0 } };
-  // Ver weg: meteen springen. Een vlucht laadt onderweg op elk zoomniveau kaarttegels
-  // die je nauwelijks ziet, en de plek zelf komt dan pas als laatste binnen.
-  if (farJump(at)) map.jumpTo(cam);
-  else map.flyTo({ ...cam, duration: 1200 });
-}
-
-// Terug naar je eigen positie of een route gestart: het bekijken stopt
-function endView() {
-  if (viewMarker) { viewMarker.remove(); viewMarker = null; }
-  if (!viewDest) return;
-  viewDest = null;
-  $('bottom-view').hidden = true;
-  setMode(state.nav ? 'nav' : state.concept ? 'concept' : 'idle');
-}
-
-function submitSearch() {
-  if (firstRecent && $('preview').hidden) chooseRecent(firstRecent);
-  else if (firstResult && !$('results').hidden && $('results').children.length) choose(firstResult);
-  else if (pending && !$('qok').disabled) confirmPreview();
+// Ander vervoer op de kaart: alle etappes opnieuw
+function msRecompute() {
+  ms.seq++;
+  ms.legs = ms.legs.map(() => null);
+  msDraw();
+  ms.legs.forEach((_, i) => computeLeg(i));
 }
 
 $('where').addEventListener('click', openSearch);
-$('edit').addEventListener('click', openSearch);
-$('qback').addEventListener('click', () => { setTravelMode(modeAtOpen); closeSearch(); });
+$('wheremap').addEventListener('click', () => {
+  openSheet();
+  stops = [HERE];
+  openMapSearch('build', 'home');
+});
+$('edit').addEventListener('click', editRoute);
+$('qback').addEventListener('click', () => {
+  if (textFrom === 'overview') { $('q').blur(); showPane('overview'); renderStops(); return; }
+  setTravelMode(modeAtOpen);
+  closeSearch();
+});
+$('qmap').addEventListener('click', () => {
+  $('q').blur();
+  if (textFrom === 'overview') openMapSearch('row', 'text', editRow);
+  else openMapSearch('build', 'text');
+});
 $('stop').addEventListener('click', () => { stopRoute(); closeSearch(); });
+$('qadd').addEventListener('click', addRow);
 $('qok').addEventListener('click', confirmPreview);
-$('qview').addEventListener('click', viewPreview);
-$('vedit').addEventListener('click', openSearch);
-$('vgo').addEventListener('click', flyToView);
+$('pmapedit').addEventListener('click', e => { e.stopPropagation(); openMapSearch('edit', 'overview'); });
+$('msback').addEventListener('click', msBack);
+$('msadd').addEventListener('click', msAdd);
+$('msok').addEventListener('click', msOk);
+$('pickme').addEventListener('click', () => { if (state.fix && msmap) msmap.easeTo({ center: [state.fix.lon, state.fix.lat] }); });
 
 // Richtknop altijd los boven het onderste paneel, hoe hoog dat ook is (kleine iPhones)
-const bottomCards = ['bottom-idle', 'bottom-nav', 'bottom-view'].map($);
+const bottomCards = ['bottom-idle', 'bottom-nav'].map($);
 function placeRecenter() {
   const h = Math.max(0, ...bottomCards.filter(c => !c.hidden).map(c => c.offsetHeight));
   document.documentElement.style.setProperty('--bottomh', h + 'px');
@@ -1986,7 +2415,7 @@ function placeRecenter() {
 const bottomWatch = new ResizeObserver(placeRecenter);
 bottomCards.forEach(c => bottomWatch.observe(c));
 
-// Kaartsoort kiezen met het tandwiel tussen de rode en de groene knop
+// Kaartsoort kiezen met het tandwiel naast het vervoer
 function toggleMapMenu(open) {
   $('mapmenu').hidden = !open;
   $('mapset').setAttribute('aria-expanded', String(open));
@@ -2006,7 +2435,7 @@ async function showTrailLegend() {
   try {
     // Alleen 3 km rond de bestemming (zonder bestemming: rond het midden van de kaart).
     // De lijst per gebied geeft maximaal 100 routes, dus we kijken ook in de routetegels zelf.
-    const at = pending || viewDest || state.dest || (({ lng, lat }) => ({ lon: lng, lat }))(map.getCenter());
+    const at = (!$('search').hidden && lastPlace()) || state.dest || (({ lng, lat }) => ({ lon: lng, lat }))(map.getCenter());
     // Elke soort route die door de cirkel van 3 km loopt, ook als er geen knikpunt in ligt
     const c = [at.lon, at.lat], dLat = 3000 / 111320, dLon = dLat / Math.cos(rad(at.lat));
     const crosses = l => l.some((p, i) => i && projectOnSegment(c, l[i - 1], p).d <= 3000);
@@ -2047,11 +2476,8 @@ $('mapmenu').addEventListener('click', e => {
   toggleMapMenu(false);
 });
 document.addEventListener('click', () => { if (!$('mapmenu').hidden) toggleMapMenu(false); });
-$('pickok').addEventListener('click', confirmPick);
-$('pickme').addEventListener('click', () => { if (state.fix) pickmap.easeTo({ center: [state.fix.lon, state.fix.lat] }); });
 document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => setListTab(b.dataset.tab)));
 $('qclear').addEventListener('click', () => {
-  setField('to');
   $('q').value = '';
   $('q-postcode').value = '';
   $('q-city').value = '';
@@ -2060,107 +2486,69 @@ $('qclear').addEventListener('click', () => {
   showRecent();
   $('q').focus();
 });
-$('qfromclear').addEventListener('click', () => {
-  setField('from');
-  $('qfrom').value = '';
-  origin = null;
-  streetCtx = null;
-  updateClear();
-  showRecent();
-  $('qfrom').focus();
-});
-// Wissel je van veld terwijl de lijst van het andere veld open staat, dan komt het overzicht terug
-for (const [id, which] of [['q', 'to'], ['qfrom', 'from']]) $(id).addEventListener('focus', () => {
-  const switched = activeField !== which;
-  setField(which);
-  if (switched) streetCtx = null;
-  if (!$(id).value.trim()) showRecent();
-  else if (switched && pending && $('preview').hidden) showPreview(pending);
-});
-
-// Tik op het blauwe vertrekpunt in het overzicht: het Van-veld verschijnt
-$('pmap').addEventListener('click', e => {
-  if (!previewData || !previewData.start || !$('fromwrap').hidden) return;
-  const r = $('pmap').getBoundingClientRect();
-  const p = pmap.project(previewData.start);
-  if (Math.hypot(e.clientX - r.left - p.x, e.clientY - r.top - p.y) > 28) return;
-  showFrom();
-});
-
-// Van en Naar omwisselen; je eigen positie kan zo ook de bestemming worden
-$('swap').addEventListener('click', () => {
-  if (!pending || (!origin && !state.fix)) return;
-  const to = origin || { lat: state.fix.lat, lon: state.fix.lon, name: 'Huidige locatie', here: true };
-  origin = pending.here ? null : pending;
-  $('qfrom').value = origin ? origin.name : '';
-  $('q').value = to.name;
-  streetCtx = null;
-  updateClear();
-  showPreview(to);
-});
+$('q').addEventListener('focus', () => { if (!$('q').value.trim() && !$('textpane').hidden) showRecent(); });
 $('qform').addEventListener('submit', e => { e.preventDefault(); submitSearch(); });
-for (const id of ['q', 'qfrom', 'q-postcode', 'q-city']) $(id).addEventListener('input', onSearchInput);
+for (const id of ['q', 'q-postcode', 'q-city']) $(id).addEventListener('input', onSearchInput);
 document.querySelectorAll('.modes button').forEach(b => b.addEventListener('click', () => {
+  if (b.dataset.mode === travelMode) return;
   setTravelMode(b.dataset.mode);
-  if (pending) showPreview(pending);
+  savedPick = null;
+  if (!$('mapsearch').hidden) msRecompute();
+  else computePreview();
 }));
 
 // ---------- Route (Valhalla) ----------
-// Zonder vertrekpunt rijdt de route vanaf je huidige positie
-async function fetchRoutes(dest, start = null, alternates = 0) {
-  const f = state.fix;
-  const from = start ? { lat: start.lat, lon: start.lon } : { lat: f.lat, lon: f.lon };
-  if (!start && state.heading != null && state.speedKmh > 5) { from.heading = Math.round(state.heading); from.heading_tolerance = 60; }
+// Door alle punten, in volgorde. Je eigen positie als vertrek rijdt in je rijrichting weg.
+async function fetchRoutes(pts, alternates = 0, mode = travelMode) {
+  const locations = pts.map((p, i) => {
+    const l = { lat: p.lat, lon: p.lon, type: 'break' };
+    if (i === 0 && p.here && state.heading != null && state.speedKmh > 5) { l.heading = Math.round(state.heading); l.heading_tolerance = 60; }
+    return l;
+  });
   const body = {
-    locations: [from, { lat: dest.lat, lon: dest.lon }],
-    costing: travelMode,
+    locations,
+    costing: mode,
     language: 'nl-NL',
     directions_options: { units: 'kilometers', language: 'nl-NL' },
   };
-  if (alternates) body.alternates = alternates;
+  // Alternatieven kent de routedienst alleen zonder tussenstops
+  if (alternates && pts.length === 2) body.alternates = alternates;
   const res = await fetch(`${VALHALLA}/route`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const data = await res.json();
   if (!data.trip) throw new Error(data.error || 'Geen route gevonden');
-  return [data.trip, ...(data.alternates || []).map(a => a.trip)].map(navFromTrip);
+  return [data.trip, ...(data.alternates || []).map(a => a.trip)].map(t => navFromTrip(t, mode, pts.slice(1)));
 }
 
-function navFromTrip(trip) {
-  const leg = trip.legs[0];
-  const shape = decodePolyline6(leg.shape);
+// Alle etappes achter elkaar; per etappe het eindpunt op de route en de reistijd
+function navFromTrip(trip, mode, legStops) {
+  const shape = [], maneuvers = [], legs = [];
+  trip.legs.forEach((leg, k) => {
+    const pts = decodePolyline6(leg.shape);
+    const off = shape.length ? shape.length - 1 : 0;
+    shape.push(...(shape.length ? pts.slice(1) : pts));
+    for (const m of leg.maneuvers) maneuvers.push({ ...m, begin_shape_index: m.begin_shape_index + off, end_shape_index: m.end_shape_index + off, leg: k });
+    legs.push({ endIdx: shape.length - 1, time: leg.summary.time });
+  });
   const cum = [0];
   for (let i = 1; i < shape.length; i++) cum.push(cum[i - 1] + dist(shape[i - 1], shape[i]));
-  return { shape, cum, maneuvers: leg.maneuvers, total: cum[cum.length - 1], time: trip.summary.time, mode: travelMode, idx: 0, along: 0, off: 0, arrivedAt: 0 };
+  let begin = 0;
+  for (const l of legs) { l.begin = begin; l.end = cum[l.endIdx]; begin = l.end; }
+  return { shape, cum, maneuvers, legs, legStops, total: cum[cum.length - 1], time: trip.summary.time, mode,
+    idx: 0, along: 0, off: 0, arrivedAt: 0, legIdx: 0 };
 }
 
-const fetchRoute = async (dest, start = null) => (await fetchRoutes(dest, start))[0];
-
-async function startRoute(dest) {
-  if (!state.fix) { toast('Nog geen GPS-positie. Probeer het zo opnieuw.'); return; }
-  state.dest = dest;
-  state.routing = true;
-  state.lastRouteAt = Date.now();
-  toast('Route berekenen…', 2000);
-  try {
-    state.nav = await fetchRoute(dest);
-    state.navStart = state.nav.shape[0];
-    if (DEMO) demo.along = 0;
-    setMode('nav');
-    updateNav([state.fix.lon, state.fix.lat]);
-    $('toast').hidden = true;
-  } catch (e) {
-    toast('Route berekenen lukt niet: ' + e.message, 5000);
-  } finally {
-    state.routing = false;
-  }
-}
-
+// Van de route afgeraakt: opnieuw vanaf je positie, langs de stops die nog komen
 async function reroute() {
-  if (!state.dest || state.routing) return;
+  const n = state.nav;
+  if (!n || state.routing || !state.fix) return;
   state.routing = true;
   state.lastRouteAt = Date.now();
   toast('Nieuwe route…', 2000);
   try {
-    state.nav = await fetchRoute(state.dest);
+    const [nav] = await fetchRoutes([hereNow(), ...n.legStops.slice(n.legIdx)], 0, n.mode);
+    if (state.nav !== n) return;
+    state.nav = nav;
+    shownLeg = -1;
     if (DEMO) demo.along = 0;
     updateNav([state.fix.lon, state.fix.lat]);
   } catch (e) {
@@ -2188,8 +2576,8 @@ function drawConcept() {
   const c = state.concept;
   if (!c) { src.setData(EMPTY_FC); return; }
   const shape = c.nav.shape;
-  const point = (pt, kind) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: pt }, properties: { kind } });
-  src.setData({ type: 'FeatureCollection', features: [lineFeature(shape), point(shape[0], 'start'), point(shape[shape.length - 1], 'end')] });
+  const ends = stopPoints([shape[0], ...c.nav.legs.map(l => shape[l.endIdx])]);
+  src.setData({ type: 'FeatureCollection', features: [lineFeature(shape), ...ends.features] });
 }
 
 function clearConcept() {
@@ -2205,7 +2593,7 @@ function showConcept(c) {
   drawRouteEnds();
   setRouteLine([]);
   state.concept = c;
-  state.dest = c.dest;
+  state.dest = c.stops[c.stops.length - 1];
   drawConcept();
   stopFollowing();
   const [a, b] = c.nav.shape;
@@ -2216,6 +2604,8 @@ function showConcept(c) {
   $('remain-time').textContent = fmtDuration(c.nav.time);
   $('remain-dist').textContent = fmtDist(c.nav.total);
   setMode('concept');
+  const via = c.stops.length - 2;
+  $('destlbl').textContent = `Vanaf ${shortName(c.stops[0])} · naar ${withoutPostcode(state.dest.name)}` + (via > 0 ? ` · ${via} ${via === 1 ? 'tussenstop' : 'tussenstops'}` : '');
   renderBar();
 }
 
@@ -2232,11 +2622,64 @@ function setMode(mode) {
   const nav = mode === 'nav' || mode === 'concept';
   $('instr').hidden = mode !== 'nav';
   $('bottom-nav').hidden = !nav;
+  $('bottom-next').hidden = true;
   $('destlbl').textContent = nav && state.dest ? withoutPostcode(state.dest.name) : '';
+  $('destlbl').classList.remove('legs');
   $('bottom-idle').hidden = nav;
-  // Tijdens het bekijken van een plek blijft alleen dat paneel staan
-  if (viewDest) $('bottom-nav').hidden = $('bottom-idle').hidden = true;
   renderBar();
+}
+
+// ---------- Etappe-kaartjes ----------
+// Eén kaartje per etappe. Rechts piept het kaartje van de volgende; bij de tussenstop
+// schuift dat erin en gaat het oude naar links. Lichtgrijs: de tijd tot deze stop.
+let shownLeg = -1, legSlide = null;
+function legTitle(n, k) {
+  const s = n.legStops[k];
+  return (k < n.legs.length - 1 ? 'Tussenstop · ' : n.legs.length > 1 ? 'Bestemming · ' : '') + withoutPostcode(s.name);
+}
+function fillCard(card, n, k, legSec, totalSec, totalM) {
+  // Naam afkappen, de tijd tot de stop blijft altijd zichtbaar
+  const lbl = card.querySelector('.destlbl');
+  const t = document.createElement('span');
+  t.className = 't';
+  t.textContent = legTitle(n, k);
+  lbl.replaceChildren(t);
+  lbl.classList.toggle('legs', n.legs.length > 1);
+  if (n.legs.length > 1) {
+    const sp = document.createElement('span');
+    sp.className = 'leg';
+    sp.textContent = ' · ' + fmtDuration(legSec);
+    lbl.appendChild(sp);
+  }
+  card.querySelector('.eta').textContent = fmtClock(new Date(Date.now() + totalSec * 1000));
+  card.querySelector('.min').textContent = fmtDuration(totalSec);
+  card.querySelector('.mid .lbl').textContent = fmtDist(totalM);
+}
+
+function renderLegs(n, legSec, totalSec, totalM) {
+  const k = n.legIdx, main = $('bottom-nav'), next = $('bottom-next');
+  const hasNext = k < n.legs.length - 1;
+  if (shownLeg >= 0 && k > shownLeg && !legSlide && !next.hidden) {
+    // Het volgende kaartje staat al klaar: inschuiven, daarna wordt het weer het hoofdkaartje
+    legSlide = setTimeout(() => {
+      main.classList.add('noanim');
+      next.classList.add('noanim');
+      document.body.classList.remove('legslide');
+      void main.offsetWidth;
+      main.classList.remove('noanim');
+      next.classList.remove('noanim');
+      legSlide = null;
+      shownLeg = -1;
+      if (state.fix && state.nav) updateNav([state.fix.lon, state.fix.lat]);
+    }, 480);
+    document.body.classList.add('legslide');
+    return;
+  }
+  if (legSlide) return;
+  shownLeg = k;
+  fillCard(main, n, k, legSec, totalSec, totalM);
+  next.hidden = !hasNext;
+  if (hasNext) fillCard(next, n, k + 1, n.legs[k + 1].time, totalSec - legSec, totalM - Math.max(0, n.legs[k].end - n.along));
 }
 
 // Valhalla-manoeuvretypes -> korte Nederlandse tekst en icoon
@@ -2291,7 +2734,6 @@ function setInstrSub(sub) {
 function updateNav(p) {
   const n = state.nav;
   if (!n) return;
-  if (endsFor !== n) drawRouteEnds();
 
   // Positie op de route bepalen; eerst rond de vorige plek zoeken, dan de hele route
   let best = { d: Infinity, i: n.idx, pt: p };
@@ -2319,11 +2761,15 @@ function updateNav(p) {
     setRouteLine([best.pt, ...n.shape.slice(best.i + 1)]);
   }
 
+  // Bij een tussenstop (binnen 30 m) door naar de volgende etappe
+  while (n.legIdx < n.legs.length - 1 && n.along >= n.legs[n.legIdx].end - 30) n.legIdx++;
+  if (endsFor !== n || endsLeg !== n.legIdx) drawRouteEnds();
+  const leg = n.legs[n.legIdx];
+  const legLen = leg.end - leg.begin, legLeft = Math.max(0, leg.end - n.along);
+  const legSec = leg.time * (legLen ? Math.min(1, legLeft / legLen) : 0);
+  const totalSec = legSec + n.legs.slice(n.legIdx + 1).reduce((s, l) => s + l.time, 0);
   const remaining = Math.max(0, n.total - n.along);
-  const remainingTime = n.time * (n.total ? remaining / n.total : 0);
-  $('eta').textContent = fmtClock(new Date(Date.now() + remainingTime * 1000));
-  $('remain-time').textContent = fmtDuration(remainingTime);
-  $('remain-dist').textContent = fmtDist(remaining);
+  renderLegs(n, legSec, totalSec, remaining);
 
   if (remaining < 30) {
     $('instr-icon').className = 'ti ti-flag';
@@ -2338,11 +2784,13 @@ function updateNav(p) {
   if (!next) return;
   const d = n.cum[next.begin_shape_index] - n.along;
   const { verb, icon } = maneuverInfo(next);
-  $('instr-icon').className = 'ti ' + icon;
   const isDest = next.type >= 4 && next.type <= 6;
-  if (d < 30) $('instr-title').textContent = isDest ? 'Bestemming bereikt' : 'Nu ' + verb;
-  else $('instr-title').textContent = isDest ? `Bestemming over ${fmtDist(d)}` : `Over ${fmtDist(d)} ${verb}`;
-  setInstrSub(isDest ? (state.dest ? state.dest.name : '') : maneuverSub(next));
+  const via = isDest && next.leg < n.legs.length - 1;
+  $('instr-icon').className = 'ti ' + (via ? 'ti-map-pin' : icon);
+  const what = via ? 'Tussenstop' : 'Bestemming';
+  if (d < 30) $('instr-title').textContent = isDest ? what + ' bereikt' : 'Nu ' + verb;
+  else $('instr-title').textContent = isDest ? `${what} over ${fmtDist(d)}` : `Over ${fmtDist(d)} ${verb}`;
+  setInstrSub(via ? n.legStops[next.leg].name : isDest ? (state.dest ? state.dest.name : '') : maneuverSub(next));
 }
 
 // ---------- Demo-modus (?demo=1): rijdt zelf over de route ----------

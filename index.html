@@ -15,7 +15,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
-<link rel="stylesheet" href="style.css?v=34">
+<link rel="stylesheet" href="style.css?v=35">
 </head>
 <body>
 <div id="map"></div>
@@ -41,7 +41,10 @@
 <button class="recenter" id="recenter" hidden aria-label="Centreer op je positie"><i class="ti ti-current-location" aria-hidden="true"></i></button>
 
 <div class="card bottom" id="bottom-idle">
-  <button class="where" id="where"><i class="ti ti-search" aria-hidden="true"></i>Waarheen?</button>
+  <div class="whererow">
+    <button class="where" id="where"><i class="ti ti-search" aria-hidden="true"></i>Waarheen?</button>
+    <button class="wheremap" id="wheremap" aria-label="Zoek op kaart"><i class="ti ti-map-pin" aria-hidden="true"></i></button>
+  </div>
   <div class="meta"><span id="gps">Wachten op GPS…</span><span id="demo-badge" hidden>DEMO</span><span>© OpenStreetMap · OpenFreeMap · Valhalla</span></div>
 </div>
 
@@ -54,74 +57,86 @@
   </div>
 </div>
 
-<div class="card bottom" id="bottom-view" hidden>
+<div class="card bottom" id="bottom-next" hidden aria-hidden="true">
+  <div class="destlbl"></div>
   <div class="nav">
-    <button type="button" class="vtext" id="vgo"><span class="vname" id="vname"></span><span class="lbl vaddr" id="vaddr"></span></button>
-    <button class="edit" id="vedit" aria-label="Bestemming wijzigen"><i class="ti ti-pencil" aria-hidden="true"></i></button>
+  <div><div class="eta">--:--</div><div class="lbl">aankomst</div></div>
+  <div class="mid"><div class="min">-- min</div><div class="lbl">-- km</div></div>
+  <span class="edit"><i class="ti ti-pencil" aria-hidden="true"></i></span>
   </div>
 </div>
 
 <div class="sheet" id="search" hidden>
-  <form class="sheet-head" id="qform" autocomplete="on">
-    <button type="button" class="icon-btn" id="qback" aria-label="Terug"><i class="ti ti-arrow-left" aria-hidden="true"></i></button>
-    <div class="fields">
-      <div class="qwrap" id="fromwrap" hidden>
-        <span class="flbl" aria-hidden="true">Van</span>
-        <input id="qfrom" type="text" placeholder="Huidige locatie" aria-label="Van" autocomplete="off" autocorrect="off" autocapitalize="words" enterkeyhint="go">
-        <button type="button" class="qclear" id="qfromclear" aria-label="Veld leegmaken" hidden><i class="ti ti-x" aria-hidden="true"></i></button>
-      </div>
+  <!-- Tekst zoeken: vult één adresregel -->
+  <div class="pane" id="textpane">
+    <form class="sheet-head" id="qform" autocomplete="on">
+      <button type="button" class="icon-btn" id="qback" aria-label="Terug"><i class="ti ti-arrow-left" aria-hidden="true"></i></button>
       <div class="qwrap">
-        <span class="flbl" aria-hidden="true">Naar</span>
         <input id="q" name="address" type="text" placeholder="Zoek adres of plaats" autocomplete="street-address" autocorrect="off" autocapitalize="words" enterkeyhint="go">
         <button type="button" class="qclear" id="qclear" aria-label="Veld leegmaken" hidden><i class="ti ti-x" aria-hidden="true"></i></button>
       </div>
+      <button type="button" class="icon-btn" id="qmap" aria-label="Zoek op kaart"><i class="ti ti-map-pin" aria-hidden="true"></i></button>
+      <!-- Onzichtbare velden zodat iOS bij 'Thuis'/'Werk' ook postcode en plaats invult -->
+      <input class="af" id="q-postcode" name="postal-code" autocomplete="postal-code" tabindex="-1" aria-hidden="true">
+      <input class="af" id="q-city" name="city" autocomplete="address-level2" tabindex="-1" aria-hidden="true">
+    </form>
+    <div class="tabs" role="tablist" aria-label="Bestemmingen">
+      <button type="button" role="tab" data-tab="recent" aria-selected="true"><i class="ti ti-history" aria-hidden="true"></i>Recent</button>
+      <button type="button" role="tab" data-tab="fav" aria-selected="false"><i class="ti ti-star" aria-hidden="true"></i>Favorieten</button>
+      <button type="button" role="tab" data-tab="near" aria-selected="false"><i class="ti ti-map-pin-search" aria-hidden="true"></i>In de buurt</button>
+      <button type="button" role="tab" data-tab="routes" aria-selected="false"><i class="ti ti-route" aria-hidden="true"></i>Routes</button>
     </div>
-    <button type="button" class="icon-btn swap" id="swap" aria-label="Route omdraaien" hidden><i class="ti ti-arrows-up-down" aria-hidden="true"></i></button>
-    <!-- Onzichtbare velden zodat iOS bij 'Thuis'/'Werk' ook postcode en plaats invult -->
-    <input class="af" id="q-postcode" name="postal-code" autocomplete="postal-code" tabindex="-1" aria-hidden="true">
-    <input class="af" id="q-city" name="city" autocomplete="address-level2" tabindex="-1" aria-hidden="true">
-  </form>
-  <div class="moderow">
-  <div class="modes" role="radiogroup" aria-label="Vervoer">
-    <button type="button" role="radio" data-mode="auto"><i class="ti ti-car" aria-hidden="true"></i>Auto</button>
-    <button type="button" role="radio" data-mode="bicycle"><i class="ti ti-bike" aria-hidden="true"></i>Fiets</button>
-    <button type="button" role="radio" data-mode="pedestrian"><i class="ti ti-walk" aria-hidden="true"></i>Lopen</button>
+    <div class="cats" id="cats" role="radiogroup" aria-label="Soort plek" hidden></div>
+    <ul id="results"></ul>
   </div>
-    <div class="mapset">
-      <button type="button" class="setbtn" id="mapset" aria-label="Kaartinstellingen" aria-haspopup="menu" aria-expanded="false"><i class="ti ti-adjustments-horizontal" aria-hidden="true"></i></button>
-      <div class="mapmenu" id="mapmenu" role="menu" hidden>
-        <button type="button" role="menuitemradio" data-kind="standard"><i class="ti ti-map" aria-hidden="true"></i>Standaard</button>
-        <button type="button" role="menuitemradio" data-kind="terrain"><i class="ti ti-mountain" aria-hidden="true"></i>3D</button>
-        <button type="button" role="menuitemradio" data-kind="satellite"><i class="ti ti-photo" aria-hidden="true"></i>Satelliet</button>
-        <div class="trailleg" id="trailleg" hidden>
-          <div class="legh">Wandelroutes <span id="legnote"></span></div>
-          <div id="legrows"></div>
+
+  <!-- Overzicht: alle adresregels, het vervoer en de route -->
+  <div class="pane" id="overview" hidden>
+    <ul class="stops" id="stops" aria-label="Adressen van de route"></ul>
+    <div class="moderow" id="moderow">
+      <div class="modes" role="radiogroup" aria-label="Vervoer">
+        <button type="button" role="radio" data-mode="auto"><i class="ti ti-car" aria-hidden="true"></i>Auto</button>
+        <button type="button" role="radio" data-mode="bicycle"><i class="ti ti-bike" aria-hidden="true"></i>Fiets</button>
+        <button type="button" role="radio" data-mode="pedestrian"><i class="ti ti-walk" aria-hidden="true"></i>Lopen</button>
+      </div>
+      <div class="mapset">
+        <button type="button" class="setbtn" id="mapset" aria-label="Kaartinstellingen" aria-haspopup="menu" aria-expanded="false"><i class="ti ti-adjustments-horizontal" aria-hidden="true"></i></button>
+        <div class="mapmenu" id="mapmenu" role="menu" hidden>
+          <button type="button" role="menuitemradio" data-kind="standard"><i class="ti ti-map" aria-hidden="true"></i>Standaard</button>
+          <button type="button" role="menuitemradio" data-kind="terrain"><i class="ti ti-mountain" aria-hidden="true"></i>3D</button>
+          <button type="button" role="menuitemradio" data-kind="satellite"><i class="ti ti-photo" aria-hidden="true"></i>Satelliet</button>
+          <div class="trailleg" id="trailleg" hidden>
+            <div class="legh">Wandelroutes <span id="legnote"></span></div>
+            <div id="legrows"></div>
+          </div>
         </div>
       </div>
     </div>
-  </div>
-  <div class="tabs" role="tablist" aria-label="Bestemmingen">
-    <button type="button" role="tab" data-tab="recent" aria-selected="true"><i class="ti ti-history" aria-hidden="true"></i>Recent</button>
-    <button type="button" role="tab" data-tab="fav" aria-selected="false"><i class="ti ti-star" aria-hidden="true"></i>Favorieten</button>
-    <button type="button" role="tab" data-tab="map" aria-selected="false"><i class="ti ti-map" aria-hidden="true"></i>Kaart</button>
-    <button type="button" role="tab" data-tab="routes" aria-selected="false"><i class="ti ti-route" aria-hidden="true"></i>Routes</button>
-  </div>
-  <ul id="results"></ul>
-  <div class="pick" id="pick" hidden>
-    <div class="pickwrap">
-      <div class="pickmap" id="pickmap"></div>
-      <svg class="pin" viewBox="0 0 36 48" aria-hidden="true"><path d="M18 46.5C18 46.5 34 28.5 34 17A16 16 0 0 0 2 17C2 28.5 18 46.5 18 46.5Z"/><circle cx="18" cy="17" r="6"/></svg>
-      <button type="button" class="pickme" id="pickme" aria-label="Naar je positie"><i class="ti ti-current-location" aria-hidden="true"></i></button>
+    <div class="preview" id="preview">
+      <div class="pmap" id="pmap">
+        <button type="button" class="pmapedit" id="pmapedit" aria-label="Route aanpassen op de kaart"><i class="ti ti-arrows-maximize" aria-hidden="true"></i></button>
+      </div>
+      <div class="psum" id="psum"></div>
+      <div class="pbtns">
+        <button type="button" class="roundbtn stopbig" id="stop" aria-label="Terug naar de kaart, route stoppen"><i class="ti ti-x" aria-hidden="true"></i></button>
+        <button type="button" class="roundbtn addbig" id="qadd" aria-label="Adresregel toevoegen"><i class="ti ti-plus" aria-hidden="true"></i></button>
+        <button type="button" class="roundbtn okbig" id="qok" aria-label="Navigatie starten"><i class="ti ti-arrow-ramp-right" aria-hidden="true"></i></button>
+      </div>
     </div>
-    <button type="button" class="pickok" id="pickok"><i class="ti ti-check" aria-hidden="true"></i>Kies deze plek</button>
   </div>
-  <div class="preview" id="preview" hidden>
-    <div class="pmap" id="pmap"></div>
-    <div class="psum" id="psum"></div>
-    <div class="pbtns">
-      <button type="button" class="roundbtn stopbig" id="stop" aria-label="Route stoppen"><i class="ti ti-x" aria-hidden="true"></i></button>
-      <button type="button" class="roundbtn viewbig" id="qview" aria-label="Bekijk op de kaart, zonder navigatie"><i class="ti ti-binoculars" aria-hidden="true"></i></button>
-      <button type="button" class="roundbtn okbig" id="qok" aria-label="Navigatie starten"><i class="ti ti-arrow-ramp-right" aria-hidden="true"></i></button>
+
+  <!-- Zoeken op kaart: de pin staat vast in het midden, de kaart schuift eronder -->
+  <div class="pane mapsearch" id="mapsearch" hidden>
+    <div class="msmap" id="msmap"></div>
+    <div class="mstop" id="mstop"></div>
+    <div class="mshint" id="mshint" hidden></div>
+    <svg class="pin" viewBox="0 0 36 48" aria-hidden="true"><path d="M18 46.5C18 46.5 34 28.5 34 17A16 16 0 0 0 2 17C2 28.5 18 46.5 18 46.5Z"/><circle cx="18" cy="17" r="6"/></svg>
+    <button type="button" class="pickme" id="pickme" aria-label="Naar je positie"><i class="ti ti-current-location" aria-hidden="true"></i></button>
+    <div class="actcard" id="actcard" hidden></div>
+    <div class="mbtns" id="mbtns">
+      <button type="button" class="roundbtn stopbig" id="msback" aria-label="Terug"><i class="ti ti-arrow-left" aria-hidden="true"></i></button>
+      <button type="button" class="roundbtn viewbig" id="msadd" aria-label="Hier een punt zetten en verder kiezen"><i class="ti ti-plus" aria-hidden="true"></i></button>
+      <button type="button" class="roundbtn okbig" id="msok" aria-label="Kiezen"><i class="ti ti-check" aria-hidden="true"></i></button>
     </div>
   </div>
 </div>
@@ -136,6 +151,6 @@
 </div>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-<script src="app.js?v=34"></script>
+<script src="app.js?v=35"></script>
 </body>
 </html>
