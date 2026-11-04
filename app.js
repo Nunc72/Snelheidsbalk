@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '39';
+const VERSION = '40';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -2198,6 +2198,7 @@ async function openMapSearch(kind, back, row = 0) {
   ms.legs = [];
   // Een nieuwe route maak je meteen; een bestaande bekijk je eerst (potlood), met + ga je toevoegen
   ms.adding = kind === 'build';
+  ms.fresh = null;
   const list = filled();
   if (kind !== 'row') {
     // Nieuwe route of bestaande aanpassen werkt hetzelfde: je eigen positie is het eerste punt.
@@ -2306,6 +2307,12 @@ function msHover() {
   if (ms.kind === 'row' || ms.action) return { type: 'free' };
   const cv = msmap.getCanvas();
   const c = { x: cv.clientWidth / 2, y: cv.clientHeight / 2 };
+  // Net een punt neergezet: pas wijzigen als je er weggeweest bent en terugkomt
+  if (ms.fresh) {
+    const q = msmap.project(ll(ms.fresh));
+    if (ms.pts.includes(ms.fresh) && Math.hypot(q.x - c.x, q.y - c.y) < 24) return { type: 'free' };
+    ms.fresh = null;
+  }
   let best = null;
   ms.pts.forEach((p, i) => {
     // Alleen je eigen positie, nog zonder route: daar valt niets te wijzigen
@@ -2344,6 +2351,8 @@ function msMove(force) {
     const from = P.length ? ll(P[P.length - 1]) : hereNow() && ll(hereNow());
     if (from) guide = [[from, c]];
   }
+  // Terug bij het vertrekpunt: de hulplijn blijft, ✓ maakt er een rondje van
+  else if (!a && roundTrip()) guide = [[ll(P[P.length - 1]), ll(P[0])]];
   // Etappes die nog berekend worden: een rechte hulplijn
   if (ms.kind !== 'row') ms.legs.forEach((l, i) => { if (!l) guide.push([ll(P[i]), ll(P[i + 1])]); });
   msmap.getSource('guide').setData({ type: 'FeatureCollection', features: guide.filter(g => g.length > 1).map(lineFeature) });
@@ -2399,6 +2408,9 @@ function msUi(force) {
   $('mshint').hidden = !hint;
 }
 
+// Aan het toevoegen en de pin staat op het vertrekpunt van een route
+const roundTrip = () => ms.adding && ms.kind !== 'row' && ms.hover.type === 'wp' && ms.hover.i === 0 && ms.pts.length > 1;
+
 function msStart(action) {
   ms.action = action;
   msDraw();
@@ -2416,6 +2428,9 @@ function msCancel() {
 // Een nieuw punt op de plek van de pin; de naam (het adres) komt erachteraan
 function pinPlace() {
   const { lng: lon, lat } = msmap.getCenter();
+  return placeAt(lat, lon);
+}
+function placeAt(lat, lon) {
   const p = { lat, lon, name: `${lat.toFixed(5)}, ${lon.toFixed(5)}` };
   p.naming = placeName(lat, lon).then(n => { p.name = n; });
   return p;
@@ -2427,11 +2442,11 @@ function msConfirm() {
   const P = ms.pts, L = ms.legs;
   const redo = [];
   if (a.type === 'insert') {
-    P.splice(a.i + 1, 0, pinPlace());
+    P.splice(a.i + 1, 0, ms.fresh = pinPlace());
     L.splice(a.i, 1, null, null);
     redo.push(a.i, a.i + 1);
   } else if (a.type === 'move') {
-    P[a.i] = pinPlace();
+    P[a.i] = ms.fresh = pinPlace();
     if (a.i > 0) { L[a.i - 1] = null; redo.push(a.i - 1); }
     if (a.i < L.length) { L[a.i] = null; redo.push(a.i); }
   } else {
@@ -2450,7 +2465,7 @@ function msAdd() {
   if (ms.action || ms.kind === 'row') return;
   // De eerste tik zet het toevoegen aan: pin en hulplijn verschijnen
   if (!ms.adding) { ms.adding = true; msMove(true); return; }
-  ms.pts.push(pinPlace());
+  ms.pts.push(ms.fresh = pinPlace());
   if (ms.pts.length > 1) {
     ms.legs.push(null);
     computeLeg(ms.legs.length - 1);
@@ -2484,6 +2499,11 @@ async function msOk() {
     const last = ms.pts[ms.pts.length - 1];
     const c = msmap.getCenter().toArray();
     if (ms.adding && ms.hover.type === 'free' && (!last || dist(ll(last), c) > 15)) ms.pts.push(pinPlace());
+    // Rondje: de aankomst is het vertrekpunt (als vaste plek, ook als dat je eigen positie was)
+    else if (roundTrip()) {
+      const s = ms.pts[0];
+      ms.pts.push(s.here ? placeAt(s.lat, s.lon) : { lat: s.lat, lon: s.lon, name: s.name });
+    }
     if (ms.prefix.length + ms.pts.length < 2) { toast('Schuif de kaart naar je bestemming en tik op ✓.'); return; }
     stops = [...ms.prefix, ...ms.pts];
   }
