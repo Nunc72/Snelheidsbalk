@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '48';
+const VERSION = '49';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -697,6 +697,34 @@ const marker = new maplibregl.Marker({ element: markerEl, rotationAlignment: 'ma
 let routeCoords = [];
 const lineFeature = coords => ({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: {} });
 
+// Routelijnen even dik op elke zoom en kanteling. De dikte groeit mee met de zoom
+// (uitgezoomd dunner), en bij een gekantelde kaart tekent MapLibre lijnen dichtbij de
+// camera dikker (perspectief): dat compenseren we, gemeten iets onder het midden, waar
+// je auto staat. 'base' is de dikte in pixels op zoom 15, plat.
+const LINE_BASE = new WeakMap();
+function pitchFactor(pitch) {
+  const p = pitch * Math.PI / 180, a = 11 * Math.PI / 180;
+  return Math.cos(p) * Math.cos(a) / Math.cos(p - a);
+}
+const lineWidth = (w, f) => ['interpolate', ['exponential', 1.5], ['zoom'],
+  6, Math.max(1, w * 0.4 * f), 10, w * 0.6 * f, 13, w * 0.85 * f, 15, w * f, 18, w * 1.3 * f];
+function fitLines(m, force) {
+  const base = LINE_BASE.get(m);
+  if (!base) return;
+  const f = Math.round(pitchFactor(m.getPitch()) * 50) / 50;
+  if (!force && f === m._lineF) return;
+  m._lineF = f;
+  for (const [id, w] of Object.entries(base)) if (m.getLayer(id)) m.setPaintProperty(id, 'line-width', lineWidth(w, f));
+}
+function scaleLines(m, base) {
+  LINE_BASE.set(m, { ...LINE_BASE.get(m), ...base });
+  fitLines(m, true);
+  if (m._lineHook) return;
+  m._lineHook = true;
+  let raf = 0;
+  m.on('pitch', () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; fitLines(m); }); });
+}
+
 function addRouteLayers(m, coords) {
   const dark = theme() === 'dark';
   m.addSource('route', { type: 'geojson', data: lineFeature(coords) });
@@ -714,7 +742,7 @@ function addConceptLayers(m) {
     layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: { 'line-color': dark ? '#3D8BFF' : '#1F6FE0', 'line-width': 8, 'line-dasharray': [0, 2] } });
   m.addLayer({ id: 'concept-ends', type: 'circle', source: 'concept', filter: ['==', ['geometry-type'], 'Point'],
-    paint: { ...endsPaint(dark), 'circle-pitch-alignment': 'map' } });
+    paint: { ...endsPaint(dark), 'circle-pitch-alignment': 'map', 'circle-pitch-scale': 'viewport' } });
   drawConcept();
 }
 
@@ -723,7 +751,7 @@ function addConceptLayers(m) {
 function addRouteEnds(m) {
   const dark = theme() === 'dark';
   m.addSource('route-ends', { type: 'geojson', data: EMPTY_FC });
-  m.addLayer({ id: 'route-ends', type: 'circle', source: 'route-ends', paint: { ...endsPaint(dark), 'circle-pitch-alignment': 'map' } });
+  m.addLayer({ id: 'route-ends', type: 'circle', source: 'route-ends', paint: { ...endsPaint(dark), 'circle-pitch-alignment': 'map', 'circle-pitch-scale': 'viewport' } });
   drawRouteEnds();
 }
 
@@ -741,7 +769,10 @@ function drawRouteEnds() {
   src.setData(stopPoints([state.navStart || n.shape[0], ...vias, n.shape[n.shape.length - 1]]));
 }
 
-map.on('style.load', () => { addRouteLayers(map, routeCoords); addRouteEnds(map); addConceptLayers(map); });
+map.on('style.load', () => {
+  addRouteLayers(map, routeCoords); addRouteEnds(map); addConceptLayers(map);
+  scaleLines(map, { 'route-casing': 13, 'route-line': 8, 'concept-line': 8 });
+});
 
 // De kleine routeoverzichtkaart is altijd de gewone kaart: geen reliëf, luchtfoto of
 // wandelroutes. Die maken hem traag en kosten de iPhone veel geheugen. De grote zoekkaart
@@ -2405,13 +2436,12 @@ function addMsLayers(m) {
   m.addLayer({ id: 'old-line', type: 'line', source: 'old', layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: { 'line-color': dark ? '#5A6270' : '#A9B4C2', 'line-width': 6 } });
   addRouteLayers(m, []);
-  m.setPaintProperty('route-casing', 'line-width', 10);
-  m.setPaintProperty('route-line', 'line-width', 6);
   m.addSource('guide', { type: 'geojson', data: EMPTY_FC });
   m.addLayer({ id: 'guide', type: 'line', source: 'guide', layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: { 'line-color': dark ? '#f2f2f7' : '#1c1c1e', 'line-width': 2.2, 'line-dasharray': [3, 2.5], 'line-opacity': 0.75 } });
   m.addSource('pts', { type: 'geojson', data: EMPTY_FC });
-  m.addLayer({ id: 'pts', type: 'circle', source: 'pts', paint: { ...endsPaint(dark, 9, 8, 7, 3.5), 'circle-pitch-alignment': 'map' } });
+  m.addLayer({ id: 'pts', type: 'circle', source: 'pts', paint: { ...endsPaint(dark, 9, 8, 7, 3.5), 'circle-pitch-alignment': 'map', 'circle-pitch-scale': 'viewport' } });
+  scaleLines(m, { 'route-casing': 10, 'route-line': 6, 'old-line': 6, guide: 2.2 });
 }
 
 // Tekent de route, de punten en (tijdens een wijziging) de oude stukken in grijs
