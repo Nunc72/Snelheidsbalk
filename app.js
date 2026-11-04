@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '41';
+const VERSION = '42';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -2904,8 +2904,9 @@ function slideLeg(dir) {
     return;
   }
   stopFollowing();
-  const p = n.shape[n.legs[n.legIdx + v - 1].endIdx], h = map.getContainer().clientHeight;
-  map.easeTo({ center: p, zoom: 15.5, pitch: state.pitch, padding: { top: Math.round(h * 0.4), bottom: 0, left: 0, right: 0 },
+  // De stop midden in beeld (zonder de ruimte boven die je eigen positie lager zet)
+  const p = n.shape[n.legs[n.legIdx + v - 1].endIdx];
+  map.easeTo({ center: p, zoom: 15.5, pitch: state.pitch, padding: { top: 0, bottom: 0, left: 0, right: 0 },
     duration: farJump(p) ? 0 : 800 });
 }
 
