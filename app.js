@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '43';
+const VERSION = '44';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -1328,7 +1328,7 @@ function recentItem(d, { star = false, handle = false } = {}) {
   li.className = 'recent';
   const fav = !list && isFav(d);
   li.innerHTML = '<div class="row">' + (handle ? '<span class="grip" aria-label="Verslepen"><i class="ti ti-grip-vertical" aria-hidden="true"></i></span>'
-    : `<i class="ti ${fav && !star ? 'ti-star' : route ? 'ti-route' : 'ti-history'}" aria-hidden="true"></i>`)
+    : `<i class="ti ${fav && !star ? 'ti-star' : route ? 'ti-route' : 'ti-map-pin'}" aria-hidden="true"></i>`)
     + '<div class="rtext"><div class="r1"></div><div class="r2"></div></div></div>';
   li.querySelector('.r1').textContent = first;
   li.querySelector('.r2').textContent = rest.join(', ');
