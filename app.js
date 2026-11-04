@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '45';
+const VERSION = '46';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -1611,31 +1611,29 @@ function midList(cat, bp) {
 }
 async function rankMid(cat, bp) {
   const n = bp.nav;
-  // Zoeken op vijf plekken langs de route, om de 6 km, van 12 km ervoor tot 12 km erna.
-  // Na elkaar, niet tegelijk: de zoekdienst is gratis en blokkeert bij te veel tegelijk.
-  const found = [];
-  for (const km of [0, -6, 6, -12, 12]) found.push(await fetchNear(cat, alongPoint(n, bp.along + km * 1000), 3.5).catch(() => []));
+  // Zoeken op drie plekken langs de route: op het punt en 8 km ervoor en erna
+  const found = await Promise.all([0, -8, 8].map(km => fetchNear(cat, alongPoint(n, bp.along + km * 1000), 4.5).catch(() => [])));
   const seen = new Set();
   let cands = found.flat().filter(p => {
     const k = p.lat.toFixed(4) + '|' + p.lon.toFixed(4);
     return !seen.has(k) && seen.add(k);
   });
-  if (cands.length < 10) {
+  if (cands.length < 5) {
     for (const p of await nearList(cat, bp).catch(() => [])) {
       const k = p.lat.toFixed(4) + '|' + p.lon.toFixed(4);
       if (!seen.has(k)) { seen.add(k); cands.push(p); }
     }
   }
-  // De 40 die het dichtst bij de route liggen gaan mee in de reistijdberekening
+  // De 25 die het dichtst bij de route liggen gaan mee in de reistijdberekening
   const near = n.shape.filter((c, i) => Math.abs(n.cum[i] - bp.along) < 30000);
   const toRoute = p => Math.min(...near.map(c => dist(c, ll(p))));
-  cands = cands.map(p => ({ ...p, d: dist(ll(bp), ll(p)), r: toRoute(p) })).sort((a, b) => a.r - b.r).slice(0, 40);
+  cands = cands.map(p => ({ ...p, d: dist(ll(bp), ll(p)), r: toRoute(p) })).sort((a, b) => a.r - b.r).slice(0, 25);
   if (!cands.length) return [];
   // Omrijtijd: van 25 km vóór het punt via de plek naar 25 km erna, min de tijd zonder stop
   const from = alongPoint(n, bp.along - 25000), to = alongPoint(n, bp.along + 25000);
   try {
-    const there = (await travelTimes([from], [...cands, to]))[0], base = there.pop();
-    const back = (await travelTimes(cands, [to])).map(r => r[0]);
+    const [[there], backRows] = await Promise.all([travelTimes([from], [...cands, to]), travelTimes(cands, [to])]);
+    const base = there.pop(), back = backRows.map(r => r[0]);
     cands.forEach((p, i) => {
       p.extra = there[i] == null || back[i] == null ? Infinity : Math.max(0, there[i] + back[i] - base);
     });
@@ -1700,38 +1698,44 @@ async function showNear() {
   const long = travelMode === 'auto' && dist(ll(prev), ll(next)) > 60000;
   const mid = long && nearSection('Na 90 minuten', 'Zoeken op de route…');
   ul.append(from.head, from.note, ...(mid ? [mid.head, mid.note] : []), to.head, to.note);
-  // Vertrek gaat voor: wat daar al staat, komt niet nog eens bij aankomst
+  // Alles tegelijk ophalen; de route voor 'na 90 minuten' meteen al uitrekenen
   const near = [nearList(cat, prev), nearList(cat, next)];
-  const shown = new Set();
-  try {
-    const a = (await near[0]).slice(0, 5);
-    if (seq !== searchSeq) return;
-    a.forEach(p => shown.add(key(p)));
-    from.fill(a, cat);
-  } catch (e) { fail(from, e); }
-  try {
-    const b = (await near[1]).filter(p => !shown.has(key(p))).slice(0, 5);
-    if (seq !== searchSeq) return;
-    b.forEach(p => shown.add(key(p)));
-    to.fill(b, cat);
-  } catch (e) { fail(to, e); }
-  if (!mid) return;
-  try {
-    const bp = await breakPoint(prev, next);
-    if (seq !== searchSeq) return;
-    if (!bp) { mid.head.remove(); mid.note.remove(); return; }
-    mid.head.querySelector('.ss').textContent = 'na ' + fmtDist(bp.along) + ' rijden';
-    const all = await midList(cat, bp);
-    if (seq !== searchSeq) return;
-    mid.fill(all.filter(p => !shown.has(key(p))).slice(0, 5), cat);
-    // De kop opent de kaart met de tien beste plekken
-    if (all.length) {
-      mid.head.classList.add('link');
-      mid.head.insertAdjacentHTML('beforeend', '<span class="go">Kaart<i class="ti ti-chevron-right" aria-hidden="true"></i></span>');
-      mid.head.setAttribute('role', 'button');
-      mid.head.addEventListener('click', () => { $('q').blur(); openMapSearch('row', 'near', editRow, { list: all, cat, route: bp.nav.shape }); });
-    }
-  } catch (e) { fail(mid, e); }
+  const midP = mid && breakPoint(prev, next).then(async bp => ({ bp, all: bp ? await midList(cat, bp) : [] }));
+  // Vertrek gaat voor: wat daar al staat, komt niet nog eens bij aankomst of na 90 minuten
+  const fromKeys = near[0].then(l => new Set(l.slice(0, 5).map(key)), () => new Set());
+  const fillFrom = (async () => {
+    try {
+      const a = (await near[0]).slice(0, 5);
+      if (seq === searchSeq) from.fill(a, cat);
+    } catch (e) { fail(from, e); }
+  })();
+  const fillTo = (async () => {
+    try {
+      const shown = await fromKeys;
+      const b = (await near[1]).filter(p => !shown.has(key(p))).slice(0, 5);
+      if (seq === searchSeq) to.fill(b, cat);
+    } catch (e) { fail(to, e); }
+  })();
+  const fillMid = mid && (async () => {
+    try {
+      const { bp, all } = await midP;
+      if (seq !== searchSeq) return;
+      if (!bp) { mid.head.remove(); mid.note.remove(); return; }
+      mid.head.querySelector('.ss').textContent = 'na ' + fmtDist(bp.along) + ' rijden';
+      const shown = await fromKeys;
+      if (seq !== searchSeq) return;
+      const five = all.filter(p => !shown.has(key(p))).slice(0, 5);
+      mid.fill(five, cat);
+      // De kop opent de kaart met dezelfde vijf plekken
+      if (five.length) {
+        mid.head.classList.add('link');
+        mid.head.insertAdjacentHTML('beforeend', '<span class="go">Kaart<i class="ti ti-chevron-right" aria-hidden="true"></i></span>');
+        mid.head.setAttribute('role', 'button');
+        mid.head.addEventListener('click', () => { $('q').blur(); openMapSearch('row', 'near', editRow, { list: five, cat, route: bp.nav.shape }); });
+      }
+    } catch (e) { fail(mid, e); }
+  })();
+  await Promise.all([fillFrom, fillTo, fillMid]);
 }
 
 // Recente bestemmingen waarin elk getypt woord het begin van een woord is
