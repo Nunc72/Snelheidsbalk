@@ -266,6 +266,15 @@ body.legslide #bottom-next { transform: none; }
   filter: drop-shadow(0 2px 3px rgba(0,0,0,.3)); }
 .pin path { fill: #E5484D; stroke: #fff; stroke-width: 2; }
 .pin circle { fill: #fff; }
+/* Potlood in plaats van de pin boven een punt of de route */
+.pin.pencil { display: none; }
+.mapsearch.over .pin:not(.pencil) { display: none; }
+.mapsearch.over .pin.pencil { display: block; }
+.pin.pencil path { stroke: #fff; stroke-width: 1.6; stroke-linejoin: round; }
+.pin.pencil .body { fill: #1F6FE0; }
+.pin.pencil .cap { fill: #E5484D; }
+.pin.pencil .wood { fill: #F3D9A4; }
+.pin.pencil .lead { fill: #3a3a3c; stroke: none; }
 .pickme { position: absolute; right: 10px; width: 44px; height: 44px; border-radius: 50%; background: #fff; color: #1F6FE0;
   display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 8px rgba(0,0,0,.18); }
 .pickme .ti { font-size: 22px; }

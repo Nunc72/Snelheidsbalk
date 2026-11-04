@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '37';
+const VERSION = '38';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -2193,15 +2193,15 @@ async function openMapSearch(kind, back, row = 0) {
   ms.prefix = [];
   ms.pts = [];
   ms.legs = [];
+  ms.moved = false;
   const list = filled();
-  if (kind === 'build') {
-    ms.prefix = list;
-  } else if (kind === 'edit') {
-    // Zonder GPS kan je eigen positie niet op de kaart; die blijft dan gewoon vooraan
+  if (kind !== 'row') {
+    // Nieuwe route of bestaande aanpassen werkt hetzelfde: je eigen positie is het eerste punt.
+    // Zonder GPS kan die niet op de kaart; hij blijft dan gewoon vooraan.
     if (list[0] && list[0].here && !state.fix) ms.prefix = [list[0]];
     ms.pts = list.slice(ms.prefix.length).map(resolveStop).filter(Boolean);
     // De berekende route meteen tonen, per etappe; anders etappe voor etappe uitrekenen
-    const n = previewData && previewData.routes && previewData.routes[previewData.sel];
+    const n = kind === 'edit' && previewData && previewData.routes && previewData.routes[previewData.sel];
     ms.legs = ms.pts.slice(1).map(() => null);
     if (n && n.legs && n.legs.length === ms.legs.length && !ms.prefix.length) {
       let from = 0;
@@ -2248,6 +2248,7 @@ async function ensureMsMap() {
   await new Promise(r => m.once('style.load', r));
   let raf = 0;
   m.on('move', () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; msMove(); }); });
+  m.on('movestart', e => { if (e.originalEvent) ms.moved = true; });
 }
 
 // Kantelen kan alleen in 3D: twee vingers samen omhoog of omlaag. Plat blijft plat,
@@ -2281,7 +2282,7 @@ function msDraw() {
   const a = ms.action;
   const oldLegs = new Set();
   if (a && a.type === 'insert') oldLegs.add(a.i);
-  if (a && (a.type === 'move' || a.type === 'remove')) { oldLegs.add(a.i - 1); oldLegs.add(a.i); }
+  if (a && a.type === 'move') { oldLegs.add(a.i - 1); oldLegs.add(a.i); }
   let solid;
   if (ms.kind === 'row') solid = previewData && previewData.coords.length ? [lineFeature(previewData.coords)] : [];
   else solid = ms.legs.map((l, i) => (l && !oldLegs.has(i) ? lineFeature(l) : null)).filter(Boolean);
@@ -2289,9 +2290,7 @@ function msDraw() {
   msmap.getSource('old').setData({ type: 'FeatureCollection',
     features: [...oldLegs].filter(i => ms.legs[i]).map(i => lineFeature(ms.legs[i])) });
   const fc = stopPoints(ms.pts);
-  // Vanaf home zijn de gezette punten tussenstops na je eigen positie
-  if (ms.kind === 'build') fc.features.forEach(f => { f.properties.kind = 'via'; });
-  if (a && (a.type === 'move' || a.type === 'remove')) fc.features[a.i].properties.kind = 'ghost';
+  if (a && a.type === 'move') fc.features[a.i].properties.kind = 'ghost';
   // Je eigen positie altijd als blauwe stip, ook als die (nog) geen adresregel is
   const me = hereNow();
   if (me && !ms.pts.some(p => p.here)) fc.features.unshift(pointFeature(ll(me), 'start'));
@@ -2306,6 +2305,8 @@ function msHover() {
   const c = { x: cv.clientWidth / 2, y: cv.clientHeight / 2 };
   let best = null;
   ms.pts.forEach((p, i) => {
+    // Alleen je eigen positie, nog zonder route: daar valt niets te wijzigen
+    if (ms.pts.length === 1 && p.here) return;
     const q = msmap.project(ll(p));
     const d = Math.hypot(q.x - c.x, q.y - c.y);
     if (d < 24 && (!best || d < best.d)) best = { type: 'wp', i, d };
@@ -2335,8 +2336,11 @@ function msMove(force) {
   let guide = [];
   if (a && a.type === 'insert') guide = [[ll(P[a.i]), c, ll(P[a.i + 1])]];
   else if (a && a.type === 'move') guide = [[P[a.i - 1] && ll(P[a.i - 1]), c, P[a.i + 1] && ll(P[a.i + 1])].filter(Boolean)];
-  else if (a && a.type === 'remove' && P[a.i - 1] && P[a.i + 1]) guide = [[ll(P[a.i - 1]), ll(P[a.i + 1])]];
-  else if (!a && ms.kind === 'build' && P.length && ms.hover.type === 'free') guide = [[ll(P[P.length - 1]), c]];
+  // Vrij schuiven: hulplijn vanaf het laatste punt van de route, zonder punten vanaf je telefoon
+  else if (!a && ms.kind !== 'row' && ms.hover.type === 'free') {
+    const from = P.length ? ll(P[P.length - 1]) : hereNow() && ll(hereNow());
+    if (from) guide = [[from, c]];
+  }
   // Etappes die nog berekend worden: een rechte hulplijn
   if (ms.kind !== 'row') ms.legs.forEach((l, i) => { if (!l) guide.push([ll(P[i]), ll(P[i + 1])]); });
   msmap.getSource('guide').setData({ type: 'FeatureCollection', features: guide.filter(g => g.length > 1).map(lineFeature) });
@@ -2352,7 +2356,7 @@ const actBtn = (cls, icon, label, fn) => {
   b.addEventListener('click', e => { e.stopPropagation(); fn(); });
   return b;
 };
-const ACT_TEXT = { insert: ['ti-plus', 'Punt'], move: ['ti-arrows-move', 'Verplaats'], remove: ['ti-minus', 'Verwijder'] };
+const ACT_TEXT = { insert: ['ti-plus', 'Punt'], move: ['ti-arrows-move', 'Verplaats'] };
 
 // Knoppen en hint; alleen opnieuw opbouwen als er iets verandert
 function msUi(force) {
@@ -2361,6 +2365,7 @@ function msUi(force) {
   if (key === ms.ui && !force) return;
   ms.ui = key;
   $('mbtns').classList.toggle('dim', !!a);
+  $('mapsearch').classList.toggle('over', !a && h.type !== 'free');
   $('msadd').hidden = ms.kind === 'row' || !!a || h.type !== 'free';
   const card = $('actcard');
   card.replaceChildren();
@@ -2375,23 +2380,26 @@ function msUi(force) {
   } else if (h.type === 'seg') {
     card.append(actBtn('viewbig', 'ti-plus', 'Hier een routepunt invoegen', () => msStart({ type: 'insert', i: h.i })));
   } else if (h.type === 'wp') {
-    card.append(actBtn('yellowbig', 'ti-minus', 'Dit punt verwijderen', () => msStart({ type: 'remove', i: h.i })),
+    card.append(actBtn('yellowbig', 'ti-minus', 'Dit punt verwijderen', () => msRemove(h.i)),
       actBtn('addbig', 'ti-arrows-move', 'Dit punt verplaatsen', () => msStart({ type: 'move', i: h.i })));
   }
   card.hidden = !card.childElementCount;
   const hint = a && a.type === 'insert' ? 'Schuif de kaart naar het nieuwe punt'
     : a && a.type === 'move' ? 'Schuif de kaart naar de nieuwe plek'
-    : a && a.type === 'remove' ? 'Punt verwijderen?'
     : ms.kind === 'row' ? 'Schuif de kaart tot de pin op de goede plek staat'
-    : ms.kind === 'build' && !ms.pts.length ? 'Schuif de kaart tot de pin goed staat' : '';
+    : !ms.pts.some(p => !p.here) ? 'Schuif de kaart tot de pin goed staat' : '';
   $('mshint').textContent = hint;
   $('mshint').hidden = !hint;
 }
 
 function msStart(action) {
   ms.action = action;
-  // Verwijderen gebeurt op de plek zelf; bij invoegen en verplaatsen schuif je daarna de kaart
   msDraw();
+}
+// Verwijderen hoeft niet bevestigd te worden
+function msRemove(i) {
+  ms.action = { type: 'remove', i };
+  msConfirm();
 }
 function msCancel() {
   ms.action = null;
@@ -2426,6 +2434,7 @@ function msConfirm() {
     else { L.splice(a.i - 1, 2, null); redo.push(a.i - 1); }
   }
   ms.action = null;
+  ms.moved = false;
   msDraw();
   redo.forEach(computeLeg);
 }
@@ -2438,6 +2447,7 @@ function msAdd() {
     ms.legs.push(null);
     computeLeg(ms.legs.length - 1);
   }
+  ms.moved = false;
   msDraw();
 }
 
@@ -2463,11 +2473,11 @@ async function msOk() {
     const p = pinPlace();
     stops[ms.row] = p;
   } else {
-    // Vanaf home: de plek onder de pin is het laatste punt (tenzij je daar net een punt zette)
+    // Heb je de pin ergens vrij neergezet, dan is die plek het laatste punt (de hulplijn liep ernaartoe)
     const last = ms.pts[ms.pts.length - 1];
     const c = msmap.getCenter().toArray();
-    if (ms.kind === 'build' && ms.hover.type === 'free' && (!last || dist(ll(last), c) > 15)) ms.pts.push(pinPlace());
-    if (ms.kind === 'build' && !ms.pts.length) return;
+    if (ms.moved && ms.hover.type === 'free' && (!last || dist(ll(last), c) > 15)) ms.pts.push(pinPlace());
+    if (ms.prefix.length + ms.pts.length < 2) { toast('Schuif de kaart naar je bestemming en tik op ✓.'); return; }
     stops = [...ms.prefix, ...ms.pts];
   }
   const naming = stops.filter(s => s && s.naming).map(s => s.naming);
