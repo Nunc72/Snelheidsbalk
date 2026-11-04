@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '44';
+const VERSION = '45';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -1561,6 +1561,16 @@ function nearLeg() {
 }
 const stopLabel = s => s.here ? 'Je positie' : withoutPostcode(s.name).split(',')[0];
 
+// Het punt op de route op afstand 'along' (meters vanaf het begin)
+function alongPoint(n, along) {
+  along = Math.max(0, Math.min(n.total, along));
+  let i = 1;
+  while (i < n.shape.length - 1 && n.cum[i] < along) i++;
+  const seg = n.cum[i] - n.cum[i - 1], g = seg ? (along - n.cum[i - 1]) / seg : 0;
+  const [p, q] = [n.shape[i - 1], n.shape[i]];
+  return { lon: p[0] + g * (q[0] - p[0]), lat: p[1] + g * (q[1] - p[1]), along };
+}
+
 // Het punt op de autoroute van a naar b na 90 minuten rijden, als de rit langer is dan 2 uur
 const LONG_LEG = 120 * 60, BREAK_AT = 90 * 60;
 async function breakPoint(a, b) {
@@ -1574,11 +1584,7 @@ async function breakPoint(a, b) {
         if (t + m.time < BREAK_AT) { t += m.time; continue; }
         const f = m.time ? (BREAK_AT - t) / m.time : 0;
         const along = n.cum[m.begin_shape_index] + f * (n.cum[m.end_shape_index] - n.cum[m.begin_shape_index]);
-        let i = 1;
-        while (i < n.shape.length - 1 && n.cum[i] < along) i++;
-        const seg = n.cum[i] - n.cum[i - 1], g = seg ? (along - n.cum[i - 1]) / seg : 0;
-        const [p, q] = [n.shape[i - 1], n.shape[i]];
-        return { lon: p[0] + g * (q[0] - p[0]), lat: p[1] + g * (q[1] - p[1]), along };
+        return { ...alongPoint(n, along), nav: n };
       }
       return null;
     }).catch(e => { legMemo.delete(key); throw e; }));
@@ -1586,13 +1592,68 @@ async function breakPoint(a, b) {
   return legMemo.get(key);
 }
 
+// Reistijden over de weg van elk punt in 'from' naar elk punt in 'to' (seconden, null = onbereikbaar)
+async function travelTimes(from, to) {
+  const body = { sources: from.map(p => ({ lat: p.lat, lon: p.lon })), targets: to.map(p => ({ lat: p.lat, lon: p.lon })), costing: 'auto' };
+  const res = await fetch(`${VALHALLA}/sources_to_targets`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const data = await res.json();
+  if (!data.sources_to_targets) throw new Error(data.error || 'geen reistijden');
+  return data.sources_to_targets.map(row => row.map(c => c.time));
+}
+
+// Rond 90 minuten: plekken langs de route, op volgorde van omrijtijd (niet hemelsbreed).
+// Een tankstation aan de snelweg 8 km verder gaat zo voor een pomp 2 km ernaast in een dorp.
+const midMemo = new Map();
+function midList(cat, bp) {
+  const key = cat + '|' + bp.lat.toFixed(4) + '|' + bp.lon.toFixed(4);
+  if (!midMemo.has(key)) midMemo.set(key, rankMid(cat, bp).catch(e => { midMemo.delete(key); throw e; }));
+  return midMemo.get(key);
+}
+async function rankMid(cat, bp) {
+  const n = bp.nav;
+  // Zoeken op vijf plekken langs de route, om de 6 km, van 12 km ervoor tot 12 km erna.
+  // Na elkaar, niet tegelijk: de zoekdienst is gratis en blokkeert bij te veel tegelijk.
+  const found = [];
+  for (const km of [0, -6, 6, -12, 12]) found.push(await fetchNear(cat, alongPoint(n, bp.along + km * 1000), 3.5).catch(() => []));
+  const seen = new Set();
+  let cands = found.flat().filter(p => {
+    const k = p.lat.toFixed(4) + '|' + p.lon.toFixed(4);
+    return !seen.has(k) && seen.add(k);
+  });
+  if (cands.length < 10) {
+    for (const p of await nearList(cat, bp).catch(() => [])) {
+      const k = p.lat.toFixed(4) + '|' + p.lon.toFixed(4);
+      if (!seen.has(k)) { seen.add(k); cands.push(p); }
+    }
+  }
+  // De 40 die het dichtst bij de route liggen gaan mee in de reistijdberekening
+  const near = n.shape.filter((c, i) => Math.abs(n.cum[i] - bp.along) < 30000);
+  const toRoute = p => Math.min(...near.map(c => dist(c, ll(p))));
+  cands = cands.map(p => ({ ...p, d: dist(ll(bp), ll(p)), r: toRoute(p) })).sort((a, b) => a.r - b.r).slice(0, 40);
+  if (!cands.length) return [];
+  // Omrijtijd: van 25 km vóór het punt via de plek naar 25 km erna, min de tijd zonder stop
+  const from = alongPoint(n, bp.along - 25000), to = alongPoint(n, bp.along + 25000);
+  try {
+    const there = (await travelTimes([from], [...cands, to]))[0], base = there.pop();
+    const back = (await travelTimes(cands, [to])).map(r => r[0]);
+    cands.forEach((p, i) => {
+      p.extra = there[i] == null || back[i] == null ? Infinity : Math.max(0, there[i] + back[i] - base);
+    });
+    // Per hele minuut omrijden telt; bij gelijk de plek het dichtst bij 90 minuten
+    cands.sort((a, b) => Math.round(a.extra / 60) - Math.round(b.extra / 60) || a.d - b.d);
+    cands = cands.filter(p => p.extra !== Infinity);
+  } catch (e) { /* zonder reistijden: hemelsbreed */ }
+  return cands.slice(0, 10);
+}
+const fmtExtra = s => (s < 60 ? 'op route' : '+' + Math.round(s / 60) + ' min');
+
 function nearItem(p, cat) {
   const li = document.createElement('li');
   li.className = 'recent';
   li.innerHTML = `<div class="row"><i class="ti ${NEAR[cat].icon}" aria-hidden="true"></i><div class="rtext"><div class="r1"></div><div class="r2"></div></div><span class="dist"></span></div>`;
   li.querySelector('.r1').textContent = p.title;
   li.querySelector('.r2').textContent = p.sub;
-  li.querySelector('.dist').textContent = fmtDist(p.d);
+  li.querySelector('.dist').textContent = p.extra != null ? fmtExtra(p.extra) : fmtDist(p.d);
   li.addEventListener('click', () => useChoice({ lat: p.lat, lon: p.lon, name: p.name }));
   return li;
 }
@@ -1660,8 +1721,16 @@ async function showNear() {
     if (seq !== searchSeq) return;
     if (!bp) { mid.head.remove(); mid.note.remove(); return; }
     mid.head.querySelector('.ss').textContent = 'na ' + fmtDist(bp.along) + ' rijden';
-    const c = (await nearList(cat, bp)).filter(p => !shown.has(key(p))).slice(0, 5);
-    if (seq === searchSeq) mid.fill(c, cat);
+    const all = await midList(cat, bp);
+    if (seq !== searchSeq) return;
+    mid.fill(all.filter(p => !shown.has(key(p))).slice(0, 5), cat);
+    // De kop opent de kaart met de tien beste plekken
+    if (all.length) {
+      mid.head.classList.add('link');
+      mid.head.insertAdjacentHTML('beforeend', '<span class="go">Kaart<i class="ti ti-chevron-right" aria-hidden="true"></i></span>');
+      mid.head.setAttribute('role', 'button');
+      mid.head.addEventListener('click', () => { $('q').blur(); openMapSearch('row', 'near', editRow, { list: all, cat, route: bp.nav.shape }); });
+    }
   } catch (e) { fail(mid, e); }
 }
 
@@ -2239,11 +2308,14 @@ function confirmPreview() {
 // 'build' (vanaf home: punten zetten en verder kiezen), 'edit' (de hele route aanpassen)
 // en 'row' (één adresregel kiezen, met de route erbij).
 let msmap = null;
-const ms = { kind: 'build', back: 'home', row: 0, prefix: [], pts: [], legs: [], action: null, hover: { type: 'free' }, seq: 0, ui: '' };
+const ms = { kind: 'build', back: 'home', row: 0, prefix: [], pts: [], legs: [], action: null, hover: { type: 'free' }, seq: 0, ui: '', pois: null };
 const ll = p => [p.lon, p.lat];
 
-async function openMapSearch(kind, back, row = 0) {
+// 'pois' (alleen bij 'row'): plekken uit In de buurt, genummerd op de kaart, met hun route
+async function openMapSearch(kind, back, row = 0, pois = null) {
   ms.kind = kind;
+  ms.pois = pois;
+  msMarkers();
   ms.back = back;
   ms.row = row;
   ms.action = null;
@@ -2276,22 +2348,23 @@ async function openMapSearch(kind, back, row = 0) {
   await ensureMsMap();
   if (!msmap) return;
   // Waar de kaart begint
-  const target = kind === 'row' ? stops[row] && resolveStop(stops[row]) || resolveStop(stops[row - 1]) || hereNow()
+  const target = pois ? null : kind === 'row' ? stops[row] && resolveStop(stops[row]) || resolveStop(stops[row - 1]) || hereNow()
     : kind === 'build' ? hereNow() : null;
   const routeCoords = kind === 'row' && previewData ? previewData.coords : ms.legs.flat();
-  const all = [...routeCoords, ...ms.pts.map(ll)];
+  const all = pois ? pois.list.map(ll) : [...routeCoords, ...ms.pts.map(ll)];
   msmap.resize();
   msmap.jumpTo({ pitch: 0 });
   if (target) msmap.jumpTo({ center: ll(target), zoom: 15.5 });
   else if (all.length) {
     const b = all.reduce((bb, c) => bb.extend(c), new maplibregl.LngLatBounds(all[0], all[0]));
-    msmap.fitBounds(b, { padding: { top: 90, bottom: 190, left: 40, right: 40 }, duration: 0, maxZoom: 16 });
+    msmap.fitBounds(b, { padding: { top: pois ? 130 : 90, bottom: 190, left: 40, right: 40 }, duration: 0, maxZoom: 16 });
   } else {
     const c = map.getCenter();
     msmap.jumpTo({ center: c, zoom: 15 });
   }
   msTilt(false);
   msDraw();
+  msMarkers();
   ms.legs.forEach((l, i) => { if (!l) computeLeg(i); });
 }
 
@@ -2345,7 +2418,8 @@ function msDraw() {
   if (a && a.type === 'insert') oldLegs.add(a.i);
   if (a && a.type === 'move') { oldLegs.add(a.i - 1); oldLegs.add(a.i); }
   let solid;
-  if (ms.kind === 'row') solid = previewData && previewData.coords.length ? [lineFeature(previewData.coords)] : [];
+  if (ms.pois) solid = [lineFeature(ms.pois.route)];
+  else if (ms.kind === 'row') solid = previewData && previewData.coords.length ? [lineFeature(previewData.coords)] : [];
   else solid = ms.legs.map((l, i) => (l && !oldLegs.has(i) ? lineFeature(l) : null)).filter(Boolean);
   msmap.getSource('route').setData({ type: 'FeatureCollection', features: solid });
   msmap.getSource('old').setData({ type: 'FeatureCollection',
@@ -2361,9 +2435,19 @@ function msDraw() {
 
 // Waar staat de pin: op een punt, op de route, of vrij. Daarbij hoort het actiekaartje.
 function msHover() {
-  if (ms.kind === 'row' || ms.action) return { type: 'free' };
   const cv = msmap.getCanvas();
   const c = { x: cv.clientWidth / 2, y: cv.clientHeight / 2 };
+  // Plekken uit In de buurt: staat de pin erop, dan kies je die plek
+  if (ms.pois && !ms.action) {
+    let best = null;
+    ms.pois.list.forEach((p, i) => {
+      const q = msmap.project(ll(p));
+      const d = Math.hypot(q.x - c.x, q.y - c.y);
+      if (d < 24 && (!best || d < best.d)) best = { type: 'poi', i, d };
+    });
+    if (best) return best;
+  }
+  if (ms.kind === 'row' || ms.action) return { type: 'free' };
   // Net een punt neergezet: pas wijzigen als je er weggeweest bent en terugkomt
   if (ms.fresh) {
     const q = msmap.project(ll(ms.fresh));
@@ -2434,7 +2518,9 @@ function msUi(force) {
   if (key === ms.ui && !force) return;
   ms.ui = key;
   $('mbtns').classList.toggle('dim', !!a);
-  $('mapsearch').classList.toggle('over', !a && (h.type !== 'free' || (!ms.adding && ms.kind !== 'row')));
+  $('mapsearch').classList.toggle('onpoi', h.type === 'poi');
+  if (ms.markers) ms.markers.forEach((m, i) => m.getElement().classList.toggle('on', h.type === 'poi' && h.i === i));
+  $('mapsearch').classList.toggle('over', !a && (h.type === 'wp' || h.type === 'seg' || (!ms.adding && ms.kind !== 'row')));
   // Aan het toevoegen: + blauw en ✓ groen
   const adding = ms.adding && ms.kind !== 'row';
   $('msadd').className = 'roundbtn ' + (adding ? 'viewbig' : 'addbig');
@@ -2450,6 +2536,16 @@ function msUi(force) {
     const sep = document.createElement('span');
     sep.className = 'sep';
     card.append(lbl, sep, actBtn('addbig', 'ti-arrow-back-up', 'Annuleren', msCancel), actBtn('okbig', 'ti-check', 'Bevestigen', msConfirm));
+  } else if (h.type === 'poi') {
+    const p = ms.pois.list[h.i];
+    const lbl = document.createElement('span');
+    lbl.className = 'lbltxt poitxt';
+    lbl.innerHTML = `<i class="ti ${NEAR[ms.pois.cat].icon}" aria-hidden="true"></i><span class="pt"><b></b><small></small></span>`;
+    lbl.querySelector('b').textContent = p.title;
+    lbl.querySelector('small').textContent = [p.extra != null ? fmtExtra(p.extra) : '', p.sub].filter(Boolean).join(' · ');
+    const sep = document.createElement('span');
+    sep.className = 'sep';
+    card.append(lbl, sep, actBtn('okbig', 'ti-check', 'Deze plek kiezen', msOk));
   } else if (h.type === 'seg') {
     card.append(actBtn('viewbig', 'ti-plus', 'Hier een routepunt invoegen', () => msStart({ type: 'insert', i: h.i })));
   } else if (h.type === 'wp') {
@@ -2459,6 +2555,7 @@ function msUi(force) {
   card.hidden = !card.childElementCount;
   const hint = a && a.type === 'insert' ? 'Schuif de kaart naar het nieuwe punt'
     : a && a.type === 'move' ? 'Schuif de kaart naar de nieuwe plek'
+    : ms.pois ? (h.type === 'poi' ? '' : 'Tik op een plek of schuif de kaart')
     : ms.kind === 'row' ? 'Schuif de kaart tot de pin op de goede plek staat'
     : !ms.pts.some(p => !p.here) ? 'Schuif de kaart tot de pin goed staat' : '';
   $('mshint').textContent = hint;
@@ -2544,13 +2641,36 @@ async function computeLeg(i) {
   } catch (e) { /* de rechte hulplijn blijft staan */ }
 }
 
+// Genummerde plekken (1 = minste omweg); tikken schuift de kaart erheen, ✓ kiest
+function msMarkers() {
+  (ms.markers || []).forEach(m => m.remove());
+  ms.markers = null;
+  if (!ms.pois || !msmap) return;
+  ms.markers = ms.pois.list.map((p, i) => {
+    const el = document.createElement('button');
+    el.type = 'button';
+    el.className = 'poimark';
+    el.textContent = i + 1;
+    el.setAttribute('aria-label', p.title);
+    el.addEventListener('click', e => { e.stopPropagation(); msmap.easeTo({ center: ll(p) }); });
+    const m = new maplibregl.Marker({ element: el }).setLngLat(ll(p)).addTo(msmap);
+    // De beste bovenop als ze overlappen
+    el.style.zIndex = 20 - i;
+    el.setAttribute('aria-label', (i + 1) + ': ' + p.title);
+    return m;
+  });
+  ms.ui = '';
+  msUi();
+}
+
 const cleanPlace = p => (p.here ? HERE : { lat: p.lat, lon: p.lon, name: p.name });
 
 async function msOk() {
   if (ms.action || !msmap) return;
   if (ms.kind === 'row') {
-    const p = pinPlace();
-    stops[ms.row] = p;
+    const poi = ms.hover.type === 'poi' && ms.pois.list[ms.hover.i];
+    stops[ms.row] = poi ? { lat: poi.lat, lon: poi.lon, name: poi.name } : pinPlace();
+    streetCtx = null;
   } else {
     // Aan het toevoegen en de pin staat vrij: die plek is het laatste punt (de hulplijn liep ernaartoe)
     const last = ms.pts[ms.pts.length - 1];
@@ -2580,6 +2700,7 @@ function msBack() {
   ms.seq++;
   if (ms.back === 'overview') { showPane('overview'); renderStops(); return; }
   if (ms.back === 'text') { showPane('textpane'); $('q').focus(); return; }
+  if (ms.back === 'near') { showPane('textpane'); return; }
   setTravelMode(modeAtOpen);
   closeSearch();
 }

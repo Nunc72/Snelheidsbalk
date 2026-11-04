@@ -189,6 +189,11 @@ body.legback #bottom-next { transform: translateX(calc(200% + 12px)); }
 #results li.sect:active { background: none; }
 #results .sect .st { flex: none; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: #6b6b6b; }
 #results .sect .ss { min-width: 0; font-size: 13px; color: #8a8a8a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Na 90 minuten: de kop opent de kaart */
+#results li.sect.link { cursor: pointer; }
+#results li.sect.link:active { background: rgba(0,0,0,.04); }
+#results .sect .go { margin-left: auto; flex: none; display: flex; align-items: center; gap: 2px; font-size: 14px; font-weight: 600; color: #1F6FE0; }
+#results .sect .go .ti { font-size: 17px; }
 /* Routes: download voor onderweg zonder bereik; blauw = staat op de telefoon */
 #results .dl { flex: none; width: 44px; height: 44px; margin: -10px -10px -10px 0; display: flex; align-items: center; justify-content: center; }
 #results .recent .dl .ti { color: #8a8a8a; }
@@ -198,7 +203,7 @@ body.legback #bottom-next { transform: translateX(calc(200% + 12px)); }
 
 /* Zoeken op kaart: hele scherm kaart, pin in het midden */
 .mapsearch { position: relative; overflow: hidden; }
-.msmap { position: absolute; inset: 0; background: #EDEBE6; }
+.msmap { position: absolute; inset: 0; z-index: 0; background: #EDEBE6; }
 .mstop { position: absolute; left: 0; right: 0; top: 0; z-index: 3; }
 .mstop .moderow { background: #fff; }
 .mshint { position: absolute; left: 50%; top: 68px; transform: translateX(-50%); z-index: 3; max-width: calc(100% - 32px);
@@ -212,6 +217,16 @@ body.legback #bottom-next { transform: translateX(calc(200% + 12px)); }
 .actcard .lbltxt { display: flex; align-items: center; gap: 6px; font-size: 15px; color: #3a3a3c; padding: 0 6px 0 10px; white-space: nowrap; }
 .actcard .lbltxt .ti { font-size: 21px; }
 .actcard .sep { width: 1px; align-self: stretch; background: #eee; }
+.actcard .poitxt { min-width: 0; max-width: calc(100vw - 120px); }
+.actcard .poitxt .pt { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.actcard .poitxt b, .actcard .poitxt small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.actcard .poitxt b { font-weight: 600; color: #1c1c1e; }
+.actcard .poitxt small { font-size: 13px; color: #8a8a8a; }
+/* Plekken uit In de buurt op de kaart, genummerd */
+.poimark { width: 28px; height: 28px; border-radius: 50%; background: #fff; color: #1c1c1e; border: 2.5px solid #1c1c1e;
+  font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; padding: 0; box-shadow: 0 1px 4px rgba(0,0,0,.3); }
+.mapsearch.onpoi .pin { display: none; }
+.poimark.on { z-index: 30 !important; background: #1F6FE0; border-color: #fff; color: #fff; }
 .mbtns { position: absolute; left: 20px; right: 20px; bottom: calc(env(safe-area-inset-bottom) + 20px); z-index: 3;
   display: flex; justify-content: space-between; align-items: center; pointer-events: none; }
 .mbtns .roundbtn { pointer-events: auto; box-shadow: 0 2px 10px rgba(0,0,0,.2); }
@@ -369,6 +384,8 @@ body.legback #bottom-next { transform: translateX(calc(200% + 12px)); }
   .actcard { background: #1c1c1e; box-shadow: 0 2px 14px rgba(0,0,0,.6); }
   .actcard .lbltxt { color: #c7c7cc; }
   .actcard .sep { background: #3a3a3c; }
+  .actcard .poitxt b { color: #f2f2f7; }
+  #results .sect .go { color: #4C9BFF; }
   .msmap { background: #23262B; }
   .destlbl .leg { color: #636366; }
   .edit { background: #2c2c2e; color: #f2f2f7; }
