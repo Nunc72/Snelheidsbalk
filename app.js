@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '47';
+const VERSION = '48';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -1666,9 +1666,15 @@ function nearSection(title, sub) {
   const note = document.createElement('li');
   note.className = 'empty';
   note.textContent = 'Zoeken…';
-  return { head, note, fill(items, cat) {
+  return { head, note, fill(items, cat, route) {
     if (!items.length) { note.textContent = 'Niets gevonden.'; return; }
     note.replaceWith(...items.map(p => nearItem(p, cat)));
+    // De kop opent de kaart met (hooguit) de eerste vijf plekken
+    const list = items.slice(0, 5);
+    head.classList.add('link');
+    head.insertAdjacentHTML('beforeend', '<span class="go">Kaart<i class="ti ti-chevron-right" aria-hidden="true"></i></span>');
+    head.setAttribute('role', 'button');
+    head.addEventListener('click', () => { $('q').blur(); openMapSearch('row', 'near', editRow, { list, cat, route }); });
   } };
 }
 
@@ -1726,15 +1732,7 @@ async function showNear() {
       mid.head.querySelector('.ss').textContent = 'na ' + fmtDist(bp.along) + ' rijden';
       const shown = await bothKeys;
       if (seq !== searchSeq) return;
-      const five = all.filter(p => !shown.has(key(p))).slice(0, 5);
-      mid.fill(five, cat);
-      // De kop opent de kaart met dezelfde vijf plekken
-      if (five.length) {
-        mid.head.classList.add('link');
-        mid.head.insertAdjacentHTML('beforeend', '<span class="go">Kaart<i class="ti ti-chevron-right" aria-hidden="true"></i></span>');
-        mid.head.setAttribute('role', 'button');
-        mid.head.addEventListener('click', () => { $('q').blur(); openMapSearch('row', 'near', editRow, { list: five, cat, route: bp.nav.shape }); });
-      }
+      mid.fill(all.filter(p => !shown.has(key(p))).slice(0, 5), cat, bp.nav.shape);
     } catch (e) { fail(mid, e); }
   })();
   await Promise.all([fillFrom, fillTo, fillMid]);
@@ -2424,7 +2422,7 @@ function msDraw() {
   if (a && a.type === 'insert') oldLegs.add(a.i);
   if (a && a.type === 'move') { oldLegs.add(a.i - 1); oldLegs.add(a.i); }
   let solid;
-  if (ms.pois) solid = [lineFeature(ms.pois.route)];
+  if (ms.pois && ms.pois.route) solid = [lineFeature(ms.pois.route)];
   else if (ms.kind === 'row') solid = previewData && previewData.coords.length ? [lineFeature(previewData.coords)] : [];
   else solid = ms.legs.map((l, i) => (l && !oldLegs.has(i) ? lineFeature(l) : null)).filter(Boolean);
   msmap.getSource('route').setData({ type: 'FeatureCollection', features: solid });
@@ -2548,7 +2546,7 @@ function msUi(force) {
     lbl.className = 'lbltxt poitxt';
     lbl.innerHTML = `<i class="ti ${NEAR[ms.pois.cat].icon}" aria-hidden="true"></i><span class="pt"><b></b><small></small></span>`;
     lbl.querySelector('b').textContent = p.title;
-    lbl.querySelector('small').textContent = [p.extra != null ? fmtExtra(p.extra) : '', p.sub].filter(Boolean).join(' · ');
+    lbl.querySelector('small').textContent = [p.extra != null ? fmtExtra(p.extra) : fmtDist(p.d), p.sub].filter(Boolean).join(' · ');
     const sep = document.createElement('span');
     sep.className = 'sep';
     card.append(lbl, sep, actBtn('okbig', 'ti-check', 'Deze plek kiezen', msOk));
