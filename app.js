@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '42';
+const VERSION = '43';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -1108,12 +1108,14 @@ try {
   }
 } catch (e) { /* geen opslag */ }
 
-// ---------- Tab Routes: gestarte routes, met download voor onderweg zonder bereik ----------
-// Elke gestarte route komt hier. Het download-icoontje slaat de kaart langs de eerste 80 km op
-// (bij Lopen ook de wandelroutes); daarna is het blauw en opent de route ook zonder bereik.
+// ---------- Tab Routes: routes met een boekenlint, met download voor onderweg zonder bereik ----------
+// Elke gestarte route wordt onthouden; bij Recent zet je er een boekenlint op en dan staat hij
+// bij Routes. Het download-icoontje slaat de kaart langs de eerste 80 km op (bij Lopen ook de
+// wandelroutes); daarna is het blauw en opent de route ook zonder bereik.
 const ROUTE_CACHE = 'walks-v1';
 const routeUrl = id => `${location.origin}/__walk/${id}.json`;
 const routeKey = r => r.mode + '|' + r.stops.map(s => s.name).join('|');
+const sigOf = (list, mode) => mode + '|' + list.map(s => (s.here ? 'here' : s.name)).join('|');
 function loadSaved() {
   try { return JSON.parse(localStorage.getItem('savedRoutes') || '[]'); } catch (e) { return []; }
 }
@@ -1127,6 +1129,36 @@ try {
     storeSaved([...walks.map(w => ({ id: w.id, stops: [place(w.from), place(w.to)], mode: 'pedestrian', km: w.km, offline: true, relief: w.relief })),
       ...loadSaved()].slice(0, 30));
     localStorage.removeItem('walks');
+  }
+} catch (e) { /* geen opslag */ }
+// Herkent een route ook als hij vanaf je eigen positie begint (die heeft per keer een ander adres)
+const savedSig = r => r.sig || sigOf(r.stops, r.mode);
+const bookmarked = () => loadSaved().filter(r => r.bookmark);
+const savedFor = d => { const sig = sigOf(stopsOf(d), d.mode); return loadSaved().find(r => savedSig(r) === sig); };
+const isBookmarked = d => !!(savedFor(d) || {}).bookmark;
+async function toggleBookmark(d) {
+  const r = savedFor(d);
+  if (r) { storeSaved(loadSaved().map(x => (x.id === r.id ? { ...x, bookmark: !x.bookmark } : x))); return; }
+  // Nog nooit gestart: nu bewaren, met het adres van je eigen positie als die erin zit
+  const list = stopsOf(d), sig = sigOf(list, d.mode);
+  const fixed = await Promise.all(list.map(async x => (x.here ? (state.fix ? { lat: state.fix.lat, lon: state.fix.lon,
+    name: await placeName(state.fix.lat, state.fix.lon) } : null) : place(x))));
+  if (fixed.includes(null)) { toast('Je positie is nog niet bekend; start de route een keer en probeer het dan opnieuw.'); return; }
+  storeSaved([{ id: Date.now().toString(36), stops: fixed, mode: d.mode, km: null, offline: false, bookmark: true, sig }, ...loadSaved()]);
+}
+// Eenmalig: routes bij Favorieten krijgen een boekenlint, net als al gedownloade routes
+try {
+  if (!localStorage.getItem('bookmarks1')) {
+    const favRoutes = loadFavs().filter(f => stopsOf(f));
+    let saved = loadSaved().map(r => (r.offline ? { ...r, bookmark: true } : r));
+    for (const f of favRoutes) {
+      const sig = sigOf(stopsOf(f), f.mode), hit = saved.find(r => savedSig(r) === sig);
+      if (hit) hit.bookmark = true;
+      else if (!stopsOf(f).some(x => x.here)) saved.unshift({ id: (Date.now() + saved.length).toString(36), stops: stopsOf(f).map(place), mode: f.mode, km: null, offline: false, bookmark: true, sig });
+    }
+    storeSaved(saved);
+    saveFavs(loadFavs().filter(f => !stopsOf(f)));
+    localStorage.setItem('bookmarks1', '1');
   }
 } catch (e) { /* geen opslag */ }
 
@@ -1146,13 +1178,17 @@ async function dropSavedNav(id) {
 // Je eigen positie als vertrekpunt krijgt de naam van het adres daar
 async function rememberRoute(list, mode, nav) {
   const fixed = await Promise.all(list.map(async s => (s.here ? { lat: s.lat, lon: s.lon, name: await placeName(s.lat, s.lon) } : place(s))));
-  const item = { id: Date.now().toString(36), stops: fixed, mode, km: Math.round(nav.total / 100) / 10, offline: false };
+  const sig = sigOf(list, mode);
+  const item = { id: Date.now().toString(36), stops: fixed, mode, km: Math.round(nav.total / 100) / 10, offline: false, sig };
   const all = loadSaved();
-  const old = all.find(r => routeKey(r) === routeKey(item));
-  if (old) Object.assign(item, { id: old.id, offline: old.offline, relief: old.relief });
-  const next = [item, ...all.filter(r => routeKey(r) !== routeKey(item))];
-  for (const r of next.slice(30)) dropSavedNav(r.id);
-  storeSaved(next.slice(0, 30));
+  const same = r => savedSig(r) === sig || routeKey(r) === routeKey(item);
+  const old = all.find(same);
+  if (old) Object.assign(item, { id: old.id, offline: old.offline, relief: old.relief, bookmark: old.bookmark });
+  // Routes met een boekenlint blijven altijd; van de rest de laatste 30
+  const rest = [item, ...all.filter(r => !same(r))];
+  const keep = rest.filter(r => r.bookmark || rest.filter(x => !x.bookmark).indexOf(r) < 30);
+  for (const r of rest) if (!keep.includes(r)) dropSavedNav(r.id);
+  storeSaved(keep);
 }
 
 function deleteSaved(r) {
@@ -1186,7 +1222,6 @@ async function downloadRoute(r, btn) {
 // Sta je bij het beginpunt, dan navigeer je vanaf je eigen positie; zonder bereik
 // komt de gedownloade route uit de opslag
 let savedPick = null;
-const sigOf = (list, mode) => mode + '|' + list.map(s => (s.here ? 'here' : s.name)).join('|');
 async function openSaved(r) {
   const nav = r.offline ? await savedNav(r) : null;
   const list = r.stops.map(place);
@@ -1273,9 +1308,10 @@ function editLabel(li, d) {
   input.focus();
   input.select();
 }
+// Alleen plekken zijn favoriet; routes krijgen een boekenlint (tab Routes)
 function toggleFav(d) {
   const favs = loadFavs();
-  saveFavs(isFav(d) ? favs.filter(f => f.name !== d.name) : [...favs, stopsOf(d) ? routeEntry(stopsOf(d), d.mode) : place(d)]);
+  saveFavs(isFav(d) ? favs.filter(f => f.name !== d.name) : [...favs, place(d)]);
 }
 
 // Een regel in de lijst: klik kiest de bestemming, het sterretje maakt hem (geen) favoriet,
@@ -1290,14 +1326,29 @@ function recentItem(d, { star = false, handle = false } = {}) {
     : label ? [label, d.name] : d.name.split(', ');
   const li = document.createElement('li');
   li.className = 'recent';
-  const fav = isFav(d);
+  const fav = !list && isFav(d);
   li.innerHTML = '<div class="row">' + (handle ? '<span class="grip" aria-label="Verslepen"><i class="ti ti-grip-vertical" aria-hidden="true"></i></span>'
     : `<i class="ti ${fav && !star ? 'ti-star' : route ? 'ti-route' : 'ti-history'}" aria-hidden="true"></i>`)
     + '<div class="rtext"><div class="r1"></div><div class="r2"></div></div></div>';
   li.querySelector('.r1').textContent = first;
   li.querySelector('.r2').textContent = rest.join(', ');
   li.addEventListener('click', () => { if (!li.dataset.swiped && !li.classList.contains('editing')) chooseRecent(d); });
-  if (star) {
+  if (star && route) {
+    // Een route: boekenlint in plaats van het sterretje; dan staat hij bij Routes
+    const on = isBookmarked(d);
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'star' + (on ? ' on' : '');
+    btn.setAttribute('aria-label', on ? 'Boekenlint weghalen' : 'Boekenlint: bewaren bij Routes');
+    btn.setAttribute('aria-pressed', String(on));
+    btn.innerHTML = `<i class="ti ${on ? 'ti-bookmark-filled' : 'ti-bookmark'}" aria-hidden="true"></i>`;
+    btn.addEventListener('click', async e => {
+      e.stopPropagation();
+      await toggleBookmark(d);
+      showRecent();
+    });
+    li.firstElementChild.appendChild(btn);
+  } else if (star) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'star' + (fav ? ' on' : '');
@@ -1402,9 +1453,15 @@ function savedItem(r) {
   const li = document.createElement('li');
   li.className = 'recent';
   li.innerHTML = `<div class="row"><i class="ti ${MODE_ICON[r.mode] || 'ti-route'}" aria-hidden="true"></i><div class="rtext"><div class="r1"></div><div class="r2"></div></div>`
-    + `<button type="button" class="dl${r.offline ? ' on' : ''}"><i class="ti ti-download" aria-hidden="true"></i></button></div>`;
+    + `<button type="button" class="dl${r.offline ? ' on' : ''}"><i class="ti ti-download" aria-hidden="true"></i></button>`
+    + '<button type="button" class="star on" aria-label="Boekenlint weghalen" aria-pressed="true"><i class="ti ti-bookmark-filled" aria-hidden="true"></i></button></div>';
   li.querySelector('.r1').textContent = routeText(r.stops);
-  li.querySelector('.r2').textContent = `${String(r.km).replace('.', ',')} km · ${MODE_LABEL[r.mode]}` + (r.offline ? ' · ook zonder bereik' : '');
+  li.querySelector('.r2').textContent = [r.km != null && `${String(r.km).replace('.', ',')} km`, MODE_LABEL[r.mode], r.offline && 'ook zonder bereik'].filter(Boolean).join(' · ');
+  li.querySelector('.star').addEventListener('click', e => {
+    e.stopPropagation();
+    storeSaved(loadSaved().map(x => (x.id === r.id ? { ...x, bookmark: false } : x)));
+    showRecent();
+  });
   const dl = li.querySelector('.dl');
   dl.setAttribute('aria-label', r.offline ? 'Opgeslagen voor zonder bereik' : 'Kaart downloaden voor zonder bereik');
   dl.addEventListener('click', e => { e.stopPropagation(); downloadRoute(r, dl); });
@@ -1642,13 +1699,13 @@ function showRecent() {
   renderCats();
   if (listTab === 'near') { showNear(); return; }
   if (listTab === 'routes') {
-    const saved = loadSaved();
-    if (!saved.length) ul.innerHTML = '<li class="empty">Nog geen routes. Elke route die je start komt hier. Met het download-icoontje rechts sla je de kaart op voor onderweg zonder bereik.</li>';
+    const saved = bookmarked();
+    if (!saved.length) ul.innerHTML = '<li class="empty">Nog geen routes. Tik bij Recent op het boekenlint achter een route om hem hier te bewaren. Met het download-icoontje sla je de kaart op voor onderweg zonder bereik.</li>';
     for (const r of saved) ul.appendChild(savedItem(r));
     return;
   }
   const fav = listTab === 'fav';
-  const list = fav ? loadFavs() : loadRecent();
+  const list = fav ? loadFavs().filter(d => !stopsOf(d)) : loadRecent();
   if (!fav && (editRow === 0 || !stops.some(s => s && s.here))) ul.appendChild(hereItem());
   if (!list.length) {
     ul.insertAdjacentHTML('beforeend', `<li class="empty">${fav ? 'Nog geen favorieten. Tik bij Recent op het sterretje om er een toe te voegen.' : 'Nog geen recente bestemmingen.'}</li>`);
