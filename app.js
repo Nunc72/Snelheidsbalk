@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '40';
+const VERSION = '41';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -2751,10 +2751,7 @@ function showConcept(c) {
   state.dest = c.stops[c.stops.length - 1];
   drawConcept();
   stopFollowing();
-  const [a, b] = c.nav.shape;
-  const h = map.getContainer().clientHeight;
-  map.easeTo({ center: a, bearing: b ? bearing(a, b) : 0, zoom: 15.5, pitch: state.pitch,
-    padding: { top: Math.round(h * 0.4), bottom: 0, left: 0, right: 0 }, duration: farJump(a) ? 0 : 800 });
+  conceptView();
   $('eta').textContent = fmtClock(new Date(Date.now() + c.nav.time * 1000));
   $('remain-time').textContent = fmtDuration(c.nav.time);
   $('remain-dist').textContent = fmtDist(c.nav.total);
@@ -2779,6 +2776,7 @@ function setMode(mode) {
   $('instr').hidden = mode !== 'nav';
   $('bottom-nav').hidden = !nav;
   $('bottom-next').hidden = true;
+  $('bottom-prev').hidden = true;
   legView = null;
   $('destlbl').textContent = nav && state.dest ? withoutPostcode(state.dest.name) : '';
   $('destlbl').classList.remove('legs');
@@ -2787,22 +2785,22 @@ function setMode(mode) {
 }
 
 // ---------- Etappe-kaartjes ----------
-// Eén kaartje per etappe. Rechts piept het kaartje van de volgende; bij de tussenstop
-// schuift dat erin en gaat het oude naar links. Lichtgrijs: de tijd tot deze stop.
+// Rechts piept het volgende kaartje, links (als je terug kunt) het vorige. Bij de tussenstop
+// schuift het volgende erin en gaat het oude naar links. Lichtgrijs: de tijd van de etappe.
 let shownLeg = -1, legSlide = null;
 function legTitle(n, k) {
   const s = n.legStops[k];
   return (k < n.legs.length - 1 ? 'Tussenstop · ' : n.legs.length > 1 ? 'Bestemming · ' : '') + withoutPostcode(s.name);
 }
-function fillCard(card, n, k, legSec, totalSec, totalM) {
+function fillCard(card, n, k, legSec, totalSec, totalM, title) {
   // Naam afkappen, de tijd tot de stop blijft altijd zichtbaar
   const lbl = card.querySelector('.destlbl');
   const t = document.createElement('span');
   t.className = 't';
-  t.textContent = legTitle(n, k);
+  t.textContent = title || legTitle(n, k);
   lbl.replaceChildren(t);
   lbl.classList.toggle('legs', n.legs.length > 1);
-  if (n.legs.length > 1) {
+  if (n.legs.length > 1 && !title) {
     const sp = document.createElement('span');
     sp.className = 'leg';
     sp.textContent = ' · ' + fmtDuration(legSec);
@@ -2813,27 +2811,45 @@ function fillCard(card, n, k, legSec, totalSec, totalM) {
   card.querySelector('.mid .lbl').textContent = fmtDist(totalM);
 }
 
-// Wat op het kaartje van etappe j staat: voor de huidige etappe de live tijden,
-// voor een latere de tijd van die etappe en wat er vanaf haar begin nog te gaan is
-function legVals(n, j) {
-  if (j === n.legIdx && n.cur) return n.cur;
-  return { legSec: n.legs[j].time, totalSec: n.legs.slice(j).reduce((t, l) => t + l.time, 0), totalM: n.total - n.legs[j].begin };
-}
+// De kaartjes: eerst het live kaartje (tijdens navigeren volgt de kaart jou, bij een
+// gestippelde route staat hij op het vertrekpunt), daarna één kaartje per stop die nog komt.
+// Swipen gaat stop voor stop en de kaart gaat mee naar die stop.
 const legNav = () => state.nav || (state.concept && state.concept.nav);
+const viewCount = n => n.legs.length - n.legIdx;  // aantal stop-kaartjes na het live kaartje
+
+// Kaartje v: 0 = live (tijd naar de eerstvolgende stop, totale reistijd),
+// v >= 1 = stop: lichtgrijs de etappe zelf, groot de aankomst bij die stop
+function fillView(card, n, v) {
+  const c = n.cur;
+  // Gestippelde route: het eerste kaartje is het vertrekpunt, waar de kaart dan staat
+  if (!v && state.concept && !state.nav) {
+    fillCard(card, n, 0, 0, c.totalSec, c.totalM, 'Vertrek · ' + withoutPostcode(shortName(state.concept.stops[0])));
+    return;
+  }
+  if (!v) { fillCard(card, n, n.legIdx, c.legSec, c.totalSec, c.totalM); return; }
+  const j = n.legIdx + v - 1;
+  const until = c.legSec + n.legs.slice(n.legIdx + 1, j + 1).reduce((t, l) => t + l.time, 0);
+  fillCard(card, n, j, j === n.legIdx ? c.legSec : n.legs[j].time, until, Math.max(0, n.legs[j].end - n.along));
+}
 
 function renderCards() {
   const n = legNav();
-  if (!n || n.legs.length < 2) return;
-  const k = legView ?? n.legIdx, v = legVals(n, k), next = $('bottom-next');
-  fillCard($('bottom-nav'), n, k, v.legSec, v.totalSec, v.totalM);
-  next.hidden = k >= n.legs.length - 1;
-  if (!next.hidden) { const w = legVals(n, k + 1); fillCard(next, n, k + 1, w.legSec, w.totalSec, w.totalM); }
+  if (!n || n.legs.length < 2 || !n.cur) return;
+  const v = legView || 0, next = $('bottom-next'), prev = $('bottom-prev');
+  fillView($('bottom-nav'), n, v);
+  next.hidden = v >= viewCount(n);
+  if (!next.hidden) fillView(next, n, v + 1);
+  // Links piept het vorige kaartje; op het live kaartje niet (die stop is al geweest)
+  prev.hidden = v === 0;
+  if (!prev.hidden) fillView(prev, n, v - 1);
 }
 
 function renderLegs(n, legSec, totalSec, totalM) {
   n.cur = { legSec, totalSec, totalM };
-  if (legView !== null && legView < n.legIdx) legView = null;
   const k = n.legIdx, next = $('bottom-next');
+  // Stop bereikt terwijl je andere kaartjes bekeek: die schuiven één op
+  if (legView !== null && n.seenIdx !== undefined && k > n.seenIdx) legView = legView - (k - n.seenIdx) > 0 ? legView - (k - n.seenIdx) : null;
+  n.seenIdx = k;
   if (legView === null && shownLeg >= 0 && k > shownLeg && !legSlide && !next.hidden) {
     // Het volgende kaartje staat al klaar: inschuiven, daarna wordt het weer het hoofdkaartje
     legSlide = setTimeout(() => {
@@ -2846,48 +2862,49 @@ function renderLegs(n, legSec, totalSec, totalM) {
   }
   if (legSlide) return;
   shownLeg = k;
-  if (n.legs.length < 2) { fillCard($('bottom-nav'), n, k, legSec, totalSec, totalM); next.hidden = true; return; }
+  if (n.legs.length < 2) { fillCard($('bottom-nav'), n, k, legSec, totalSec, totalM); next.hidden = true; $('bottom-prev').hidden = true; return; }
   renderCards();
 }
+
+const legCards = () => ['bottom-prev', 'bottom-nav', 'bottom-next'].map($);
 
 // Na het schuiven: kaartjes zonder animatie terug op hun plek, met de nieuwe inhoud
 function endSlide() {
-  const main = $('bottom-nav'), next = $('bottom-next');
-  main.classList.add('noanim');
-  next.classList.add('noanim');
+  const cards = legCards();
+  cards.forEach(c => c.classList.add('noanim'));
   document.body.classList.remove('legslide', 'legback');
-  next.classList.remove('left');
   renderCards();
-  void main.offsetWidth;
-  main.classList.remove('noanim');
-  next.classList.remove('noanim');
+  void cards[1].offsetWidth;
+  cards.forEach(c => c.classList.remove('noanim'));
   legSlide = null;
 }
 
-// Swipen over de kaartjes: naar de volgende (dir 1) of vorige (-1) etappe. De kaart gaat mee
-// naar die tussenstop; terug bij het huidige kaartje volgt hij jou weer.
+// Waar de kaart staat bij een gestippelde route: op het vertrekpunt, in de rijrichting
+function conceptView() {
+  const [a, b] = state.concept.nav.shape;
+  const h = map.getContainer().clientHeight;
+  map.easeTo({ center: a, bearing: b ? bearing(a, b) : 0, zoom: 15.5, pitch: state.pitch,
+    padding: { top: Math.round(h * 0.4), bottom: 0, left: 0, right: 0 }, duration: farJump(a) ? 0 : 800 });
+}
+
+// Swipen: naar het volgende (dir 1) of vorige (-1) kaartje; de kaart gaat mee naar die stop.
+// Terug op het live kaartje volgt de kaart jou weer (of staat hij op het vertrekpunt).
 function slideLeg(dir) {
-  const n = legNav(), main = $('bottom-nav'), next = $('bottom-next');
-  main.style.transform = '';
+  const n = legNav();
+  legCards().forEach(c => { c.style.transform = ''; });
   if (!n || legSlide) return;
-  const cur = legView ?? n.legIdx, j = cur + dir;
-  if (j < n.legIdx || j >= n.legs.length) return;
-  legView = j === n.legIdx ? null : j;
-  const v = legVals(n, j);
-  if (dir > 0) {
-    document.body.classList.add('legslide');
-  } else {
-    next.classList.add('noanim', 'left');
-    next.hidden = false;
-    fillCard(next, n, j, v.legSec, v.totalSec, v.totalM);
-    void next.offsetWidth;
-    next.classList.remove('noanim');
-    document.body.classList.add('legback');
-  }
+  const v = (legView || 0) + dir;
+  if (v < 0 || v > viewCount(n)) return;
+  legView = v || null;
+  document.body.classList.add(dir > 0 ? 'legslide' : 'legback');
   legSlide = setTimeout(endSlide, 480);
-  if (legView === null && state.nav) { follow(); return; }
+  if (!v) {
+    if (state.nav) follow();
+    else conceptView();
+    return;
+  }
   stopFollowing();
-  const p = n.shape[n.legs[j].endIdx], h = map.getContainer().clientHeight;
+  const p = n.shape[n.legs[n.legIdx + v - 1].endIdx], h = map.getContainer().clientHeight;
   map.easeTo({ center: p, zoom: 15.5, pitch: state.pitch, padding: { top: Math.round(h * 0.4), bottom: 0, left: 0, right: 0 },
     duration: farJump(p) ? 0 : 800 });
 }
@@ -2904,12 +2921,20 @@ function slideLeg(dir) {
   card.addEventListener('pointermove', e => {
     if (x0 === null) return;
     const dx = e.clientX - x0;
-    if (!dragging && Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(e.clientY - y0)) { dragging = true; card.setPointerCapture(e.pointerId); card.classList.add('dragging'); }
+    if (!dragging && Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(e.clientY - y0)) {
+      dragging = true;
+      card.setPointerCapture(e.pointerId);
+      legCards().forEach(c => c.classList.add('dragging'));
+    }
     if (!dragging) return;
-    // Aan de rand (geen kaartje meer) schuift hij maar een beetje
-    const n = legNav(), k = legView ?? n.legIdx;
-    const edge = dx < 0 ? k >= n.legs.length - 1 : k <= n.legIdx;
-    card.style.transform = `translateX(${edge ? dx * 0.25 : dx}px)`;
+    // Aan de rand (geen kaartje meer) schuift hij maar een beetje; de buren schuiven mee
+    const n = legNav(), v = legView || 0;
+    const edge = dx < 0 ? v >= viewCount(n) : v <= 0;
+    const d = edge ? dx * 0.25 : dx;
+    const [prev, main, next] = legCards();
+    main.style.transform = `translateX(${d}px)`;
+    next.style.transform = `translateX(calc(100% + 6px + ${d}px))`;
+    prev.style.transform = `translateX(calc(-100% - 6px + ${d}px))`;
   });
   const end = e => {
     if (x0 === null) return;
@@ -2917,11 +2942,11 @@ function slideLeg(dir) {
     x0 = null;
     if (!dragging) return;
     dragging = false;
-    card.classList.remove('dragging');
+    legCards().forEach(c => c.classList.remove('dragging'));
     card.dataset.swiped = '1';
     setTimeout(() => { delete card.dataset.swiped; }, 50);
     if (Math.abs(dx) > 60) slideLeg(dx < 0 ? 1 : -1);
-    else card.style.transform = '';
+    else legCards().forEach(c => { c.style.transform = ''; });
   };
   card.addEventListener('pointerup', end);
   card.addEventListener('pointercancel', end);

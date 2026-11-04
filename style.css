@@ -111,16 +111,19 @@ body.nobar .instr:not([hidden]) ~ .toast { top: calc(env(safe-area-inset-top) + 
 .edit { width: 46px; height: 46px; border-radius: 50%; background: #F1F0EC; color: #1c1c1e; display: flex; align-items: center; justify-content: center; }
 .edit .ti { font-size: 22px; }
 /* Etappes: rechts piept het kaartje van de volgende etappe; bij de tussenstop schuift het erin */
-#bottom-nav, #bottom-next { transition: transform .45s ease; }
+#bottom-nav, #bottom-next, #bottom-prev { transition: transform .45s ease; }
 #bottom-next { transform: translateX(calc(100% + 6px)); pointer-events: none; }
-body.legslide #bottom-nav { transform: translateX(calc(-100% - 24px)); }
+#bottom-prev { transform: translateX(calc(-100% - 6px)); pointer-events: none; }
+/* Naar het volgende: het huidige wordt de piep links, het volgende komt in het midden */
+body.legslide #bottom-nav { transform: translateX(calc(-100% - 6px)); }
 body.legslide #bottom-next { transform: none; }
-/* Terug swipen: het vorige kaartje komt van links, het huidige gaat naar rechts */
-#bottom-next.left { transform: translateX(calc(-100% - 24px)); }
-body.legback #bottom-nav { transform: translateX(calc(100% + 24px)); }
-body.legback #bottom-next { transform: none; }
+body.legslide #bottom-prev { transform: translateX(calc(-200% - 12px)); }
+/* Terug: het vorige komt van links, het huidige wordt de piep rechts */
+body.legback #bottom-nav { transform: translateX(calc(100% + 6px)); }
+body.legback #bottom-prev { transform: none; }
+body.legback #bottom-next { transform: translateX(calc(200% + 12px)); }
 #bottom-nav { touch-action: none; }
-#bottom-nav.dragging { transition: none; }
+#bottom-nav.dragging, #bottom-next.dragging, #bottom-prev.dragging { transition: none; }
 .noanim { transition: none !important; }
 .destlbl.legs { display: flex; justify-content: center; }
 .destlbl .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
