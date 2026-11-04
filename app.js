@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '46';
+const VERSION = '47';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -1701,8 +1701,11 @@ async function showNear() {
   // Alles tegelijk ophalen; de route voor 'na 90 minuten' meteen al uitrekenen
   const near = [nearList(cat, prev), nearList(cat, next)];
   const midP = mid && breakPoint(prev, next).then(async bp => ({ bp, all: bp ? await midList(cat, bp) : [] }));
-  // Vertrek gaat voor: wat daar al staat, komt niet nog eens bij aankomst of na 90 minuten
+  // Geen plek twee keer: vertrek gaat voor aankomst, en beide gaan voor na 90 minuten
+  // (aankomst kan maar een half uur na dat punt liggen)
   const fromKeys = near[0].then(l => new Set(l.slice(0, 5).map(key)), () => new Set());
+  const toList = Promise.all([fromKeys, near[1]]).then(([shown, l]) => l.filter(p => !shown.has(key(p))).slice(0, 5));
+  const bothKeys = Promise.all([fromKeys, toList.catch(() => [])]).then(([f, t]) => new Set([...f, ...t.map(key)]));
   const fillFrom = (async () => {
     try {
       const a = (await near[0]).slice(0, 5);
@@ -1711,8 +1714,7 @@ async function showNear() {
   })();
   const fillTo = (async () => {
     try {
-      const shown = await fromKeys;
-      const b = (await near[1]).filter(p => !shown.has(key(p))).slice(0, 5);
+      const b = await toList;
       if (seq === searchSeq) to.fill(b, cat);
     } catch (e) { fail(to, e); }
   })();
@@ -1722,7 +1724,7 @@ async function showNear() {
       if (seq !== searchSeq) return;
       if (!bp) { mid.head.remove(); mid.note.remove(); return; }
       mid.head.querySelector('.ss').textContent = 'na ' + fmtDist(bp.along) + ' rijden';
-      const shown = await fromKeys;
+      const shown = await bothKeys;
       if (seq !== searchSeq) return;
       const five = all.filter(p => !shown.has(key(p))).slice(0, 5);
       mid.fill(five, cat);
