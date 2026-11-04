@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '36';
+const VERSION = '37';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -1412,12 +1412,13 @@ function savedItem(r) {
 
 // ---------- In de buurt: plekken per soort, dichtstbij eerst (Photon) ----------
 const NEAR = {
+  charging: { label: 'Laden', icon: 'ti-charging-pile', tags: { amenity: ['charging_station'] } },
   fuel: { label: 'Tanken', icon: 'ti-gas-station', tags: { amenity: ['fuel'] } },
   food: { label: 'Eten', icon: 'ti-tools-kitchen-2', tags: { amenity: ['restaurant', 'cafe', 'fast_food', 'pub', 'biergarten', 'ice_cream'] } },
   sleep: { label: 'Slapen', icon: 'ti-bed', tags: { tourism: ['hotel', 'guest_house', 'hostel', 'motel', 'camp_site', 'chalet'] } },
-  culture: { label: 'Cultuur', icon: 'ti-building-arch', tags: { tourism: ['museum', 'gallery', 'attraction'], amenity: ['theatre', 'arts_centre', 'cinema'] } },
-  history: { label: 'Historie', icon: 'ti-building-castle',
-    tags: { historic: ['castle', 'monument', 'ruins', 'archaeological_site', 'fort', 'manor', 'city_gate', 'memorial'], man_made: ['windmill'] } },
+  culture: { label: 'Cultuur & historie', icon: 'ti-building-castle',
+    tags: { tourism: ['museum', 'gallery', 'attraction'], amenity: ['theatre', 'arts_centre', 'cinema'],
+      historic: ['castle', 'monument', 'ruins', 'archaeological_site', 'fort', 'manor', 'city_gate', 'memorial'], man_made: ['windmill'] } },
 };
 const KIND_NL = {
   fuel: 'Tankstation', charging_station: 'Laadpaal', restaurant: 'Restaurant', cafe: 'Café', fast_food: 'Snackbar', pub: 'Kroeg',
@@ -1428,7 +1429,9 @@ const KIND_NL = {
 };
 let nearCat = 'fuel';
 try { nearCat = localStorage.getItem('nearCat') || 'fuel'; } catch (e) { /* geen opslag */ }
-const nearMemo = new Map();
+if (nearCat === 'history') nearCat = 'culture';  // Cultuur en Historie zijn samengevoegd
+if (!NEAR[nearCat]) nearCat = 'fuel';
+const nearMemo = new Map(), legMemo = new Map();
 
 // Rond je eigen positie; zonder GPS rond het midden van de kaart
 function nearCentre() {
@@ -1442,13 +1445,15 @@ async function fetchNear(cat, at, km) {
   const params = new URLSearchParams({ lat: at.lat.toFixed(5), lon: at.lon.toFixed(5), radius: km, include, limit: '40' });
   const res = await fetch(`${PHOTON.replace('/api/', '/reverse')}?${params}`);
   if (!res.ok) throw new Error('dienst bezet (' + res.status + ')');
-  return (await res.json()).features.filter(f => f.properties.name).map(f => {
+  // Laadpalen hebben vaak geen naam; die heten dan gewoon 'Laadpaal'
+  return (await res.json()).features.filter(f => f.properties.name || cat === 'charging').map(f => {
     const pr = f.properties;
     const [lon, lat] = f.geometry.coordinates;
     const street = [pr.street, pr.housenumber].filter(Boolean).join(' ');
     const city = pr.city || pr.town || pr.village || '';
-    return { lat, lon, title: pr.name, sub: [KIND_NL[pr.osm_value] || '', street, city].filter(Boolean).join(' · '),
-      name: [pr.name, street, city].filter(Boolean).join(', '), d: dist([at.lon, at.lat], [lon, lat]) };
+    const title = pr.name || KIND_NL[pr.osm_value] || 'Laadpaal';
+    return { lat, lon, title, sub: [pr.name ? KIND_NL[pr.osm_value] || '' : '', street, city].filter(Boolean).join(' · '),
+      name: [title, street, city].filter(Boolean).join(', '), d: dist([at.lon, at.lat], [lon, lat]) };
   }).sort((a, b) => a.d - b.d).slice(0, 25);
 }
 
@@ -1476,36 +1481,128 @@ function renderCats() {
   }
 }
 
+// Plekken rond één punt: eerst binnen 4 km, is daar weinig dan binnen 25 km
+function nearList(cat, at) {
+  const key = cat + '|' + at.lat.toFixed(2) + '|' + at.lon.toFixed(2);
+  if (!nearMemo.has(key)) {
+    nearMemo.set(key, (async () => {
+      const close = await fetchNear(cat, at, 4);
+      return close.length >= 6 ? close : fetchNear(cat, at, 25);
+    })().catch(e => { nearMemo.delete(key); throw e; }));
+  }
+  return nearMemo.get(key);
+}
+
+// De etappe waar de regel in valt: van het adres ervoor tot het adres erna
+function nearLeg() {
+  const prev = resolveStop(stops.slice(0, editRow).filter(Boolean).pop());
+  const next = resolveStop(stops.slice(editRow + 1).find(Boolean));
+  return { prev, next };
+}
+const stopLabel = s => s.here ? 'Je positie' : withoutPostcode(s.name).split(',')[0];
+
+// Het punt op de autoroute van a naar b na 90 minuten rijden, als de rit langer is dan 2 uur
+const LONG_LEG = 120 * 60, BREAK_AT = 90 * 60;
+async function breakPoint(a, b) {
+  const key = [a.lat, a.lon, b.lat, b.lon].map(v => v.toFixed(4)).join('|');
+  if (!legMemo.has(key)) {
+    legMemo.set(key, fetchRoutes([a, b], 0, 'auto').then(([n]) => {
+      if (n.time <= LONG_LEG) return null;
+      // Tijd per instructie optellen tot 90 minuten, daarbinnen naar rato van de afstand
+      let t = 0;
+      for (const m of n.maneuvers) {
+        if (t + m.time < BREAK_AT) { t += m.time; continue; }
+        const f = m.time ? (BREAK_AT - t) / m.time : 0;
+        const along = n.cum[m.begin_shape_index] + f * (n.cum[m.end_shape_index] - n.cum[m.begin_shape_index]);
+        let i = 1;
+        while (i < n.shape.length - 1 && n.cum[i] < along) i++;
+        const seg = n.cum[i] - n.cum[i - 1], g = seg ? (along - n.cum[i - 1]) / seg : 0;
+        const [p, q] = [n.shape[i - 1], n.shape[i]];
+        return { lon: p[0] + g * (q[0] - p[0]), lat: p[1] + g * (q[1] - p[1]), along };
+      }
+      return null;
+    }).catch(e => { legMemo.delete(key); throw e; }));
+  }
+  return legMemo.get(key);
+}
+
+function nearItem(p, cat) {
+  const li = document.createElement('li');
+  li.className = 'recent';
+  li.innerHTML = `<div class="row"><i class="ti ${NEAR[cat].icon}" aria-hidden="true"></i><div class="rtext"><div class="r1"></div><div class="r2"></div></div><span class="dist"></span></div>`;
+  li.querySelector('.r1').textContent = p.title;
+  li.querySelector('.r2').textContent = p.sub;
+  li.querySelector('.dist').textContent = fmtDist(p.d);
+  li.addEventListener('click', () => useChoice({ lat: p.lat, lon: p.lon, name: p.name }));
+  return li;
+}
+
+// Kopje boven een reeks, met daaronder de plekken (of een melding)
+function nearSection(title, sub) {
+  const head = document.createElement('li');
+  head.className = 'sect';
+  head.innerHTML = '<span class="st"></span><span class="ss"></span>';
+  head.querySelector('.st').textContent = title;
+  head.querySelector('.ss').textContent = sub || '';
+  const note = document.createElement('li');
+  note.className = 'empty';
+  note.textContent = 'Zoeken…';
+  return { head, note, fill(items, cat) {
+    if (!items.length) { note.textContent = 'Niets gevonden.'; return; }
+    note.replaceWith(...items.map(p => nearItem(p, cat)));
+  } };
+}
+
+// In een etappe drie reeksen: dichtbij vertrek, na 90 minuten (lange autorit) en dichtbij aankomst.
+// Zonder adres erna (je kiest de bestemming) één lijst rond het adres ervoor.
 async function showNear() {
   const seq = ++searchSeq;
   const ul = $('results');
-  ul.innerHTML = '<li class="empty">Zoeken in de buurt…</li>';
-  const at = nearCentre(), cat = nearCat;
-  const key = cat + '|' + at.lat.toFixed(2) + '|' + at.lon.toFixed(2);
-  try {
-    if (!nearMemo.has(key)) {
-      nearMemo.set(key, (async () => {
-        // Eerst dichtbij; is daar weinig, dan verder weg kijken
-        const close = await fetchNear(cat, at, 4);
-        return close.length >= 6 ? close : fetchNear(cat, at, 25);
-      })().catch(e => { nearMemo.delete(key); throw e; }));
-    }
-    const list = await nearMemo.get(key);
-    if (seq !== searchSeq) return;
-    ul.innerHTML = list.length ? '' : '<li class="empty">Niets gevonden in de buurt.</li>';
-    for (const p of list) {
-      const li = document.createElement('li');
-      li.className = 'recent';
-      li.innerHTML = `<div class="row"><i class="ti ${NEAR[cat].icon}" aria-hidden="true"></i><div class="rtext"><div class="r1"></div><div class="r2"></div></div><span class="dist"></span></div>`;
-      li.querySelector('.r1').textContent = p.title;
-      li.querySelector('.r2').textContent = p.sub;
-      li.querySelector('.dist').textContent = fmtDist(p.d);
-      li.addEventListener('click', () => useChoice({ lat: p.lat, lon: p.lon, name: p.name }));
-      ul.appendChild(li);
-    }
-  } catch (e) {
-    if (seq === searchSeq) ul.innerHTML = '<li class="empty">Zoeken in de buurt lukt nu niet: ' + e.message + '</li>';
+  ul.replaceChildren();
+  const cat = nearCat;
+  const { prev, next } = nearLeg();
+  const key = p => p.lat.toFixed(4) + '|' + p.lon.toFixed(4);
+  const fail = (sec, e) => { if (seq === searchSeq) sec.note.textContent = 'Zoeken lukt nu niet: ' + e.message; };
+  if (!(prev && next)) {
+    const at = editRow > 0 && prev || nearCentre();
+    const sec = nearSection(prev && editRow > 0 && !prev.here ? 'Dichtbij ' + stopLabel(prev) : 'Dichtbij je positie');
+    ul.append(sec.head, sec.note);
+    try {
+      const list = await nearList(cat, at);
+      if (seq === searchSeq) sec.fill(list, cat);
+    } catch (e) { fail(sec, e); }
+    return;
   }
+  const from = nearSection('Dichtbij vertrek', stopLabel(prev));
+  const to = nearSection('Dichtbij aankomst', stopLabel(next));
+  // Is de etappe hemelsbreed korter dan 60 km, dan is hij nooit 2 uur rijden: niet uitrekenen
+  const long = travelMode === 'auto' && dist(ll(prev), ll(next)) > 60000;
+  const mid = long && nearSection('Na 90 minuten', 'Zoeken op de route…');
+  ul.append(from.head, from.note, ...(mid ? [mid.head, mid.note] : []), to.head, to.note);
+  // Vertrek gaat voor: wat daar al staat, komt niet nog eens bij aankomst
+  const near = [nearList(cat, prev), nearList(cat, next)];
+  const shown = new Set();
+  try {
+    const a = (await near[0]).slice(0, 5);
+    if (seq !== searchSeq) return;
+    a.forEach(p => shown.add(key(p)));
+    from.fill(a, cat);
+  } catch (e) { fail(from, e); }
+  try {
+    const b = (await near[1]).filter(p => !shown.has(key(p))).slice(0, 5);
+    if (seq !== searchSeq) return;
+    b.forEach(p => shown.add(key(p)));
+    to.fill(b, cat);
+  } catch (e) { fail(to, e); }
+  if (!mid) return;
+  try {
+    const bp = await breakPoint(prev, next);
+    if (seq !== searchSeq) return;
+    if (!bp) { mid.head.remove(); mid.note.remove(); return; }
+    mid.head.querySelector('.ss').textContent = 'na ' + fmtDist(bp.along) + ' rijden';
+    const c = (await nearList(cat, bp)).filter(p => !shown.has(key(p))).slice(0, 5);
+    if (seq === searchSeq) mid.fill(c, cat);
+  } catch (e) { fail(mid, e); }
 }
 
 // Recente bestemmingen waarin elk getypt woord het begin van een woord is

@@ -168,12 +168,18 @@ body.legslide #bottom-next { transform: none; }
 .sbtn.x { color: #8E8E93; width: 34px; }
 
 /* In de buurt: categorieën */
-.cats { display: flex; gap: 6px; padding: 10px 16px; border-bottom: 1px solid #eee; overflow-x: auto; flex: none; }
-.cats button { flex: 1 0 58px; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 8px 0; border-radius: 10px;
-  background: #F1F0EC; color: #3a3a3c; font-size: 12px; }
+.cats { display: flex; gap: 5px; padding: 10px 12px; border-bottom: 1px solid #eee; overflow-x: auto; flex: none; }
+.cats button { flex: 1 1 0; min-width: 52px; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 8px 2px; border-radius: 10px;
+  background: #F1F0EC; color: #3a3a3c; font-size: 11.5px; }
 .cats .ti { font-size: 22px; }
+.cats button { line-height: 1.15; text-align: center; }
 .cats button[aria-checked="true"] { background: #1F6FE0; color: #fff; }
 #results .dist { flex: none; font-size: 13px; color: #8a8a8a; }
+/* In de buurt: kopje per reeks (vertrek, na 90 minuten, aankomst) */
+#results li.sect { display: flex; align-items: baseline; gap: 8px; padding: 16px 16px 6px; cursor: default; border-bottom: none; }
+#results li.sect:active { background: none; }
+#results .sect .st { flex: none; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: #6b6b6b; }
+#results .sect .ss { min-width: 0; font-size: 13px; color: #8a8a8a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* Routes: download voor onderweg zonder bereik; blauw = staat op de telefoon */
 #results .dl { flex: none; width: 44px; height: 44px; margin: -10px -10px -10px 0; display: flex; align-items: center; justify-content: center; }
 #results .recent .dl .ti { color: #8a8a8a; }
@@ -383,6 +389,7 @@ body.legslide #bottom-next { transform: none; }
     #results li { border-bottom-color: #1c1c1e; }
   #results li:not(.recent):active { background: #1c1c1e; }
   #results .r2, #results .empty { color: #8e8e93; }
+  #results .sect .st { color: #aeaeb2; }
   .start { background: rgba(0,0,0,.6); }
   .start-card { background: #1c1c1e; }
   .start-card p { color: #c7c7cc; }
