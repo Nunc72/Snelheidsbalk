@@ -15,7 +15,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
-<link rel="stylesheet" href="style.css?v=38">
+<link rel="stylesheet" href="style.css?v=39">
 </head>
 <body>
 <div id="map"></div>
@@ -131,10 +131,8 @@
     <div class="mstop" id="mstop"></div>
     <div class="mshint" id="mshint" hidden></div>
     <svg class="pin" viewBox="0 0 36 48" aria-hidden="true"><path d="M18 46.5C18 46.5 34 28.5 34 17A16 16 0 0 0 2 17C2 28.5 18 46.5 18 46.5Z"/><circle cx="18" cy="17" r="6"/></svg>
-    <!-- Boven een punt of de route wordt de pin een potlood: hier kun je wijzigen. De punt wijst naar dezelfde plek. -->
-    <svg class="pin pencil" viewBox="0 0 36 48" aria-hidden="true"><g transform="rotate(30 18 46.5)">
-      <path class="body" d="M11.5 9.5h13v22h-13z"/><path class="cap" d="M11.5 3.5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v6h-13z"/>
-      <path class="wood" d="M11.5 31.5h13L18 46.5z"/><path class="lead" d="M15.7 41.2h4.6L18 46.5z"/></g></svg>
+    <!-- Potlood (zoals op het aankomstkaartje): hier kun je wijzigen. De punt van het potlood wijst naar de plek. -->
+    <svg class="pencil" viewBox="0 0 24 24" aria-hidden="true"><g class="halo"><path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4"/><path d="M13.5 6.5l4 4"/></g><g class="ink"><path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4"/><path d="M13.5 6.5l4 4"/></g></svg>
     <button type="button" class="pickme" id="pickme" aria-label="Naar je positie"><i class="ti ti-current-location" aria-hidden="true"></i></button>
     <div class="actcard" id="actcard" hidden></div>
     <div class="mbtns" id="mbtns">
@@ -155,6 +153,6 @@
 </div>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-<script src="app.js?v=38"></script>
+<script src="app.js?v=39"></script>
 </body>
 </html>

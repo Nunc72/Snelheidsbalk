@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '38';
+const VERSION = '39';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -55,6 +55,7 @@ const state = {
   lastRouteAt: 0,
   routing: false,
 };
+let legView = null;  // het etappe-kaartje dat je bekijkt na swipen; null = het huidige
 
 // ---------- Geo-hulpfuncties (coördinaten als [lon, lat]) ----------
 const R = 6371000;
@@ -798,6 +799,8 @@ function follow() {
   $('recenter').hidden = true;
   marker.remove();
   if (state.fix) updateCamera([state.fix.lon, state.fix.lat], 600);
+  // Bekeek je een ander etappe-kaartje, dan terug naar het huidige
+  if (legView !== null) { legView = null; renderCards(); }
 }
 $('recenter').addEventListener('click', follow);
 
@@ -1416,7 +1419,7 @@ const NEAR = {
   fuel: { label: 'Tanken', icon: 'ti-gas-station', tags: { amenity: ['fuel'] } },
   food: { label: 'Eten', icon: 'ti-tools-kitchen-2', tags: { amenity: ['restaurant', 'cafe', 'fast_food', 'pub', 'biergarten', 'ice_cream'] } },
   sleep: { label: 'Slapen', icon: 'ti-bed', tags: { tourism: ['hotel', 'guest_house', 'hostel', 'motel', 'camp_site', 'chalet'] } },
-  culture: { label: 'Cultuur & historie', icon: 'ti-building-castle',
+  culture: { label: 'Cultuur', icon: 'ti-building-arch',
     tags: { tourism: ['museum', 'gallery', 'attraction'], amenity: ['theatre', 'arts_centre', 'cinema'],
       historic: ['castle', 'monument', 'ruins', 'archaeological_site', 'fort', 'manor', 'city_gate', 'memorial'], man_made: ['windmill'] } },
 };
@@ -2193,7 +2196,8 @@ async function openMapSearch(kind, back, row = 0) {
   ms.prefix = [];
   ms.pts = [];
   ms.legs = [];
-  ms.moved = false;
+  // Een nieuwe route maak je meteen; een bestaande bekijk je eerst (potlood), met + ga je toevoegen
+  ms.adding = kind === 'build';
   const list = filled();
   if (kind !== 'row') {
     // Nieuwe route of bestaande aanpassen werkt hetzelfde: je eigen positie is het eerste punt.
@@ -2248,7 +2252,6 @@ async function ensureMsMap() {
   await new Promise(r => m.once('style.load', r));
   let raf = 0;
   m.on('move', () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; msMove(); }); });
-  m.on('movestart', e => { if (e.originalEvent) ms.moved = true; });
 }
 
 // Kantelen kan alleen in 3D: twee vingers samen omhoog of omlaag. Plat blijft plat,
@@ -2336,8 +2339,8 @@ function msMove(force) {
   let guide = [];
   if (a && a.type === 'insert') guide = [[ll(P[a.i]), c, ll(P[a.i + 1])]];
   else if (a && a.type === 'move') guide = [[P[a.i - 1] && ll(P[a.i - 1]), c, P[a.i + 1] && ll(P[a.i + 1])].filter(Boolean)];
-  // Vrij schuiven: hulplijn vanaf het laatste punt van de route, zonder punten vanaf je telefoon
-  else if (!a && ms.kind !== 'row' && ms.hover.type === 'free') {
+  // Toevoegen: hulplijn vanaf het laatste punt van de route, zonder punten vanaf je telefoon
+  else if (!a && ms.adding && ms.kind !== 'row' && ms.hover.type === 'free') {
     const from = P.length ? ll(P[P.length - 1]) : hereNow() && ll(hereNow());
     if (from) guide = [[from, c]];
   }
@@ -2361,11 +2364,15 @@ const ACT_TEXT = { insert: ['ti-plus', 'Punt'], move: ['ti-arrows-move', 'Verpla
 // Knoppen en hint; alleen opnieuw opbouwen als er iets verandert
 function msUi(force) {
   const a = ms.action, h = ms.hover;
-  const key = [ms.kind, a && a.type, h.type, h.i, ms.pts.length].join('|');
+  const key = [ms.kind, a && a.type, h.type, h.i, ms.pts.length, ms.adding].join('|');
   if (key === ms.ui && !force) return;
   ms.ui = key;
   $('mbtns').classList.toggle('dim', !!a);
-  $('mapsearch').classList.toggle('over', !a && h.type !== 'free');
+  $('mapsearch').classList.toggle('over', !a && (h.type !== 'free' || (!ms.adding && ms.kind !== 'row')));
+  // Aan het toevoegen: + blauw en ✓ groen
+  const adding = ms.adding && ms.kind !== 'row';
+  $('msadd').className = 'roundbtn ' + (adding ? 'viewbig' : 'addbig');
+  $('msok').className = 'roundbtn ' + (adding ? 'okbig' : 'addbig');
   $('msadd').hidden = ms.kind === 'row' || !!a || h.type !== 'free';
   const card = $('actcard');
   card.replaceChildren();
@@ -2434,7 +2441,6 @@ function msConfirm() {
     else { L.splice(a.i - 1, 2, null); redo.push(a.i - 1); }
   }
   ms.action = null;
-  ms.moved = false;
   msDraw();
   redo.forEach(computeLeg);
 }
@@ -2442,12 +2448,13 @@ function msConfirm() {
 // De blauwe +: hier een punt zetten en verder kiezen; het stuk ernaartoe wordt meteen berekend
 function msAdd() {
   if (ms.action || ms.kind === 'row') return;
+  // De eerste tik zet het toevoegen aan: pin en hulplijn verschijnen
+  if (!ms.adding) { ms.adding = true; msMove(true); return; }
   ms.pts.push(pinPlace());
   if (ms.pts.length > 1) {
     ms.legs.push(null);
     computeLeg(ms.legs.length - 1);
   }
-  ms.moved = false;
   msDraw();
 }
 
@@ -2473,10 +2480,10 @@ async function msOk() {
     const p = pinPlace();
     stops[ms.row] = p;
   } else {
-    // Heb je de pin ergens vrij neergezet, dan is die plek het laatste punt (de hulplijn liep ernaartoe)
+    // Aan het toevoegen en de pin staat vrij: die plek is het laatste punt (de hulplijn liep ernaartoe)
     const last = ms.pts[ms.pts.length - 1];
     const c = msmap.getCenter().toArray();
-    if (ms.moved && ms.hover.type === 'free' && (!last || dist(ll(last), c) > 15)) ms.pts.push(pinPlace());
+    if (ms.adding && ms.hover.type === 'free' && (!last || dist(ll(last), c) > 15)) ms.pts.push(pinPlace());
     if (ms.prefix.length + ms.pts.length < 2) { toast('Schuif de kaart naar je bestemming en tik op ✓.'); return; }
     stops = [...ms.prefix, ...ms.pts];
   }
@@ -2732,8 +2739,9 @@ function showConcept(c) {
   $('remain-time').textContent = fmtDuration(c.nav.time);
   $('remain-dist').textContent = fmtDist(c.nav.total);
   setMode('concept');
-  const via = c.stops.length - 2;
-  $('destlbl').textContent = `Vanaf ${shortName(c.stops[0])} · naar ${withoutPostcode(state.dest.name)}` + (via > 0 ? ` · ${via} ${via === 1 ? 'tussenstop' : 'tussenstops'}` : '');
+  // Met tussenstops: een kaartje per etappe, net als tijdens het navigeren
+  if (c.nav.legs.length > 1) { shownLeg = -1; renderLegs(c.nav, c.nav.legs[0].time, c.nav.time, c.nav.total); }
+  else $('destlbl').textContent = `Vanaf ${shortName(c.stops[0])} · naar ${withoutPostcode(state.dest.name)}`;
   renderBar();
 }
 
@@ -2751,6 +2759,7 @@ function setMode(mode) {
   $('instr').hidden = mode !== 'nav';
   $('bottom-nav').hidden = !nav;
   $('bottom-next').hidden = true;
+  legView = null;
   $('destlbl').textContent = nav && state.dest ? withoutPostcode(state.dest.name) : '';
   $('destlbl').classList.remove('legs');
   $('bottom-idle').hidden = nav;
@@ -2784,19 +2793,31 @@ function fillCard(card, n, k, legSec, totalSec, totalM) {
   card.querySelector('.mid .lbl').textContent = fmtDist(totalM);
 }
 
+// Wat op het kaartje van etappe j staat: voor de huidige etappe de live tijden,
+// voor een latere de tijd van die etappe en wat er vanaf haar begin nog te gaan is
+function legVals(n, j) {
+  if (j === n.legIdx && n.cur) return n.cur;
+  return { legSec: n.legs[j].time, totalSec: n.legs.slice(j).reduce((t, l) => t + l.time, 0), totalM: n.total - n.legs[j].begin };
+}
+const legNav = () => state.nav || (state.concept && state.concept.nav);
+
+function renderCards() {
+  const n = legNav();
+  if (!n || n.legs.length < 2) return;
+  const k = legView ?? n.legIdx, v = legVals(n, k), next = $('bottom-next');
+  fillCard($('bottom-nav'), n, k, v.legSec, v.totalSec, v.totalM);
+  next.hidden = k >= n.legs.length - 1;
+  if (!next.hidden) { const w = legVals(n, k + 1); fillCard(next, n, k + 1, w.legSec, w.totalSec, w.totalM); }
+}
+
 function renderLegs(n, legSec, totalSec, totalM) {
-  const k = n.legIdx, main = $('bottom-nav'), next = $('bottom-next');
-  const hasNext = k < n.legs.length - 1;
-  if (shownLeg >= 0 && k > shownLeg && !legSlide && !next.hidden) {
+  n.cur = { legSec, totalSec, totalM };
+  if (legView !== null && legView < n.legIdx) legView = null;
+  const k = n.legIdx, next = $('bottom-next');
+  if (legView === null && shownLeg >= 0 && k > shownLeg && !legSlide && !next.hidden) {
     // Het volgende kaartje staat al klaar: inschuiven, daarna wordt het weer het hoofdkaartje
     legSlide = setTimeout(() => {
-      main.classList.add('noanim');
-      next.classList.add('noanim');
-      document.body.classList.remove('legslide');
-      void main.offsetWidth;
-      main.classList.remove('noanim');
-      next.classList.remove('noanim');
-      legSlide = null;
+      endSlide();
       shownLeg = -1;
       if (state.fix && state.nav) updateNav([state.fix.lon, state.fix.lat]);
     }, 480);
@@ -2805,9 +2826,87 @@ function renderLegs(n, legSec, totalSec, totalM) {
   }
   if (legSlide) return;
   shownLeg = k;
-  fillCard(main, n, k, legSec, totalSec, totalM);
-  next.hidden = !hasNext;
-  if (hasNext) fillCard(next, n, k + 1, n.legs[k + 1].time, totalSec - legSec, totalM - Math.max(0, n.legs[k].end - n.along));
+  if (n.legs.length < 2) { fillCard($('bottom-nav'), n, k, legSec, totalSec, totalM); next.hidden = true; return; }
+  renderCards();
+}
+
+// Na het schuiven: kaartjes zonder animatie terug op hun plek, met de nieuwe inhoud
+function endSlide() {
+  const main = $('bottom-nav'), next = $('bottom-next');
+  main.classList.add('noanim');
+  next.classList.add('noanim');
+  document.body.classList.remove('legslide', 'legback');
+  next.classList.remove('left');
+  renderCards();
+  void main.offsetWidth;
+  main.classList.remove('noanim');
+  next.classList.remove('noanim');
+  legSlide = null;
+}
+
+// Swipen over de kaartjes: naar de volgende (dir 1) of vorige (-1) etappe. De kaart gaat mee
+// naar die tussenstop; terug bij het huidige kaartje volgt hij jou weer.
+function slideLeg(dir) {
+  const n = legNav(), main = $('bottom-nav'), next = $('bottom-next');
+  main.style.transform = '';
+  if (!n || legSlide) return;
+  const cur = legView ?? n.legIdx, j = cur + dir;
+  if (j < n.legIdx || j >= n.legs.length) return;
+  legView = j === n.legIdx ? null : j;
+  const v = legVals(n, j);
+  if (dir > 0) {
+    document.body.classList.add('legslide');
+  } else {
+    next.classList.add('noanim', 'left');
+    next.hidden = false;
+    fillCard(next, n, j, v.legSec, v.totalSec, v.totalM);
+    void next.offsetWidth;
+    next.classList.remove('noanim');
+    document.body.classList.add('legback');
+  }
+  legSlide = setTimeout(endSlide, 480);
+  if (legView === null && state.nav) { follow(); return; }
+  stopFollowing();
+  const p = n.shape[n.legs[j].endIdx], h = map.getContainer().clientHeight;
+  map.easeTo({ center: p, zoom: 15.5, pitch: state.pitch, padding: { top: Math.round(h * 0.4), bottom: 0, left: 0, right: 0 },
+    duration: farJump(p) ? 0 : 800 });
+}
+
+// Vinger op het kaartje: het schuift mee; ver genoeg en het volgende of vorige kaartje komt
+{
+  const card = $('bottom-nav');
+  let x0 = null, y0 = 0, dragging = false;
+  card.addEventListener('pointerdown', e => {
+    const n = legNav();
+    if (!n || n.legs.length < 2 || legSlide) return;
+    x0 = e.clientX; y0 = e.clientY; dragging = false;
+  });
+  card.addEventListener('pointermove', e => {
+    if (x0 === null) return;
+    const dx = e.clientX - x0;
+    if (!dragging && Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(e.clientY - y0)) { dragging = true; card.setPointerCapture(e.pointerId); card.classList.add('dragging'); }
+    if (!dragging) return;
+    // Aan de rand (geen kaartje meer) schuift hij maar een beetje
+    const n = legNav(), k = legView ?? n.legIdx;
+    const edge = dx < 0 ? k >= n.legs.length - 1 : k <= n.legIdx;
+    card.style.transform = `translateX(${edge ? dx * 0.25 : dx}px)`;
+  });
+  const end = e => {
+    if (x0 === null) return;
+    const dx = e.clientX - x0;
+    x0 = null;
+    if (!dragging) return;
+    dragging = false;
+    card.classList.remove('dragging');
+    card.dataset.swiped = '1';
+    setTimeout(() => { delete card.dataset.swiped; }, 50);
+    if (Math.abs(dx) > 60) slideLeg(dx < 0 ? 1 : -1);
+    else card.style.transform = '';
+  };
+  card.addEventListener('pointerup', end);
+  card.addEventListener('pointercancel', end);
+  // Een swipe is geen tik op het potlood
+  card.addEventListener('click', e => { if (card.dataset.swiped) { e.stopPropagation(); e.preventDefault(); } }, true);
 }
 
 // Valhalla-manoeuvretypes -> korte Nederlandse tekst en icoon
