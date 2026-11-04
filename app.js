@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '49';
+const VERSION = '50';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -1517,6 +1517,7 @@ const KIND_NL = {
   camp_site: 'Camping', chalet: 'Vakantiehuisje', museum: 'Museum', gallery: 'Galerie', attraction: 'Bezienswaardigheid',
   theatre: 'Theater', arts_centre: 'Kunstcentrum', cinema: 'Bioscoop', castle: 'Kasteel', monument: 'Monument', ruins: 'Ruïne',
   archaeological_site: 'Archeologie', fort: 'Fort', manor: 'Landhuis', city_gate: 'Stadspoort', memorial: 'Gedenkteken', windmill: 'Molen',
+  zoo: 'Dierentuin', theme_park: 'Pretpark', aquarium: 'Aquarium',
 };
 let nearCat = 'fuel';
 try { nearCat = localStorage.getItem('nearCat') || 'fuel'; } catch (e) { /* geen opslag */ }
@@ -1531,7 +1532,137 @@ function nearCentre() {
   return { lat: c.lat, lon: c.lng };
 }
 
-async function fetchNear(cat, at, km) {
+// ---------- Plekken uit de kaarttegels ----------
+// De kaarttegels van OpenFreeMap (zoom 14) bevatten alle plekken van de kaart, ook laadpalen
+// zonder naam, plus de namen van wijken en dorpen. Snel (dezelfde tegels als de kaart, vaak al
+// geladen) en langs een opgeslagen route zelfs zonder bereik. Elke tegel wordt één keer
+// uitgepakt, voor alle soorten tegelijk: wisselen van soort kost dan niets.
+const POI_Z = 14;
+const PARKS = ['zoo', 'theme_park', 'aquarium'];
+const SUB_CAT = new Map();
+for (const [cat, c] of Object.entries(NEAR)) for (const vs of Object.values(c.tags)) for (const v of vs) SUB_CAT.set(v, cat);
+for (const v of PARKS) SUB_CAT.set(v, 'culture');
+const PLACE_CLASSES = new Set(['city', 'town', 'village', 'hamlet', 'suburb', 'quarter', 'neighbourhood']);
+const NO_TILE = { pois: [], places: [], size: 0 };
+let poiTpl = null;
+const poiTileTpl = () => poiTpl || (poiTpl = mapFetch(OFM_TILEJSON).then(r => r.json()).then(j => j.tiles[0])
+  .catch(e => { poiTpl = null; throw e; }));
+
+// Een vectortegel (protobuf) uitpakken: alleen de lagen 'poi' en 'place', alleen punten
+const utf8 = new TextDecoder();
+function decodePois(buf, tx, ty, z = POI_Z) {
+  const b = new Uint8Array(buf);
+  let pos = 0;
+  const varint = () => { let r = 0, m = 1, x; do { x = b[pos++]; r += (x & 0x7f) * m; m *= 128; } while (x & 0x80); return r; };
+  const skip = wt => { if (wt === 0) varint(); else if (wt === 1) pos += 8; else if (wt === 2) pos += varint(); else if (wt === 5) pos += 4; };
+  const str = () => { const len = varint(), t = utf8.decode(b.subarray(pos, pos + len)); pos += len; return t; };
+  const zz = n => (n % 2 ? -(n + 1) / 2 : n / 2);
+  const out = { pois: [], places: [], size: b.length };
+  const n = 2 ** z;
+  function value(end) {
+    let v = null;
+    while (pos < end) {
+      const key = varint();
+      if (key >> 3 === 1 && (key & 7) === 2) v = str();
+      else if ((key & 7) === 0) v = varint();
+      else skip(key & 7);
+    }
+    return v;
+  }
+  function layer(end) {
+    let name = '', extent = 4096;
+    const keys = [], vals = [], feats = [];
+    while (pos < end) {
+      const key = varint(), tag = key >> 3, wt = key & 7;
+      if (tag === 1 && wt === 2) { name = str(); if (name !== 'poi' && name !== 'place') { pos = end; return; } }
+      else if (tag === 2 && wt === 2) { const len = varint(); feats.push([pos, pos + len]); pos += len; }
+      else if (tag === 3 && wt === 2) keys.push(str());
+      else if (tag === 4 && wt === 2) { const len = varint(); vals.push(value(pos + len)); }
+      else if (tag === 5 && wt === 0) extent = varint();
+      else skip(wt);
+    }
+    for (const [start, fend] of feats) {
+      pos = start;
+      const tags = [], g = [];
+      while (pos < fend) {
+        const key = varint(), tag = key >> 3, wt = key & 7;
+        if (tag === 2 && wt === 2) { const e = varint() + pos; while (pos < e) tags.push(varint()); }
+        else if (tag === 4 && wt === 2) { const e = varint() + pos; while (pos < e && g.length < 3) g.push(varint()); pos = e; }
+        else skip(wt);
+      }
+      if (g.length < 3 || (g[0] & 7) !== 1) continue;
+      const px = zz(g[1]), py = zz(g[2]);
+      // Punten in de rand horen bij de buurtegel: niet dubbel
+      if (px < 0 || py < 0 || px >= extent || py >= extent) continue;
+      const pr = {};
+      for (let i = 0; i + 1 < tags.length; i += 2) pr[keys[tags[i]]] = vals[tags[i + 1]];
+      const lon = (tx + px / extent) / n * 360 - 180;
+      const lat = Math.atan(Math.sinh(Math.PI * (1 - 2 * (ty + py / extent) / n))) * 180 / Math.PI;
+      const label = pr['name:nl'] || pr.name || '';
+      if (name === 'place') { if (label && PLACE_CLASSES.has(pr.class)) out.places.push({ lon, lat, name: label }); }
+      else if (SUB_CAT.has(pr.subclass)) out.pois.push({ lon, lat, cat: SUB_CAT.get(pr.subclass), sub: pr.subclass, name: label });
+    }
+    pos = end;
+  }
+  while (pos < b.length) {
+    const key = varint();
+    if (key >> 3 === 3 && (key & 7) === 2) { const len = varint(); layer(pos + len); } else skip(key & 7);
+  }
+  return out;
+}
+
+const tileMemo = new Map();
+function poiTile(x, y) {
+  const key = x + '/' + y;
+  if (!tileMemo.has(key)) {
+    if (tileMemo.size > 600) tileMemo.delete(tileMemo.keys().next().value);
+    tileMemo.set(key, (async () => {
+      const res = await mapFetch(tileUrl(await poiTileTpl(), POI_Z, x, y));
+      if (!res.ok) throw new Error('kaarttegel ' + res.status);
+      return decodePois(await res.arrayBuffer(), x, y);
+    })().catch(e => { tileMemo.delete(key); return NO_TILE; }));
+  }
+  return tileMemo.get(key);
+}
+
+// De plekken van één soort uit een stel tegels, met afstand tot 'at' en de wijk of het dorp erbij
+function tileItems(cat, tiles, at) {
+  const places = tiles.flatMap(t => t.places);
+  const all = tiles.flatMap(t => t.pois).filter(p => p.cat === cat);
+  // Onderdelen van een dierentuin of pretpark (de dieren, de achtbanen) horen bij dat park:
+  // dan alleen het park zelf
+  const parks = all.filter(p => PARKS.includes(p.sub));
+  const pois = all.filter(p => p.sub !== 'attraction' || !parks.some(q => dist(ll(p), ll(q)) < 450));
+  return pois.map(p => {
+    let place = '', best = 6000;
+    for (const q of places) { const d = dist(ll(p), ll(q)); if (d < best) { best = d; place = q.name; } }
+    const kind = KIND_NL[p.sub] || '';
+    const title = p.name || kind;
+    return { lat: p.lat, lon: p.lon, title, sub: [p.name ? kind : '', place].filter(Boolean).join(' · '),
+      name: [title, place].filter(Boolean).join(', '), d: dist(ll(at), ll(p)) };
+  }).sort((a, b) => a.d - b.d);
+}
+
+// Rond een punt: eerst de 9 tegels eromheen (circa 2 km), zijn er te weinig dan 25 (circa 3,5 km).
+// Een tegel in een stadscentrum is wel 300 kB: zijn de eerste 9 al zwaar, dan niet ruimer
+// (dan vult Photon aan). 'enough': binnen het gezochte gebied zijn er zeker 'want' gevonden.
+async function tileNear(cat, at, want) {
+  const [cx, cy] = tileAt(at.lon, at.lat, POI_Z);
+  const tileM = 40075016 * Math.cos(rad(at.lat)) / 2 ** POI_Z;
+  let items = [];
+  for (const k of [1, 2]) {
+    const ids = [];
+    for (let x = cx - k; x <= cx + k; x++) for (let y = cy - k; y <= cy + k; y++) ids.push([x, y]);
+    const tiles = await Promise.all(ids.map(([x, y]) => poiTile(x, y)));
+    items = tileItems(cat, tiles, at);
+    if (items.filter(p => p.d <= k * tileM).length >= want) return { items: items.slice(0, 25), enough: true };
+    if (tiles.reduce((t, x) => t + x.size, 0) > 3000000) break;
+  }
+  return { items, enough: false };
+}
+
+// Reserve: de zoekdienst Photon (ver weg, of als de tegels niet lukken)
+async function photonNear(cat, at, km) {
   const include = Object.entries(NEAR[cat].tags).flatMap(([k, vs]) => vs.map(v => `osm.${k}.${v}`)).join(',');
   const params = new URLSearchParams({ lat: at.lat.toFixed(5), lon: at.lon.toFixed(5), radius: km, include, limit: '40' });
   const res = await fetch(`${PHOTON.replace('/api/', '/reverse')}?${params}`);
@@ -1573,12 +1704,18 @@ function renderCats() {
 }
 
 // Plekken rond één punt: eerst binnen 4 km, is daar weinig dan binnen 25 km
-function nearList(cat, at) {
-  const key = cat + '|' + at.lat.toFixed(2) + '|' + at.lon.toFixed(2);
+// 'want': zoveel plekken zijn nodig (5 per reeks, 25 voor de lijst Dichtbij)
+function nearList(cat, at, want = 5) {
+  const key = cat + '|' + want + '|' + at.lat.toFixed(3) + '|' + at.lon.toFixed(3);
   if (!nearMemo.has(key)) {
     nearMemo.set(key, (async () => {
-      const close = await fetchNear(cat, at, 4);
-      return close.length >= 6 ? close : fetchNear(cat, at, 25);
+      const { items, enough } = await tileNear(cat, at, want);
+      if (enough) return items;
+      // Te weinig dichtbij (platteland, of een vol stadscentrum): Photon vult aan, tot 25 km
+      const far = await photonNear(cat, at, 25).catch(() => []);
+      const all = [...items];
+      for (const p of far) if (!all.some(q => dist(ll(p), ll(q)) < 40)) all.push(p);
+      return all.sort((a, b) => a.d - b.d).slice(0, 25);
     })().catch(e => { nearMemo.delete(key); throw e; }));
   }
   return nearMemo.get(key);
@@ -1642,23 +1779,28 @@ function midList(cat, bp) {
 }
 async function rankMid(cat, bp) {
   const n = bp.nav;
-  // Zoeken op drie plekken langs de route: op het punt en 8 km ervoor en erna
-  const found = await Promise.all([0, -8, 8].map(km => fetchNear(cat, alongPoint(n, bp.along + km * 1000), 4.5).catch(() => [])));
-  const seen = new Set();
-  let cands = found.flat().filter(p => {
-    const k = p.lat.toFixed(4) + '|' + p.lon.toFixed(4);
-    return !seen.has(k) && seen.add(k);
-  });
+  // De tegels langs de route, van 12 km ervoor tot 12 km erna, met 1 km speling opzij
+  const ids = new Set(), dLat = 1000 / 111320;
+  for (let a = bp.along - 12000; a <= bp.along + 12000; a += 400) {
+    const q = alongPoint(n, a), dLon = dLat / Math.cos(rad(q.lat));
+    const [x1, y1] = tileAt(q.lon - dLon, q.lat + dLat, POI_Z), [x2, y2] = tileAt(q.lon + dLon, q.lat - dLat, POI_Z);
+    for (let x = x1; x <= x2; x++) for (let y = y1; y <= y2; y++) ids.add(x + '/' + y);
+  }
+  const tiles = await Promise.all([...ids].map(k => poiTile(...k.split('/').map(Number))));
+  const near = n.shape.filter((c, i) => Math.abs(n.cum[i] - bp.along) < 14000);
+  const toRoute = p => Math.min(...near.map(c => dist(c, ll(p))));
+  let cands = tileItems(cat, tiles, bp).map(p => ({ ...p, r: toRoute(p) })).filter(p => p.r <= 1000);
+  // Weinig langs de route: ook Photon, iets verder van de weg
   if (cands.length < 5) {
-    for (const p of await nearList(cat, bp).catch(() => [])) {
+    const seen = new Set(cands.map(p => p.lat.toFixed(4) + '|' + p.lon.toFixed(4)));
+    const more = (await Promise.all([0, -8, 8].map(km => photonNear(cat, alongPoint(n, bp.along + km * 1000), 4.5).catch(() => [])))).flat();
+    for (const p of more) {
       const k = p.lat.toFixed(4) + '|' + p.lon.toFixed(4);
-      if (!seen.has(k)) { seen.add(k); cands.push(p); }
+      if (!seen.has(k)) { seen.add(k); cands.push({ ...p, d: dist(ll(bp), ll(p)), r: toRoute(p) }); }
     }
   }
   // De 25 die het dichtst bij de route liggen gaan mee in de reistijdberekening
-  const near = n.shape.filter((c, i) => Math.abs(n.cum[i] - bp.along) < 30000);
-  const toRoute = p => Math.min(...near.map(c => dist(c, ll(p))));
-  cands = cands.map(p => ({ ...p, d: dist(ll(bp), ll(p)), r: toRoute(p) })).sort((a, b) => a.r - b.r).slice(0, 25);
+  cands = cands.sort((a, b) => a.r - b.r).slice(0, 25);
   if (!cands.length) return [];
   // Omrijtijd: van 25 km vóór het punt via de plek naar 25 km erna, min de tijd zonder stop
   const from = alongPoint(n, bp.along - 25000), to = alongPoint(n, bp.along + 25000);
@@ -1697,11 +1839,11 @@ function nearSection(title, sub) {
   const note = document.createElement('li');
   note.className = 'empty';
   note.textContent = 'Zoeken…';
-  return { head, note, fill(items, cat, route) {
+  return { head, note, fill(items, cat, route, all) {
     if (!items.length) { note.textContent = 'Niets gevonden.'; return; }
     note.replaceWith(...items.map(p => nearItem(p, cat)));
-    // De kop opent de kaart met (hooguit) de eerste vijf plekken
-    const list = items.slice(0, 5);
+    // De kop opent de kaart met de eerste vijf plekken (bij één lijst: allemaal)
+    const list = all ? items : items.slice(0, 5);
     head.classList.add('link');
     head.insertAdjacentHTML('beforeend', '<span class="go">Kaart<i class="ti ti-chevron-right" aria-hidden="true"></i></span>');
     head.setAttribute('role', 'button');
@@ -1721,11 +1863,11 @@ async function showNear() {
   const fail = (sec, e) => { if (seq === searchSeq) sec.note.textContent = 'Zoeken lukt nu niet: ' + e.message; };
   if (!(prev && next)) {
     const at = editRow > 0 && prev || nearCentre();
-    const sec = nearSection(prev && editRow > 0 && !prev.here ? 'Dichtbij ' + stopLabel(prev) : 'Dichtbij je positie');
+    const sec = nearSection('Dichtbij', prev && editRow > 0 && !prev.here ? stopLabel(prev) : 'je positie');
     ul.append(sec.head, sec.note);
     try {
-      const list = await nearList(cat, at);
-      if (seq === searchSeq) sec.fill(list, cat);
+      const list = await nearList(cat, at, 25);
+      if (seq === searchSeq) sec.fill(list, cat, null, true);
     } catch (e) { fail(sec, e); }
     return;
   }
