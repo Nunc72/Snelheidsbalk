@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '51';
+const VERSION = '52';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -1919,7 +1919,8 @@ function matchRecent(q) {
   if (!words.length) return [];
   const seen = new Set();
   return [...loadFavs(), ...loadRecent()].filter(d => {
-    if (seen.has(d.name)) return false;
+    // Routes staan alleen in de lijsten Recent en Routes, niet tussen de zoekresultaten
+    if (stopsOf(d) || seen.has(d.name)) return false;
     seen.add(d.name);
     const parts = fold(d.name + ' ' + favLabel(d)).split(/[^\p{L}\p{N}]+/u);
     return words.every(w => parts.some(p => p.startsWith(w)));
@@ -1927,9 +1928,12 @@ function matchRecent(q) {
 }
 
 // Bij een leeg zoekveld: Recent, Favorieten, In de buurt of Routes
+// De laatst gekozen tab blijft bewaard, ook als je de app opnieuw opent
 let listTab = 'recent';
+try { listTab = localStorage.getItem('listTab') || 'recent'; } catch (e) {}
 function setListTab(tab) {
   listTab = tab;
+  try { localStorage.setItem('listTab', tab); } catch (e) {}
   document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === tab)));
   // In de buurt en Routes: toetsenbord weg, dan zie je de hele lijst
   if (tab === 'near' || tab === 'routes') field().blur();
@@ -2004,18 +2008,17 @@ function showText(row, from) {
   $('q-city').value = '';
   streetCtx = null;
   updateClear();
-  if (listTab === 'near' || listTab === 'routes') listTab = 'recent';
   document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === listTab)));
   showRecent();
-  // Op iOS opent het toetsenbord alleen als focus direct binnen de tik gebeurt
-  q.focus();
+  // Op iOS opent het toetsenbord alleen als focus direct binnen de tik gebeurt.
+  // Bij In de buurt en Routes niet: dan zie je de hele lijst.
+  if (listTab !== 'near' && listTab !== 'routes') q.focus();
 }
 
-// Waarheen?: alleen de bestemming invullen, vertrek is je eigen positie
+// Waar naartoe?: alleen de bestemming invullen, vertrek is je eigen positie
 function openSearch() {
   openSheet();
   stops = [HERE, null];
-  listTab = 'recent';
   showText(1, 'home');
 }
 
@@ -2670,6 +2673,11 @@ function msMove(force) {
     const from = P.length ? ll(P[P.length - 1]) : hereNow() && ll(hereNow());
     if (from) guide = [[from, c]];
   }
+  // Eén adresregel wijzigen: hulplijn van de regel ervoor, via de pin, naar de regel erna
+  else if (!a && ms.kind === 'row' && !ms.pois) {
+    const prev = resolveStop(stops[ms.row - 1]), next = resolveStop(stops[ms.row + 1]);
+    guide = [[prev && ll(prev), c, next && ll(next)].filter(Boolean)];
+  }
   // Terug bij het vertrekpunt: de hulplijn blijft, ✓ maakt er een rondje van
   else if (!a && roundTrip()) guide = [[ll(P[P.length - 1]), ll(P[0])]];
   // Etappes die nog berekend worden: een rechte hulplijn
@@ -2696,7 +2704,6 @@ function msUi(force) {
   if (key === ms.ui && !force) return;
   ms.ui = key;
   $('mbtns').classList.toggle('dim', !!a);
-  $('mapsearch').classList.toggle('onpoi', h.type === 'poi');
   if (ms.markers) ms.markers.forEach((m, i) => m.getElement().classList.toggle('on', h.type === 'poi' && h.i === i));
   $('mapsearch').classList.toggle('over', !a && (h.type === 'wp' || h.type === 'seg' || (!ms.adding && ms.kind !== 'row')));
   // Aan het toevoegen: + blauw en ✓ groen

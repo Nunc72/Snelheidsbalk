@@ -225,7 +225,6 @@ body.legback #bottom-next { transform: translateX(calc(200% + 12px)); }
 /* Plekken uit In de buurt op de kaart, genummerd */
 .poimark { width: 28px; height: 28px; border-radius: 50%; background: #fff; color: #1c1c1e; border: 2.5px solid #1c1c1e;
   font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; padding: 0; box-shadow: 0 1px 4px rgba(0,0,0,.3); }
-.mapsearch.onpoi .pin { display: none; }
 .poimark.on { z-index: 30 !important; background: #1F6FE0; border-color: #fff; color: #fff; }
 .mbtns { position: absolute; left: 20px; right: 20px; bottom: calc(env(safe-area-inset-bottom) + 20px); z-index: 3;
   display: flex; justify-content: space-between; align-items: center; pointer-events: none; }
