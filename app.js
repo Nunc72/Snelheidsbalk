@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '50';
+const VERSION = '51';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -2531,7 +2531,9 @@ async function openMapSearch(kind, back, row = 0, pois = null) {
   const all = pois ? pois.list.map(ll) : [...routeCoords, ...ms.pts.map(ll)];
   msmap.resize();
   msmap.jumpTo({ pitch: 0 });
-  if (target) msmap.jumpTo({ center: ll(target), zoom: 15.5 });
+  const view = ms.view; ms.view = null;
+  if (view) msmap.jumpTo(view);
+  else if (target) msmap.jumpTo({ center: ll(target), zoom: 15.5 });
   else if (all.length) {
     const b = all.reduce((bb, c) => bb.extend(c), new maplibregl.LngLatBounds(all[0], all[0]));
     msmap.fitBounds(b, { padding: { top: pois ? 130 : 90, bottom: 190, left: 40, right: 40 }, duration: 0, maxZoom: 16 });
@@ -2893,6 +2895,15 @@ $('where').addEventListener('click', openSearch);
 $('wheremap').addEventListener('click', () => {
   openSheet();
   stops = [HERE];
+  // Heb je de kaart zelf verschoven, dan opent het kaartzoeken op diezelfde plek
+  if (!state.following || !state.fix) {
+    // Midden van het scherm, en de schaal dáár (bij een gekantelde kaart is die kleiner dan bovenaan)
+    const c = map.getContainer(), x = c.clientWidth / 2, y = c.clientHeight / 2;
+    const center = map.unproject([x, y]);
+    const mpp = map.unproject([x - 50, y]).distanceTo(map.unproject([x + 50, y])) / 100;
+    const zoom = Math.log2(40075016.7 * Math.cos(center.lat * Math.PI / 180) / (512 * mpp));
+    ms.view = { center, zoom: isFinite(zoom) ? Math.min(18, Math.max(3, zoom)) : map.getZoom() };
+  }
   openMapSearch('build', 'home');
 });
 $('edit').addEventListener('click', editRoute);
