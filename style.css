@@ -65,6 +65,10 @@ body.nobar .instr:not([hidden]) ~ .toast { top: calc(env(safe-area-inset-top) + 
 .car > div { width: 52px; height: 52px; border-radius: 50%; background: #1F6FE0; display: flex; align-items: center; justify-content: center; }
 .car > div > div { width: 32px; height: 36px; background: #fff; clip-path: polygon(50% 0, 100% 100%, 50% 78%, 0 100%); margin-top: -4px; }
 .car.marker { position: static; transform: none; }
+/* Zonder navigatie: een blauwe stip met witte rand, zonder pijl */
+.car.dot { width: 24px; height: 24px; }
+.car.dot > div { width: 17px; height: 17px; transform: none !important; }
+.car.dot > div > div { display: none; }
 
 .card { position: absolute; left: 16px; right: 16px; z-index: 6; border-radius: 20px; background: #fff; }
 

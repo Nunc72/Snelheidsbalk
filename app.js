@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '54';
+const VERSION = '55';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -692,7 +692,7 @@ setInterval(() => {
 map.on('error', e => { if (!map.isStyleLoaded() && !e.sourceId && !e.tile) toast('Kaart laden lukt niet: ' + (e.error && e.error.message || 'onbekende fout'), 10000); });
 
 const markerEl = document.createElement('div');
-markerEl.className = 'car marker';
+markerEl.className = 'car marker dot';
 markerEl.innerHTML = '<div><div></div></div>';
 const marker = new maplibregl.Marker({ element: markerEl, rotationAlignment: 'map' });
 
@@ -828,6 +828,8 @@ function follow() {
   $('recenter').hidden = true;
   marker.remove();
   if (state.fix) updateCamera([state.fix.lon, state.fix.lat], 600);
+  // De terugvlucht eerst afmaken: nieuwe GPS-metingen zouden hem steeds opnieuw laten beginnen
+  state.easeUntil = Date.now() + 650;
   // Bekeek je een ander etappe-kaartje, dan terug naar het huidige
   if (legView !== null) { legView = null; renderCards(); }
 }
@@ -862,7 +864,15 @@ function farJump(to) {
   return true;
 }
 
+// Alleen tijdens het navigeren een pijl in de rijrichting; anders een blauwe stip
+function syncCar() {
+  const dot = !state.nav;
+  $('car').classList.toggle('dot', dot);
+  markerEl.classList.toggle('dot', dot);
+}
+
 function updateCamera(p, duration = 1000) {
+  syncCar();
   // Achter het zoekscherm hoeft de live kaart niet mee te bewegen: dan heeft de
   // routekaart de telefoon voor zich alleen. Bij het sluiten volgt hij meteen weer.
   if (!$('search').hidden) return;
@@ -870,6 +880,7 @@ function updateCamera(p, duration = 1000) {
     marker.setLngLat(p).setRotation(state.heading || 0);
     return;
   }
+  if (Date.now() < (state.easeUntil || 0)) return;
   if (farJump(p)) duration = 0;
   state.zoom += (targetZoom(state.speedKmh) - state.zoom) * 0.25;
   const h = map.getContainer().clientHeight;
@@ -2566,6 +2577,14 @@ const MS_SOURCES = ['old', 'msroute', 'guide', 'pts'];
 
 function ensureMsMap() {
   if (msmap) return;
+  // Een lopende kaartbeweging eerst stoppen, anders verspringt het beeld. Vloog de kaart
+  // net terug naar je positie, dan meteen naar waar hij heen ging.
+  map.stop();
+  if (state.following && state.fix && Date.now() < (state.easeUntil || 0)) {
+    const h = map.getContainer().clientHeight;
+    map.jumpTo({ center: [state.fix.lon, state.fix.lat], zoom: state.zoom, bearing: state.nav ? state.heading ?? 0 : 0,
+      pitch: camPitch(), padding: { top: Math.round(h * 0.4), bottom: 0, left: 0, right: 0 } });
+  }
   // Hoe de kaart stond, om hem zo terug te zetten
   ms.saved = { cam: { center: map.getCenter(), zoom: map.getZoom(), pitch: map.getPitch(), bearing: map.getBearing(), padding: map.getPadding() },
     following: state.following, maxPitch: map.getMaxPitch() };
@@ -3208,6 +3227,7 @@ function setMode(mode) {
   $('destlbl').textContent = nav && state.dest ? withoutPostcode(state.dest.name) : '';
   $('destlbl').classList.remove('legs');
   $('bottom-idle').hidden = nav;
+  syncCar();
   renderBar();
 }
 
