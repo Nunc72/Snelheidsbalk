@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '53';
+const VERSION = '54';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -774,6 +774,7 @@ function drawRouteEnds() {
 map.on('style.load', () => {
   addRouteLayers(map, routeCoords); addRouteEnds(map); addConceptLayers(map);
   scaleLines(map, { 'route-casing': 13, 'route-line': 8, 'concept-line': 8 });
+  if (msmap) { showMainLayers(false); addMsLayers(map); msDraw(); msTilt(true); }
 });
 
 // De kleine routeoverzichtkaart is altijd de gewone kaart: geen reliëf, luchtfoto of
@@ -797,12 +798,6 @@ async function applyTheme() {
   const small = await currentStyle(true);
   // De kleine kaarten veranderen alleen mee met licht en donker
   if (pmap && pmap._dark !== theme()) { pmap._dark = theme(); pmap.setStyle(small, { diff: false }); }
-  // De grote zoekkaart krijgt een nieuwe stijl; de lagen komen terug via style.load
-  if (msmap && (msmap._dark !== theme() || msmap._kind !== mapKind)) {
-    msmap._dark = theme();
-    msmap._kind = mapKind;
-    msmap.setStyle(await currentStyle(), { diff: false });
-  }
   renderBar();
 }
 darkQuery.addEventListener('change', applyTheme);
@@ -819,7 +814,8 @@ function stopFollowing() {
   state.following = false;
   $('car').hidden = true;
   $('recenter').hidden = false;
-  if (state.fix) marker.setLngLat([state.fix.lon, state.fix.lat]).setRotation(state.heading || 0).addTo(map);
+  // Bij zoeken op de kaart staat je positie er al als blauwe stip
+  if (state.fix && !msmap) marker.setLngLat([state.fix.lon, state.fix.lat]).setRotation(state.heading || 0).addTo(map);
 }
 
 map.on('dragstart', e => { if (e.originalEvent) stopFollowing(); });
@@ -1981,6 +1977,7 @@ function updateClear() {
 // ---------- Het zoekscherm: tekst zoeken, overzicht en zoeken op kaart ----------
 const PANES = ['textpane', 'overview', 'mapsearch'];
 function showPane(id) {
+  if (id !== 'mapsearch') leaveMsMap(false);
   for (const p of PANES) $(p).hidden = p !== id;
   toggleMapMenu(false);
   // Vervoer en kaartinstellingen staan in het overzicht en bovenin bij zoeken op kaart
@@ -2044,6 +2041,7 @@ function editRoute() {
 }
 
 function closeSearch() {
+  leaveMsMap(false);
   $('q').blur();
   $('search').hidden = true;
   previewSeq++;
@@ -2053,7 +2051,6 @@ function closeSearch() {
   // De grote kaart om te zoeken gaat weg; die kost veel geheugen.
   previewTags.forEach(t => t.remove());
   previewTags = [];
-  if (msmap) { msmap.remove(); msmap = null; }
 }
 
 function describe(props) {
@@ -2530,19 +2527,20 @@ async function openMapSearch(kind, back, row = 0, pois = null) {
     ms.pts = list.map(resolveStop).filter(Boolean);
   }
   showPane('mapsearch');
-  await ensureMsMap();
+  ensureMsMap();
   if (!msmap) return;
   // Waar de kaart begint
   const target = pois ? null : kind === 'row' ? stops[row] && resolveStop(stops[row]) || resolveStop(stops[row - 1]) || hereNow()
     : kind === 'build' ? hereNow() : null;
   const routeCoords = kind === 'row' && previewData ? previewData.coords : ms.legs.flat();
   const all = pois ? pois.list.map(ll) : [...routeCoords, ...ms.pts.map(ll)];
-  msmap.resize();
-  msmap.jumpTo({ pitch: 0, bearing: 0 });
-  const view = ms.view; ms.view = null;
-  if (view) msTilt(false, view.pitch);
-  if (view && view.center) msmap.jumpTo(view);
-  else if (target) msmap.jumpTo({ center: ll(target), zoom: 15.5, ...view });
+  // Vanaf het beginscherm blijft de kaart precies staan zoals hij stond
+  const keep = ms.keep;
+  ms.keep = false;
+  if (keep) msTilt(false, msmap.getPitch());
+  else msmap.jumpTo({ pitch: 0, bearing: 0 });
+  if (keep) { /* niets verschuiven */ }
+  else if (target) msmap.jumpTo({ center: ll(target), zoom: 15.5 });
   else if (all.length) {
     const b = all.reduce((bb, c) => bb.extend(c), new maplibregl.LngLatBounds(all[0], all[0]));
     msmap.fitBounds(b, { padding: { top: pois ? 130 : 90, bottom: 190, left: 40, right: 40 }, duration: 0, maxZoom: 16 });
@@ -2550,27 +2548,78 @@ async function openMapSearch(kind, back, row = 0, pois = null) {
     const c = map.getCenter();
     msmap.jumpTo({ center: c, zoom: 15 });
   }
-  if (!view) msTilt(false);
+  if (!keep) msTilt(false);
+  ms.start = { c: msmap.getCenter(), z: msmap.getZoom() };
   msDraw();
   msMarkers();
   ms.legs.forEach((l, i) => { if (!l) computeLeg(i); });
 }
 
-async function ensureMsMap() {
+// Zoeken op de kaart gebruikt de hoofdkaart zelf: die verhuist zolang naar het zoekscherm.
+// Geen tweede kaart die moet laden (geen flits) en geen extra geheugen.
+const MAIN_LAYERS = ['route-casing', 'route-line', 'route-ends', 'concept-line', 'concept-ends'];
+function showMainLayers(on) {
+  for (const id of MAIN_LAYERS) if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
+}
+const MS_LAYERS = ['old-line', 'ms-casing', 'ms-line', 'guide', 'pts'];
+const MS_SOURCES = ['old', 'msroute', 'guide', 'pts'];
+
+function ensureMsMap() {
   if (msmap) return;
-  const style = await currentStyle();
-  if (msmap || $('mapsearch').hidden) return;
-  const c = state.fix ? [state.fix.lon, state.fix.lat] : map.getCenter().toArray();
-  msmap = new maplibregl.Map({ container: 'msmap', style, center: c, zoom: 15, ...SMALL_MAP,
-    attributionControl: false, dragRotate: false, pitchWithRotate: false });
-  msmap.touchZoomRotate.disableRotation();
-  msmap._dark = theme();
-  msmap._kind = mapKind;
-  const m = msmap;
-  m.on('style.load', () => { addMsLayers(m); msDraw(); msMove(true); msTilt(true); });
-  await new Promise(r => m.once('style.load', r));
-  let raf = 0;
-  m.on('move', () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; msMove(); }); });
+  // Hoe de kaart stond, om hem zo terug te zetten
+  ms.saved = { cam: { center: map.getCenter(), zoom: map.getZoom(), pitch: map.getPitch(), bearing: map.getBearing(), padding: map.getPadding() },
+    following: state.following, maxPitch: map.getMaxPitch() };
+  msmap = map;
+  // De pin staat midden in beeld: zonder de ruimte boven die je eigen positie lager zet,
+  // maar met hetzelfde beeld
+  const el = map.getContainer();
+  const mid = map.unproject([el.clientWidth / 2, el.clientHeight / 2]);
+  $('msmap').appendChild(el);
+  map.resize();
+  map.jumpTo({ center: mid, padding: { top: 0, bottom: 0, left: 0, right: 0 } });
+  map.touchZoomRotate.disableRotation();
+  marker.remove();
+  showMainLayers(false);
+  if (map.style && map.style._loaded && !map.getSource('pts')) addMsLayers(map);
+  if (!ms.moveHook) {
+    ms.moveHook = true;
+    let raf = 0;
+    map.on('move', () => { if (msmap && !raf) raf = requestAnimationFrame(() => { raf = 0; if (msmap) msMove(); }); });
+  }
+}
+
+// Terug naar het beginscherm. stay: blijft de kaart waar je hem hebt neergezet
+// (alleen als je hem verschoven hebt); anders staat hij weer zoals voor het zoeken.
+function leaveMsMap(stay) {
+  if (!msmap) return;
+  const sv = ms.saved;
+  ms.pois = null;
+  msMarkers();
+  for (const id of MS_LAYERS) if (map.getLayer(id)) map.removeLayer(id);
+  for (const id of MS_SOURCES) if (map.getSource(id)) map.removeSource(id);
+  showMainLayers(true);
+  map.touchZoomRotate.enableRotation();
+  map.setMaxPitch(sv.maxPitch);
+  msmap = null;
+  $('mapsearch').classList.remove('over');
+  document.body.insertBefore(map.getContainer(), document.body.firstChild);
+  map.resize();
+  const moved = ms.start && (Math.abs(map.getZoom() - ms.start.z) > 0.05 || dist(map.getCenter().toArray(), ms.start.c.toArray()) > 10);
+  if (stay && moved) {
+    state.following = true;   // zodat stopFollowing het pijltje op de kaart zet
+    stopFollowing();
+    return;
+  }
+  map.jumpTo(sv.cam);
+  if (sv.following) {
+    state.following = true;
+    $('car').hidden = false;
+    $('recenter').hidden = true;
+    marker.remove();
+  } else {
+    state.following = true;
+    stopFollowing();
+  }
 }
 
 // Kantelen kan alleen in 3D: twee vingers samen omhoog of omlaag. Plat blijft plat,
@@ -2590,13 +2639,17 @@ function addMsLayers(m) {
   m.addSource('old', { type: 'geojson', data: EMPTY_FC });
   m.addLayer({ id: 'old-line', type: 'line', source: 'old', layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: { 'line-color': dark ? '#5A6270' : '#A9B4C2', 'line-width': 6 } });
-  addRouteLayers(m, []);
+  m.addSource('msroute', { type: 'geojson', data: EMPTY_FC });
+  m.addLayer({ id: 'ms-casing', type: 'line', source: 'msroute',
+    layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': dark ? DARK_BG : '#ffffff', 'line-width': 10 } });
+  m.addLayer({ id: 'ms-line', type: 'line', source: 'msroute',
+    layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': dark ? '#3D8BFF' : '#1F6FE0', 'line-width': 6 } });
   m.addSource('guide', { type: 'geojson', data: EMPTY_FC });
   m.addLayer({ id: 'guide', type: 'line', source: 'guide', layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: { 'line-color': dark ? '#f2f2f7' : '#1c1c1e', 'line-width': 2.2, 'line-dasharray': [3, 2.5], 'line-opacity': 0.75 } });
   m.addSource('pts', { type: 'geojson', data: EMPTY_FC });
   m.addLayer({ id: 'pts', type: 'circle', source: 'pts', paint: { ...endsPaint(dark, 9, 8, 7, 3.5), 'circle-pitch-alignment': 'map', 'circle-pitch-scale': 'viewport' } });
-  scaleLines(m, { 'route-casing': 10, 'route-line': 6, 'old-line': 6, guide: 2.2 });
+  scaleLines(m, { 'ms-casing': 10, 'ms-line': 6, 'old-line': 6, guide: 2.2 });
 }
 
 // Tekent de route, de punten en (tijdens een wijziging) de oude stukken in grijs
@@ -2610,7 +2663,7 @@ function msDraw() {
   if (ms.pois && ms.pois.route) solid = [lineFeature(ms.pois.route)];
   else if (ms.kind === 'row') solid = previewData && previewData.coords.length ? [lineFeature(previewData.coords)] : [];
   else solid = ms.legs.map((l, i) => (l && !oldLegs.has(i) ? lineFeature(l) : null)).filter(Boolean);
-  msmap.getSource('route').setData({ type: 'FeatureCollection', features: solid });
+  msmap.getSource('msroute').setData({ type: 'FeatureCollection', features: solid });
   msmap.getSource('old').setData({ type: 'FeatureCollection',
     features: [...oldLegs].filter(i => ms.legs[i]).map(i => lineFeature(ms.legs[i])) });
   const fc = stopPoints(ms.pts);
@@ -2895,6 +2948,7 @@ function msBack() {
   if (ms.back === 'text') { showPane('textpane'); $('q').focus(); return; }
   if (ms.back === 'near') { showPane('textpane'); return; }
   setTravelMode(modeAtOpen);
+  leaveMsMap(true);
   closeSearch();
 }
 
@@ -2910,16 +2964,8 @@ $('where').addEventListener('click', openSearch);
 $('wheremap').addEventListener('click', () => {
   openSheet();
   stops = [HERE];
-  // Richting en kanteling gaan mee; heb je de kaart zelf verschoven, dan ook de plek
-  ms.view = { bearing: map.getBearing(), pitch: map.getPitch() };
-  if (!state.following || !state.fix) {
-    // Midden van het scherm, en de schaal dáár (bij een gekantelde kaart is die kleiner dan bovenaan)
-    const c = map.getContainer(), x = c.clientWidth / 2, y = c.clientHeight / 2;
-    const center = map.unproject([x, y]);
-    const mpp = map.unproject([x - 50, y]).distanceTo(map.unproject([x + 50, y])) / 100;
-    const zoom = Math.log2(40075016.7 * Math.cos(center.lat * Math.PI / 180) / (512 * mpp));
-    Object.assign(ms.view, { center, zoom: isFinite(zoom) ? Math.min(18, Math.max(3, zoom)) : map.getZoom() });
-  }
+  // Dezelfde kaart, die blijft staan zoals hij stond
+  ms.keep = true;
   openMapSearch('build', 'home');
 });
 $('edit').addEventListener('click', editRoute);
