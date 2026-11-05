@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '52';
+const VERSION = '53';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -48,7 +48,8 @@ const state = {
   limitCand: undefined,
   following: true,
   zoom: 16,
-  pitch: 30,          // kanteling van de kaart; met twee vingers aan te passen
+  pitch: 30,          // kanteling tijdens het navigeren; met twee vingers aan te passen
+  homePitch: 0,       // zonder navigatie ligt de kaart plat (ook met twee vingers te kantelen)
   concept: null,      // getoonde route vanaf een ander vertrekpunt: { nav, stops, mode }
   nav: null,          // actieve route
   dest: null,
@@ -650,8 +651,6 @@ function watchPublicBuildings(m) {
 const PIXEL_RATIO = Math.min(devicePixelRatio || 1, 2);
 const SMALL_MAP = { pixelRatio: PIXEL_RATIO, maxTileCacheSize: 30, transformRequest };
 
-// Kaart half gekanteld: 50% van de maximale kanteling (60°) geeft wat perspectief
-const PITCH = 30;
 const map = new maplibregl.Map({
   container: 'map',
   style: theme() === 'dark' ? PLACEHOLDER_DARK : PLACEHOLDER_LIGHT,
@@ -660,14 +659,17 @@ const map = new maplibregl.Map({
   transformRequest,
   center: [5.1214, 52.0907],
   zoom: 15,
-  pitch: PITCH,
+  pitch: 0,
   attributionControl: false,
   dragRotate: false,
   pitchWithRotate: false,
 });
 // Twee vingers: samen omhoog of omlaag schuiven kantelt, tegen elkaar in draaien roteert.
-// De gekozen kanteling blijft staan, ook als de kaart je weer volgt.
-map.on('pitchend', e => { if (e.originalEvent) state.pitch = map.getPitch(); });
+// De gekozen kanteling blijft staan, ook als de kaart je weer volgt; navigeren en de
+// kaart zonder route hebben elk hun eigen kanteling.
+map.on('pitchend', e => { if (!e.originalEvent) return; if (state.nav) state.pitch = map.getPitch(); else state.homePitch = map.getPitch(); });
+// Alleen tijdens het navigeren is de kaart gekanteld en draait hij mee; anders plat met het noorden boven
+const camPitch = () => (state.nav ? state.pitch : state.homePitch);
 watchPublicBuildings(map);
 watchTrails(map);
 // Kaart weggevallen (meestal geheugen): melden; MapLibre tekent hem opnieuw zodra het kan
@@ -875,12 +877,15 @@ function updateCamera(p, duration = 1000) {
   if (farJump(p)) duration = 0;
   state.zoom += (targetZoom(state.speedKmh) - state.zoom) * 0.25;
   const h = map.getContainer().clientHeight;
+  // Navigeren: rijrichting boven (zonder bekende richting het noorden). Anders noord boven
+  // en draait alleen het pijltje.
+  const bear = state.nav ? state.heading ?? 0 : 0;
+  $('car').firstElementChild.style.transform = `rotate(${state.nav ? 0 : state.heading || 0}deg)`;
   map.easeTo({
     center: p,
-    // Rijrichting boven; zonder bekende richting terug naar het noorden
-    bearing: state.heading ?? 0,
+    bearing: bear,
     zoom: state.zoom,
-    pitch: state.pitch,
+    pitch: camPitch(),
     padding: { top: Math.round(h * 0.4), bottom: 0, left: 0, right: 0 },
     duration,
     easing: t => t,
@@ -2533,10 +2538,11 @@ async function openMapSearch(kind, back, row = 0, pois = null) {
   const routeCoords = kind === 'row' && previewData ? previewData.coords : ms.legs.flat();
   const all = pois ? pois.list.map(ll) : [...routeCoords, ...ms.pts.map(ll)];
   msmap.resize();
-  msmap.jumpTo({ pitch: 0 });
+  msmap.jumpTo({ pitch: 0, bearing: 0 });
   const view = ms.view; ms.view = null;
-  if (view) msmap.jumpTo(view);
-  else if (target) msmap.jumpTo({ center: ll(target), zoom: 15.5 });
+  if (view) msTilt(false, view.pitch);
+  if (view && view.center) msmap.jumpTo(view);
+  else if (target) msmap.jumpTo({ center: ll(target), zoom: 15.5, ...view });
   else if (all.length) {
     const b = all.reduce((bb, c) => bb.extend(c), new maplibregl.LngLatBounds(all[0], all[0]));
     msmap.fitBounds(b, { padding: { top: pois ? 130 : 90, bottom: 190, left: 40, right: 40 }, duration: 0, maxZoom: 16 });
@@ -2544,7 +2550,7 @@ async function openMapSearch(kind, back, row = 0, pois = null) {
     const c = map.getCenter();
     msmap.jumpTo({ center: c, zoom: 15 });
   }
-  msTilt(false);
+  if (!view) msTilt(false);
   msDraw();
   msMarkers();
   ms.legs.forEach((l, i) => { if (!l) computeLeg(i); });
@@ -2570,10 +2576,12 @@ async function ensureMsMap() {
 // Kantelen kan alleen in 3D: twee vingers samen omhoog of omlaag. Plat blijft plat,
 // dan valt de pin precies op de plek die je recht van boven ziet.
 const MS_PITCH = 50;
-function msTilt(animate) {
+function msTilt(animate, keep) {
   if (!msmap) return;
   const relief = mapKind === 'terrain';
-  msmap.setMaxPitch(relief ? 70 : 0);
+  // Vanaf het beginscherm blijft de kanteling van die kaart staan
+  msmap.setMaxPitch(relief ? 70 : Math.min(70, keep || 0));
+  if (keep != null) return;
   if (relief && msmap.getPitch() < 5) msmap.easeTo({ pitch: MS_PITCH, duration: animate ? 600 : 0 });
 }
 
@@ -2902,14 +2910,15 @@ $('where').addEventListener('click', openSearch);
 $('wheremap').addEventListener('click', () => {
   openSheet();
   stops = [HERE];
-  // Heb je de kaart zelf verschoven, dan opent het kaartzoeken op diezelfde plek
+  // Richting en kanteling gaan mee; heb je de kaart zelf verschoven, dan ook de plek
+  ms.view = { bearing: map.getBearing(), pitch: map.getPitch() };
   if (!state.following || !state.fix) {
     // Midden van het scherm, en de schaal dáár (bij een gekantelde kaart is die kleiner dan bovenaan)
     const c = map.getContainer(), x = c.clientWidth / 2, y = c.clientHeight / 2;
     const center = map.unproject([x, y]);
     const mpp = map.unproject([x - 50, y]).distanceTo(map.unproject([x + 50, y])) / 100;
     const zoom = Math.log2(40075016.7 * Math.cos(center.lat * Math.PI / 180) / (512 * mpp));
-    ms.view = { center, zoom: isFinite(zoom) ? Math.min(18, Math.max(3, zoom)) : map.getZoom() };
+    Object.assign(ms.view, { center, zoom: isFinite(zoom) ? Math.min(18, Math.max(3, zoom)) : map.getZoom() });
   }
   openMapSearch('build', 'home');
 });
@@ -3114,7 +3123,7 @@ function clearConcept() {
   follow();
 }
 
-// De kaart gaat naar het vertrekpunt, in de rijrichting van het eerste stuk
+// De kaart gaat naar het vertrekpunt
 function showConcept(c) {
   state.nav = null;
   drawRouteEnds();
@@ -3251,11 +3260,11 @@ function endSlide() {
   legSlide = null;
 }
 
-// Waar de kaart staat bij een gestippelde route: op het vertrekpunt, in de rijrichting
+// Waar de kaart staat bij een gestippelde route: op het vertrekpunt, plat en noord boven
 function conceptView() {
   const [a, b] = state.concept.nav.shape;
   const h = map.getContainer().clientHeight;
-  map.easeTo({ center: a, bearing: b ? bearing(a, b) : 0, zoom: 15.5, pitch: state.pitch,
+  map.easeTo({ center: a, bearing: 0, zoom: 15.5, pitch: camPitch(),
     padding: { top: Math.round(h * 0.4), bottom: 0, left: 0, right: 0 }, duration: farJump(a) ? 0 : 800 });
 }
 
@@ -3278,7 +3287,7 @@ function slideLeg(dir) {
   stopFollowing();
   // De stop midden in beeld (zonder de ruimte boven die je eigen positie lager zet)
   const p = n.shape[n.legs[n.legIdx + v - 1].endIdx];
-  map.easeTo({ center: p, zoom: 15.5, pitch: state.pitch, padding: { top: 0, bottom: 0, left: 0, right: 0 },
+  map.easeTo({ center: p, zoom: 15.5, pitch: camPitch(), padding: { top: 0, bottom: 0, left: 0, right: 0 },
     duration: farJump(p) ? 0 : 800 });
 }
 
