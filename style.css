@@ -156,6 +156,11 @@ body.legback #bottom-next { transform: translateX(calc(200% + 12px)); }
 .roundbtn:disabled { opacity: .35; }
 .stopbig { background: #E5484D; }
 .okbig { background: #008000; }
+.lookbig { background: #1F6FE0; }
+.lookpin { width: 30px; height: 40px; filter: drop-shadow(0 1px 3px rgba(0,0,0,.35)); }
+.lookpin svg { width: 30px; height: 40px; display: block; }
+.lookpin path { fill: #E5484D; stroke: #fff; stroke-width: 2; }
+.lookpin circle { fill: #fff; }
 .viewbig { background: #1F6FE0; }
 .addbig { background: #F1F0EC; color: #3a3a3c; }
 .yellowbig { background: #F5A524; }

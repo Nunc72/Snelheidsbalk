@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '56';
+const VERSION = '57';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -829,6 +829,7 @@ function follow() {
   $('recenter').hidden = true;
   marker.remove();
   peek(false);
+  clearLook();
   if (state.fix) updateCamera([state.fix.lon, state.fix.lat], 600);
   // De terugvlucht eerst afmaken: nieuwe GPS-metingen zouden hem steeds opnieuw laten beginnen
   state.easeUntil = Date.now() + 650;
@@ -2003,6 +2004,7 @@ function showPane(id) {
 function openSheet() {
   $('search').hidden = false;
   closePlaceMenu();
+  clearLook();
   homeControls(false);
   modeAtOpen = travelMode;
   setTravelMode(travelMode);
@@ -2282,9 +2284,10 @@ function renderStops(fresh = -1) {
   });
 }
 
-// Weghalen; er blijven altijd twee regels (vertrek en bestemming), dan wordt de regel leeg
+// Weghalen; er blijven altijd twee regels (vertrek en bestemming), dan wordt de regel leeg.
+// Het vertrekpunt wordt altijd leeg: zonder vertrek bekijk je de plek op de kaart (verrekijker).
 function removeRow(i) {
-  if (stops.length > 2) stops.splice(i, 1); else stops[i] = null;
+  if (stops.length > 2 && i > 0) stops.splice(i, 1); else stops[i] = null;
   savedPick = null;
   renderStops();
   computePreview();
@@ -2421,6 +2424,34 @@ $('pmap').addEventListener('click', e => {
 
 const MAX_DIST = { bicycle: 150000, pedestrian: 100000 };
 
+// Geen vertrekpunt maar wel een plek: de groene knop wordt een blauwe verrekijker
+const lookMode = () => !stops[0] && filled().length > 0;
+function syncOk() {
+  const look = lookMode(), b = $('qok');
+  b.classList.toggle('okbig', !look);
+  b.classList.toggle('lookbig', look);
+  b.querySelector('.ti').className = 'ti ' + (look ? 'ti-binoculars' : 'ti-arrow-ramp-right');
+  b.setAttribute('aria-label', look ? 'Bekijk op de kaart' : 'Navigatie starten');
+}
+
+// Verrekijker: naar het eerste (of enige) punt op de live kaart, met een pin erop
+let lookMarker = null;
+function clearLook() {
+  if (lookMarker) { lookMarker.remove(); lookMarker = null; }
+}
+function lookAt() {
+  const p = resolveStop(filled()[0]);
+  if (!p) return;
+  closeSearch();
+  stopFollowing();
+  const el = document.createElement('div');
+  el.className = 'lookpin';
+  el.innerHTML = '<svg viewBox="0 0 36 48" aria-hidden="true"><path d="M18 46.5C18 46.5 34 28.5 34 17A16 16 0 0 0 2 17C2 28.5 18 46.5 18 46.5Z"/><circle cx="18" cy="17" r="6"/></svg>';
+  clearLook();
+  lookMarker = new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat([p.lon, p.lat]).addTo(map);
+  map.flyTo({ center: [p.lon, p.lat], zoom: 16, bearing: 0, pitch: camPitch(), padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: 1600, essential: true });
+}
+
 async function computePreview(note) {
   const list = filled();
   $('qok').disabled = true;
@@ -2434,6 +2465,12 @@ async function computePreview(note) {
     drawPreview();
     $('psum').textContent = msg;
   };
+  syncOk();
+  if (lookMode()) {
+    noRoute('Geen vertrekpunt: bekijk op de kaart');
+    $('qok').disabled = false;
+    return;
+  }
   if (list.length < 2) { noRoute(list.length ? 'Vul nog een adres in' : 'Kies waar je heen wilt'); return; }
   if (pts.some(p => !p)) { noRoute('Nog geen GPS-positie voor "Huidige locatie"'); return; }
   // Fietsen en lopen rekent de routedienst niet verder dan 150 en 100 km hemelsbreed
@@ -3007,7 +3044,7 @@ $('qmap').addEventListener('click', () => {
 });
 $('stop').addEventListener('click', () => { stopRoute(); closeSearch(); });
 $('qadd').addEventListener('click', addRow);
-$('qok').addEventListener('click', confirmPreview);
+$('qok').addEventListener('click', () => (lookMode() ? lookAt() : confirmPreview()));
 $('pmapedit').addEventListener('click', e => { e.stopPropagation(); openMapSearch('edit', 'overview'); });
 $('msback').addEventListener('click', msBack);
 $('msadd').addEventListener('click', msAdd);
@@ -3260,7 +3297,7 @@ map.on('contextmenu', e => {
   lp.opened = true;
   openPlaceMenu({ lat: e.lngLat.lat, lon: e.lngLat.lng });
 });
-map.on('click', () => { if (Date.now() >= lp.eatUntil) closePlaceMenu(); });
+map.on('click', () => { if (Date.now() >= lp.eatUntil) { closePlaceMenu(); clearLook(); } });
 
 // ---------- Eigen pins: blijven staan tot je ze verwijdert ----------
 function loadPins() {
