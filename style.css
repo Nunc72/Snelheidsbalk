@@ -9,7 +9,7 @@ body {
 button { font: inherit; color: inherit; border: 0; background: none; cursor: pointer; padding: 0; }
 [hidden] { display: none !important; }
 
-#map { position: absolute; inset: 0; }
+#map { position: absolute; inset: 0; -webkit-touch-callout: none; }
 
 /* Snelheidsbalk: 15% van de schermhoogte */
 .bar {
@@ -313,6 +313,64 @@ body.legback #bottom-next { transform: translateX(calc(200% + 12px)); }
   display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 10px rgba(0,0,0,.18);
 }
 .recenter .ti { font-size: 26px; }
+.recenter { transition: bottom .3s ease; }
+
+/* Rechtsboven op de kaart: kaartsoort en kompas, zonder achtergrond (zelfde plek als bij zoeken op kaart) */
+.mapctl { position: absolute; right: 16px; top: calc(env(safe-area-inset-top) + 10px); z-index: 6;
+  display: flex; flex-direction: column; align-items: center; gap: 4px; transition: opacity .3s; }
+body:not(.nobar) .mapctl { top: calc(15vh + 10px); }
+.instr:not([hidden]) ~ .mapctl { top: calc(15vh + 120px); }
+body.nobar .instr:not([hidden]) ~ .mapctl { top: calc(env(safe-area-inset-top) + 120px); }
+body.driving .mapctl { opacity: 0; pointer-events: none; }
+.mapctl .setbtn { background: none; color: #2c2c2e; filter: drop-shadow(0 0 1.5px #fff) drop-shadow(0 0 1.5px #fff) drop-shadow(0 0 1px #fff); }
+.mapctl .setbtn .ti { font-size: 28px; }
+.compass { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; }
+.compass svg { width: 32px; height: 32px; filter: drop-shadow(0 0 1.5px #fff) drop-shadow(0 0 1px #fff); transition: transform .1s linear; }
+.compass .n { fill: #E5484D; }
+.compass .s { fill: #6b6b6b; }
+.compass .ring { fill: rgba(255,255,255,.92); stroke: #c7c7cc; stroke-width: 1; }
+.compass .hub { fill: #fff; }
+
+/* Waar naartoe? ingeklapt: alleen een randje met een greepje */
+#bottom-idle { transition: transform .3s ease; touch-action: none; }
+#bottom-idle > * { transition: opacity .2s; }
+#bottom-idle.peek { transform: translateY(calc(100% + 12px + env(safe-area-inset-bottom) - 24px)); cursor: pointer; }
+#bottom-idle.peek > :not(.grab) { opacity: 0; }
+.grab { display: none; position: absolute; left: 50%; top: 7px; width: 40px; height: 5px; margin-left: -20px; border-radius: 3px; background: #c7c7cc; }
+#bottom-idle.peek .grab { display: block; }
+/* Gekozen vertrekpunt boven Waar naartoe? */
+.fromrow { display: flex; align-items: center; gap: 8px; margin: -4px 0 10px; font-size: 15px; color: #3a3a3c; }
+.fromrow > .ti { font-size: 19px; color: #2E9E4F; }
+.fromtxt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fromtxt b { font-weight: 600; }
+#fromx { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; color: #8a8a8a; }
+#fromx .ti { font-size: 19px; }
+.startmark { width: 18px; height: 18px; border-radius: 50%; background: #2E9E4F; border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.35); }
+
+/* Menu na lang drukken (en bij een eigen pin) */
+.pmenu { display: flex; flex-direction: column; align-items: center; z-index: 8; }
+.pmenu.below { flex-direction: column-reverse; }
+.pcard { width: 236px; background: #fff; border-radius: 14px; box-shadow: 0 4px 20px rgba(0,0,0,.22); padding: 6px; }
+.ptitle { font-size: 13px; color: #8a8a8a; padding: 6px 10px 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pcard button[data-act] { display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 10px; border-radius: 9px; font-size: 16px; text-align: left; color: #1c1c1e; }
+.pcard button[data-act] .ti { font-size: 21px; color: #1F6FE0; }
+.pcard button[data-act]:active { background: #F1F0EC; }
+.pcard button.del, .pcard button.del .ti { color: #D93036; }
+.pinform { display: flex; gap: 6px; padding: 4px; }
+.pinform input { flex: 1; min-width: 0; font-size: 16px; padding: 9px 11px; border-radius: 10px; border: 0; background: #F1F0EC; outline: none; color: inherit; -webkit-user-select: text; user-select: text; }
+.pinform button { flex: none; width: 40px; border-radius: 10px; background: #1F6FE0; color: #fff; display: flex; align-items: center; justify-content: center; }
+.pinform button .ti { font-size: 22px; }
+.ptail { width: 14px; height: 14px; background: #fff; transform: rotate(45deg); margin-top: -8px; box-shadow: 3px 3px 6px rgba(0,0,0,.08); }
+.pmenu.below .ptail { margin: 0 0 -8px; box-shadow: -3px -3px 6px rgba(0,0,0,.06); }
+
+/* Eigen pins: paars, met de naam ernaast */
+.upin { position: relative; width: 28px; height: 37px; cursor: pointer; }
+.upin svg { width: 28px; height: 37px; display: block; filter: drop-shadow(0 1px 2px rgba(0,0,0,.35)); }
+.upin path { fill: #8E4EC6; stroke: #fff; stroke-width: 2.5; }
+.upin circle { fill: #fff; }
+.upin-lbl { position: absolute; left: 30px; top: 6px; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  background: #fff; color: #1c1c1e; font-size: 13px; font-weight: 600; padding: 3px 7px; border-radius: 7px; box-shadow: 0 1px 4px rgba(0,0,0,.25); }
+.msmap .upin, .msmap .startmark { pointer-events: none; }
 
 .toast {
   position: absolute; left: 50%; transform: translateX(-50%); z-index: 7;
@@ -394,6 +452,22 @@ body.legback #bottom-next { transform: translateX(calc(200% + 12px)); }
   .edit { background: #2c2c2e; color: #f2f2f7; }
   .meta, .lbl { color: #8e8e93; }
   .recenter { background: #2c2c2e; color: #5EA0FF; box-shadow: 0 2px 10px rgba(0,0,0,.5); }
+  .mapctl .setbtn { background: none; color: #f2f2f7; filter: drop-shadow(0 0 1.5px #000) drop-shadow(0 0 1.5px #000) drop-shadow(0 0 1px #000); }
+  .compass svg { filter: drop-shadow(0 0 1.5px #000) drop-shadow(0 0 1px #000); }
+  .compass .s { fill: #c7c7cc; }
+  .compass .ring { fill: rgba(44,44,46,.92); stroke: #48484A; }
+  .compass .hub { fill: #1c1c1e; }
+  .grab { background: #48484A; }
+  .fromrow { color: #c7c7cc; }
+  .pcard, .ptail { background: #2c2c2e; }
+  .pcard { box-shadow: 0 4px 20px rgba(0,0,0,.6); }
+  .pcard button[data-act] { color: #f2f2f7; }
+  .pcard button[data-act] .ti { color: #5EA0FF; }
+  .pcard button[data-act]:active { background: #3a3a3c; }
+  .pcard button.del, .pcard button.del .ti { color: #FF6B6B; }
+  .ptitle { color: #8e8e93; }
+  .pinform input { background: #1c1c1e; }
+  .upin-lbl { background: #2c2c2e; color: #f2f2f7; }
   .car { box-shadow: 0 1px 8px rgba(0,0,0,.6); }
   .sheet { background: #000; }
   .sheet-head { border-bottom-color: #2c2c2e; }

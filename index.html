@@ -15,7 +15,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
-<link rel="stylesheet" href="style.css?v=55">
+<link rel="stylesheet" href="style.css?v=56">
 </head>
 <body>
 <div id="map"></div>
@@ -36,11 +36,18 @@
   </div>
 </div>
 
+<!-- Rechtsboven op de kaart: kaartsoort (verhuist naar het zoekscherm zolang dat open is) en kompas -->
+<div class="mapctl" id="mapctl">
+  <button class="compass" id="compass" hidden aria-label="Kaart met het noorden naar boven"><svg viewBox="0 0 24 24" aria-hidden="true"><circle class="ring" cx="12" cy="12" r="10.5"/><path class="n" d="M12 4 15 12H9Z"/><path class="s" d="M12 20 9 12h6Z"/><circle class="hub" cx="12" cy="12" r="1.3"/></svg></button>
+</div>
+
 <div class="toast" id="toast" hidden></div>
 
 <button class="recenter" id="recenter" hidden aria-label="Centreer op je positie"><i class="ti ti-current-location" aria-hidden="true"></i></button>
 
 <div class="card bottom" id="bottom-idle">
+  <div class="grab" aria-hidden="true"></div>
+  <div class="fromrow" id="fromrow" hidden><i class="ti ti-flag" aria-hidden="true"></i><span class="fromtxt">Vanaf <b id="fromname"></b></span><button type="button" id="fromx" aria-label="Vertrekpunt wissen"><i class="ti ti-x" aria-hidden="true"></i></button></div>
   <div class="whererow">
     <button class="where" id="where"><i class="ti ti-search" aria-hidden="true"></i>Waar naartoe?</button>
     <button class="wheremap" id="wheremap" aria-label="Zoek op kaart"><i class="ti ti-map-pin" aria-hidden="true"></i></button>
@@ -162,6 +169,6 @@
 </div>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-<script src="app.js?v=55"></script>
+<script src="app.js?v=56"></script>
 </body>
 </html>

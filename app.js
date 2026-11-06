@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '55';
+const VERSION = '56';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -49,7 +49,6 @@ const state = {
   following: true,
   zoom: 16,
   pitch: 30,          // kanteling tijdens het navigeren; met twee vingers aan te passen
-  homePitch: 0,       // zonder navigatie ligt de kaart plat (ook met twee vingers te kantelen)
   concept: null,      // getoonde route vanaf een ander vertrekpunt: { nav, stops, mode }
   nav: null,          // actieve route
   dest: null,
@@ -667,9 +666,10 @@ const map = new maplibregl.Map({
 // Twee vingers: samen omhoog of omlaag schuiven kantelt, tegen elkaar in draaien roteert.
 // De gekozen kanteling blijft staan, ook als de kaart je weer volgt; navigeren en de
 // kaart zonder route hebben elk hun eigen kanteling.
-map.on('pitchend', e => { if (!e.originalEvent) return; if (state.nav) state.pitch = map.getPitch(); else state.homePitch = map.getPitch(); });
-// Alleen tijdens het navigeren is de kaart gekanteld en draait hij mee; anders plat met het noorden boven
-const camPitch = () => (state.nav ? state.pitch : state.homePitch);
+map.on('pitchend', e => { if (e.originalEvent && state.nav) state.pitch = map.getPitch(); });
+// Alleen tijdens het navigeren is de kaart gekanteld en draait hij mee; anders plat met het noorden boven.
+// Kantel of draai je hem zonder navigatie toch, dan stopt het volgen; het kompas zet hem terug.
+const camPitch = () => (state.nav ? state.pitch : 0);
 watchPublicBuildings(map);
 watchTrails(map);
 // Kaart weggevallen (meestal geheugen): melden; MapLibre tekent hem opnieuw zodra het kan
@@ -821,12 +821,14 @@ function stopFollowing() {
 map.on('dragstart', e => { if (e.originalEvent) stopFollowing(); });
 map.on('zoomstart', e => { if (e.originalEvent) stopFollowing(); });
 map.on('rotatestart', e => { if (e.originalEvent) stopFollowing(); });
+map.on('pitchstart', e => { if (e.originalEvent && !state.nav) stopFollowing(); });
 
 function follow() {
   state.following = true;
   $('car').hidden = false;
   $('recenter').hidden = true;
   marker.remove();
+  peek(false);
   if (state.fix) updateCamera([state.fix.lon, state.fix.lat], 600);
   // De terugvlucht eerst afmaken: nieuwe GPS-metingen zouden hem steeds opnieuw laten beginnen
   state.easeUntil = Date.now() + 650;
@@ -1032,6 +1034,7 @@ function onFix(f) {
   }
   if (sp == null || sp < 0 || Number.isNaN(sp)) sp = 0;
   state.speedKmh = sp * 3.6 < 2 ? 0 : sp * 3.6;
+  syncDriving();
 
   let hd = (f.heading != null && !Number.isNaN(f.heading) && f.heading >= 0 && sp > 1.5) ? f.heading : null;
   if (hd == null && prev && sp > 1.5 && dist([prev.lon, prev.lat], p) > 8) hd = bearing([prev.lon, prev.lat], p);
@@ -1999,6 +2002,8 @@ function showPane(id) {
 
 function openSheet() {
   $('search').hidden = false;
+  closePlaceMenu();
+  homeControls(false);
   modeAtOpen = travelMode;
   setTravelMode(travelMode);
   savedPick = null;
@@ -2031,7 +2036,7 @@ function showText(row, from) {
 // Waar naartoe?: alleen de bestemming invullen, vertrek is je eigen positie
 function openSearch() {
   openSheet();
-  stops = [HERE, null];
+  stops = [homeStart || HERE, null];
   showText(1, 'home');
 }
 
@@ -2055,6 +2060,7 @@ function closeSearch() {
   leaveMsMap(false);
   $('q').blur();
   $('search').hidden = true;
+  homeControls(true);
   previewSeq++;
   ms.seq++;
   if (state.following && state.fix) updateCamera([state.fix.lon, state.fix.lat], 0);
@@ -2473,6 +2479,7 @@ function confirmPreview() {
   const fromHere = list[0].here;
   saveRecent(fromHere && list.length === 2 ? place(list[1]) : routeEntry(list, travelMode));
   rememberRoute(nav.legStops ? [resolveStop(list[0]), ...nav.legStops] : list.map(resolveStop), travelMode, nav);
+  setHomeStart(null);
   closeSearch();
   // Eigen vertrekpunt: de route alleen tonen (gestippeld), niet navigeren
   if (!fromHere) {
@@ -2982,7 +2989,7 @@ function msRecompute() {
 $('where').addEventListener('click', openSearch);
 $('wheremap').addEventListener('click', () => {
   openSheet();
-  stops = [HERE];
+  stops = [homeStart || HERE];
   // Dezelfde kaart, die blijft staan zoals hij stond
   ms.keep = true;
   openMapSearch('build', 'home');
@@ -3010,7 +3017,7 @@ $('pickme').addEventListener('click', () => { if (state.fix && msmap) msmap.ease
 // Richtknop altijd los boven het onderste paneel, hoe hoog dat ook is (kleine iPhones)
 const bottomCards = ['bottom-idle', 'bottom-nav'].map($);
 function placeRecenter() {
-  const h = Math.max(0, ...bottomCards.filter(c => !c.hidden).map(c => c.offsetHeight));
+  const h = Math.max(0, ...bottomCards.filter(c => !c.hidden).map(c => (c.classList.contains('peek') ? 4 : c.offsetHeight)));
   document.documentElement.style.setProperty('--bottomh', h + 'px');
 }
 const bottomWatch = new ResizeObserver(placeRecenter);
@@ -3077,6 +3084,226 @@ $('mapmenu').addEventListener('click', e => {
   toggleMapMenu(false);
 });
 document.addEventListener('click', () => { if (!$('mapmenu').hidden) toggleMapMenu(false); });
+
+// ---------- Rechtsboven op de kaart: kaartsoort en kompas ----------
+const mapsetEl = document.querySelector('.mapset');
+// Zonder zoekscherm staat de kaartsoort op de kaart; in het zoekscherm naast het vervoer
+function homeControls(on) {
+  if (on) $('mapctl').prepend(mapsetEl);
+  else if (mapsetEl.parentElement !== $('moderow')) $('moderow').appendChild(mapsetEl);
+  toggleMapMenu(false);
+  syncCompass();
+}
+
+// Kompas alleen zonder navigatie, als de kaart gedraaid of gekanteld is
+function syncCompass() {
+  const b = map.getBearing(), p = map.getPitch();
+  const show = !state.nav && !msmap && (Math.abs(b) > 0.5 || p > 0.5);
+  $('compass').hidden = !show;
+  if (show) $('compass').firstElementChild.style.transform = `rotate(${-b}deg)`;
+}
+map.on('rotate', syncCompass);
+map.on('pitch', syncCompass);
+map.on('moveend', syncCompass);
+$('compass').addEventListener('click', () => map.easeTo({ bearing: 0, pitch: 0, duration: 400 }));
+
+// Tijdens het rijden weg, bij stilstand terug (met wat marge, zodat het niet knippert)
+function syncDriving() {
+  const was = document.body.classList.contains('driving');
+  const now = state.speedKmh > (was ? 3 : 8);
+  if (now === was) return;
+  document.body.classList.toggle('driving', now);
+  if (now) toggleMapMenu(false);
+}
+
+// ---------- Waar naartoe?: zakt weg als je de kaart verschuift ----------
+function peek(on) {
+  const idle = $('bottom-idle');
+  if (idle.classList.contains('peek') === on) return;
+  idle.classList.toggle('peek', on);
+  placeRecenter();
+}
+map.on('dragstart', e => { if (e.originalEvent && $('search').hidden && !$('bottom-idle').hidden) peek(true); });
+// Ingeklapt: een tik op het randje haalt hem terug, niet de knoppen eronder
+$('bottom-idle').addEventListener('click', e => {
+  if (!$('bottom-idle').classList.contains('peek')) return;
+  e.stopPropagation();
+  e.preventDefault();
+  peek(false);
+}, true);
+// Omhoog vegen haalt hem terug, omlaag vegen klapt hem in
+let peekY = null;
+$('bottom-idle').addEventListener('pointerdown', e => { peekY = e.clientY; });
+$('bottom-idle').addEventListener('pointerup', e => {
+  if (peekY == null) return;
+  const dy = e.clientY - peekY;
+  peekY = null;
+  if (dy < -20) peek(false);
+  else if (dy > 30) peek(true);
+});
+$('bottom-idle').addEventListener('pointercancel', () => { peekY = null; });
+
+// ---------- Eigen vertrekpunt vanaf de kaart ----------
+let homeStart = null, startMarker = null;
+function setHomeStart(p) {
+  homeStart = p;
+  if (p && p.naming) p.naming.then(() => { if (homeStart === p) { delete p.naming; setHomeStart(p); } });
+  $('fromrow').hidden = !p;
+  if (p) $('fromname').textContent = withoutPostcode(p.name);
+  if (startMarker) { startMarker.remove(); startMarker = null; }
+  if (p) {
+    const el = document.createElement('div');
+    el.className = 'startmark';
+    startMarker = new maplibregl.Marker({ element: el }).setLngLat([p.lon, p.lat]).addTo(map);
+  }
+  placeRecenter();
+}
+$('fromx').addEventListener('click', () => setHomeStart(null));
+
+// ---------- Lang drukken op de kaart: route, vertrekpunt of een pin ----------
+// Tikken in een menu of op een pin is niet ook een tik (of sleep) op de kaart
+const shield = el => ['pointerdown', 'mousedown', 'touchstart', 'click', 'dblclick', 'wheel', 'contextmenu', 'keydown']
+  .forEach(t => el.addEventListener(t, e => e.stopPropagation(), { passive: true }));
+
+let placeMenu = null;
+function closePlaceMenu() {
+  if (!placeMenu) return;
+  placeMenu.remove();
+  placeMenu = null;
+}
+
+function openPlaceMenu(at, pin = null) {
+  closePlaceMenu();
+  const el = document.createElement('div');
+  el.className = 'pmenu';
+  el.innerHTML = '<div class="pcard"><div class="ptitle"></div>'
+    + '<button type="button" data-act="route"><i class="ti ti-route" aria-hidden="true"></i>Route hier naartoe</button>'
+    + '<button type="button" data-act="start"><i class="ti ti-flag" aria-hidden="true"></i>Vertrekpunt</button>'
+    + (pin ? '<button type="button" data-act="del" class="del"><i class="ti ti-trash" aria-hidden="true"></i>Pin verwijderen</button>'
+      : '<button type="button" data-act="pin"><i class="ti ti-map-pin-plus" aria-hidden="true"></i>Plaats pin</button>')
+    + '<form class="pinform" hidden><input type="text" enterkeyhint="done" placeholder="Naam van de pin" autocomplete="off" autocorrect="off" autocapitalize="sentences">'
+    + '<button type="submit" aria-label="Pin plaatsen"><i class="ti ti-check" aria-hidden="true"></i></button></form>'
+    + '</div><div class="ptail"></div>';
+  shield(el);
+  const p = pin ? { lat: pin.lat, lon: pin.lon, name: pin.label || pin.name } : placeAt(at.lat, at.lon);
+  const title = el.querySelector('.ptitle');
+  title.textContent = pin ? pin.label || withoutPostcode(pin.name) : 'Adres zoeken…';
+  if (p.naming) p.naming.then(() => { title.textContent = withoutPostcode(p.name); });
+  // Bovenaan het scherm klapt het menu naar onderen
+  const below = map.project([at.lon, at.lat]).y < 240;
+  el.classList.toggle('below', below);
+  placeMenu = new maplibregl.Marker({ element: el, anchor: below ? 'top' : 'bottom' }).setLngLat([at.lon, at.lat]).addTo(map);
+  // Niet buiten het scherm: het kaartje schuift opzij, het puntje blijft op de plek
+  const card = el.querySelector('.pcard'), r = card.getBoundingClientRect();
+  const dx = r.left < 8 ? 8 - r.left : r.right > innerWidth - 8 ? innerWidth - 8 - r.right : 0;
+  card.style.transform = `translateX(${dx}px)`;
+  el.addEventListener('click', e => {
+    const b = e.target.closest('button[data-act]');
+    if (b) placeAction(b.dataset.act, p, pin, el);
+  });
+  el.querySelector('form').addEventListener('submit', e => {
+    e.preventDefault();
+    addPin(p, el.querySelector('input').value.trim());
+    closePlaceMenu();
+  });
+}
+
+function placeAction(act, p, pin, el) {
+  if (act === 'pin') {
+    // Eerst een naam; de pin komt er pas bij bevestigen
+    el.querySelectorAll('button[data-act]').forEach(b => { b.hidden = true; });
+    const form = el.querySelector('form');
+    form.hidden = false;
+    form.querySelector('input').focus();
+    return;
+  }
+  closePlaceMenu();
+  if (act === 'del') { removePin(pin.id); return; }
+  if (act === 'start') { setHomeStart(p); peek(false); return; }
+  // Route hier naartoe: vanaf je eigen positie, meteen het overzicht
+  openSheet();
+  stops = [HERE, p];
+  showOverview();
+  if (p.naming) p.naming.then(() => { delete p.naming; if (!$('overview').hidden && stops.includes(p)) renderStops(); });
+}
+
+// Lang drukken: 0,55 s stil op één plek. Met de muis werkt rechtsklikken ook.
+const lp = { timer: 0, x: 0, y: 0, opened: false, eatUntil: 0 };
+const canvasBox = map.getCanvasContainer();
+const lpCancel = () => { clearTimeout(lp.timer); lp.timer = 0; };
+canvasBox.addEventListener('pointerdown', e => {
+  lpCancel();
+  lp.opened = false;
+  if (!e.isPrimary || msmap || !$('search').hidden || (e.pointerType === 'mouse' && e.button !== 0)) return;
+  lp.x = e.clientX;
+  lp.y = e.clientY;
+  lp.timer = setTimeout(() => {
+    lp.timer = 0;
+    const r = canvasBox.getBoundingClientRect();
+    const at = map.unproject([lp.x - r.left, lp.y - r.top]);
+    lp.opened = true;
+    openPlaceMenu({ lat: at.lat, lon: at.lng });
+  }, 550);
+});
+canvasBox.addEventListener('pointermove', e => { if (lp.timer && Math.hypot(e.clientX - lp.x, e.clientY - lp.y) > 10) lpCancel(); });
+const lpEnd = () => {
+  lpCancel();
+  // De tik die bij het loslaten volgt, sluit het menu niet meteen weer
+  if (lp.opened) { lp.opened = false; lp.eatUntil = Date.now() + 500; }
+};
+canvasBox.addEventListener('pointerup', lpEnd);
+canvasBox.addEventListener('pointercancel', lpEnd);
+map.on('movestart', e => { if (e.originalEvent) lpCancel(); });
+map.on('contextmenu', e => {
+  if (msmap || !$('search').hidden) return;
+  lpCancel();
+  lp.opened = true;
+  openPlaceMenu({ lat: e.lngLat.lat, lon: e.lngLat.lng });
+});
+map.on('click', () => { if (Date.now() >= lp.eatUntil) closePlaceMenu(); });
+
+// ---------- Eigen pins: blijven staan tot je ze verwijdert ----------
+function loadPins() {
+  try { return JSON.parse(localStorage.getItem('pins')) || []; } catch (e) { return []; }
+}
+function savePins(list) {
+  try { localStorage.setItem('pins', JSON.stringify(list)); } catch (e) { /* geen opslag */ }
+}
+const pinMarkers = new Map();
+function drawPin(pin) {
+  const el = document.createElement('div');
+  el.className = 'upin';
+  el.setAttribute('role', 'button');
+  el.setAttribute('aria-label', 'Pin ' + (pin.label || withoutPostcode(pin.name)));
+  el.innerHTML = '<svg viewBox="0 0 36 48" aria-hidden="true"><path d="M18 46.5C18 46.5 34 28.5 34 17A16 16 0 0 0 2 17C2 28.5 18 46.5 18 46.5Z"/><circle cx="18" cy="17" r="6"/></svg>';
+  if (pin.label) {
+    const l = document.createElement('span');
+    l.className = 'upin-lbl';
+    l.textContent = pin.label;
+    el.appendChild(l);
+  }
+  shield(el);
+  // Kort tikken: dezelfde keuzes, met verwijderen in plaats van plaatsen
+  el.addEventListener('click', () => { if (!msmap && $('search').hidden) openPlaceMenu(pin, pin); });
+  pinMarkers.set(pin.id, new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat([pin.lon, pin.lat]).addTo(map));
+}
+async function addPin(p, label) {
+  const pin = { id: Date.now(), lat: p.lat, lon: p.lon, name: p.name, label };
+  savePins([...loadPins(), pin]);
+  drawPin(pin);
+  if (!p.naming) return;
+  await p.naming;
+  pin.name = p.name;
+  savePins(loadPins().map(q => (q.id === pin.id ? { ...q, name: p.name } : q)));
+}
+function removePin(id) {
+  savePins(loadPins().filter(q => q.id !== id));
+  const m = pinMarkers.get(id);
+  if (m) m.remove();
+  pinMarkers.delete(id);
+}
+loadPins().forEach(drawPin);
+homeControls(true);
 document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => setListTab(b.dataset.tab)));
 $('qclear').addEventListener('click', () => {
   $('q').value = '';
@@ -3227,7 +3454,9 @@ function setMode(mode) {
   $('destlbl').textContent = nav && state.dest ? withoutPostcode(state.dest.name) : '';
   $('destlbl').classList.remove('legs');
   $('bottom-idle').hidden = nav;
+  if (nav) peek(false);
   syncCar();
+  syncCompass();
   renderBar();
 }
 
