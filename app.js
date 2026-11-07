@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '58';
+const VERSION = '59';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -1388,7 +1388,7 @@ function editLabel(li, d, route = null) {
   input.focus();
   input.select();
 }
-// Alleen plekken zijn favoriet; routes krijgen een boekenlint (tab Routes)
+// Sterretje bij een plek: Favorieten; bij een route: tab Routes
 function toggleFav(d) {
   const favs = loadFavs(), f = favs.find(x => x.name === d.name);
   // Een pin van de kaart: uit favorieten halen haalt ook de pin weg
@@ -1410,20 +1410,20 @@ function recentItem(d, { star = false, handle = false } = {}) {
   li.className = 'recent';
   const fav = !list && isFav(d);
   li.innerHTML = '<div class="row">' + (handle ? '<span class="grip" aria-label="Verslepen"><i class="ti ti-grip-vertical" aria-hidden="true"></i></span>'
-    : `<i class="ti ${route ? 'ti-route' : fav ? 'ti-map-pin-filled' : 'ti-history'}" aria-hidden="true"></i>`)
+    : `<i class="ti ${route ? 'ti-route' : 'ti-map-pin'}" aria-hidden="true"></i>`)
     + '<div class="rtext"><div class="r1"></div><div class="r2"></div></div></div>';
   li.querySelector('.r1').textContent = first;
   li.querySelector('.r2').textContent = rest.join(', ');
   li.addEventListener('click', () => { if (!li.dataset.swiped && !li.classList.contains('editing')) chooseRecent(d); });
   if (star && route) {
-    // Een route: boekenlint in plaats van het sterretje; dan staat hij bij Routes
+    // Een route: met het sterretje staat hij bij Routes
     const on = isBookmarked(d);
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'star' + (on ? ' on' : '');
-    btn.setAttribute('aria-label', on ? 'Boekenlint weghalen' : 'Boekenlint: bewaren bij Routes');
+    btn.setAttribute('aria-label', on ? 'Uit Routes halen' : 'Bewaren bij Routes');
     btn.setAttribute('aria-pressed', String(on));
-    btn.innerHTML = `<i class="ti ${on ? 'ti-bookmark-filled' : 'ti-bookmark'}" aria-hidden="true"></i>`;
+    btn.innerHTML = `<i class="ti ${on ? 'ti-star-filled' : 'ti-star'}" aria-hidden="true"></i>`;
     btn.addEventListener('click', async e => {
       e.stopPropagation();
       await toggleBookmark(d);
@@ -1436,7 +1436,7 @@ function recentItem(d, { star = false, handle = false } = {}) {
     btn.className = 'star' + (fav ? ' on' : '');
     btn.setAttribute('aria-label', fav ? 'Uit favorieten halen' : 'Favoriet maken');
     btn.setAttribute('aria-pressed', String(fav));
-    btn.innerHTML = `<i class="ti ${fav ? 'ti-map-pin-filled' : 'ti-map-pin'}" aria-hidden="true"></i>`;
+    btn.innerHTML = `<i class="ti ${fav ? 'ti-star-filled' : 'ti-star'}" aria-hidden="true"></i>`;
     btn.addEventListener('click', e => {
       e.stopPropagation();
       toggleFav(d);
@@ -1536,7 +1536,7 @@ function savedItem(r) {
   li.className = 'recent';
   li.innerHTML = `<div class="row"><i class="ti ${MODE_ICON[r.mode] || 'ti-route'}" aria-hidden="true"></i><div class="rtext"><div class="r1"></div><div class="r2"></div></div>`
     + `<button type="button" class="dl${r.offline ? ' on' : ''}"><i class="ti ti-download" aria-hidden="true"></i></button>`
-    + '<button type="button" class="star on" aria-label="Boekenlint weghalen" aria-pressed="true"><i class="ti ti-bookmark-filled" aria-hidden="true"></i></button></div>';
+    + '<button type="button" class="star on" aria-label="Uit Routes halen" aria-pressed="true"><i class="ti ti-star-filled" aria-hidden="true"></i></button></div>';
   li.querySelector('.r1').textContent = r.label || routeText(r.stops);
   li.querySelector('.r2').textContent = [r.label && routeText(r.stops), r.km != null && `${String(r.km).replace('.', ',')} km`, MODE_LABEL[r.mode], r.offline && 'ook zonder bereik'].filter(Boolean).join(' · ');
   li.querySelector('.star').addEventListener('click', e => {
@@ -1548,7 +1548,7 @@ function savedItem(r) {
   dl.setAttribute('aria-label', r.offline ? 'Opgeslagen voor zonder bereik' : 'Kaart downloaden voor zonder bereik');
   dl.addEventListener('click', e => { e.stopPropagation(); downloadRoute(r, dl); });
   li.addEventListener('click', () => { if (!li.dataset.swiped) openSaved(r); });
-  // Vegen hernoemt; weghalen doe je met het boekenlint
+  // Vegen hernoemt; weghalen doe je met het sterretje
   swipeable(li, 'Hernoemen', () => editLabel(li, null, r));
   return li;
 }
@@ -2002,7 +2002,7 @@ function showRecent() {
   if (listTab === 'near') { showNear(); return; }
   if (listTab === 'routes') {
     const saved = bookmarked();
-    if (!saved.length) ul.innerHTML = '<li class="empty">Nog geen routes. Tik bij Recent op het boekenlint achter een route om hem hier te bewaren. Met het download-icoontje sla je de kaart op voor onderweg zonder bereik.</li>';
+    if (!saved.length) ul.innerHTML = '<li class="empty">Nog geen routes. Tik bij Recent op het sterretje achter een route om hem hier te bewaren. Met het download-icoontje sla je de kaart op voor onderweg zonder bereik.</li>';
     for (const r of saved) ul.appendChild(savedItem(r));
     return;
   }
@@ -2010,7 +2010,7 @@ function showRecent() {
   const list = fav ? loadFavs().filter(d => !stopsOf(d)) : loadRecent();
   if (!fav && (editRow === 0 || !stops.some(s => s && s.here))) ul.appendChild(hereItem());
   if (!list.length) {
-    ul.insertAdjacentHTML('beforeend', `<li class="empty">${fav ? 'Nog geen favorieten. Tik bij Recent op het pin-icoontje, of druk lang op de kaart en kies Plaats pin.' : 'Nog geen recente bestemmingen.'}</li>`);
+    ul.insertAdjacentHTML('beforeend', `<li class="empty">${fav ? 'Nog geen favorieten. Tik bij Recent op het sterretje, of druk lang op de kaart en kies Plaats pin.' : 'Nog geen recente bestemmingen.'}</li>`);
     return;
   }
   for (const d of list) {
@@ -2519,7 +2519,6 @@ async function computePreview(note) {
   const span = pts.slice(1).reduce((s, p, i) => s + dist([pts[i].lon, pts[i].lat], [p.lon, p.lat]), 0);
   // Verder dan dat: dan met de auto
   if (max && span > max) {
-    note = `Te ver om te ${travelMode === 'bicycle' ? 'fietsen' : 'lopen'}, dus met de auto`;
     setTravelMode('auto');
     savedPick = null;
   }
