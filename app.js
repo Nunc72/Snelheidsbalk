@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '62';
+const VERSION = '63';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -2090,11 +2090,17 @@ function openSearch() {
   showText(1, 'home');
 }
 
-// Het gekozen vertrekpunt: terug naar het beginscherm, met Waar naartoe? en 'Vanaf …' erboven
+// Het gekozen vertrekpunt: terug naar het beginscherm, met Waar naartoe? en 'Vanaf …' erboven.
+// De kaart gaat naar dat vertrekpunt (bij Huidige locatie: weer je eigen positie volgen).
 function pickStart(d) {
-  setHomeStart(d.here ? null : cleanPlace(d));
+  const p = d.here ? null : cleanPlace(d);
+  setHomeStart(p);
   closeSearch();
   peek(false);
+  if (!p) { follow(); return; }
+  stopFollowing();
+  map.flyTo({ center: [p.lon, p.lat], zoom: Math.max(map.getZoom(), 15), bearing: 0, pitch: 0,
+    padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: 1400, essential: true });
 }
 
 // Wat er nu gepland staat: de lopende route, de conceptroute of alleen een gekozen vertrekpunt.
