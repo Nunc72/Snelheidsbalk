@@ -15,7 +15,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
-<link rel="stylesheet" href="style.css?v=57">
+<link rel="stylesheet" href="style.css?v=58">
 </head>
 <body>
 <div id="map"></div>
@@ -98,7 +98,7 @@
     </form>
     <div class="tabs" role="tablist" aria-label="Bestemmingen">
       <button type="button" role="tab" data-tab="recent" aria-selected="true"><i class="ti ti-history" aria-hidden="true"></i>Recent</button>
-      <button type="button" role="tab" data-tab="fav" aria-selected="false"><i class="ti ti-star" aria-hidden="true"></i>Favorieten</button>
+      <button type="button" role="tab" data-tab="fav" aria-selected="false"><i class="ti ti-map-pin" aria-hidden="true"></i>Favorieten</button>
       <button type="button" role="tab" data-tab="near" aria-selected="false"><i class="ti ti-map-pin-search" aria-hidden="true"></i>In de buurt</button>
       <button type="button" role="tab" data-tab="routes" aria-selected="false"><i class="ti ti-route" aria-hidden="true"></i>Routes</button>
     </div>
@@ -150,6 +150,7 @@
     <!-- Potlood (zoals op het aankomstkaartje): hier kun je wijzigen. De punt van het potlood wijst naar de plek. -->
     <svg class="pencil" viewBox="0 0 24 24" aria-hidden="true"><g class="halo"><path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4"/><path d="M13.5 6.5l4 4"/></g><g class="ink"><path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4"/><path d="M13.5 6.5l4 4"/></g></svg>
     <button type="button" class="pickme" id="pickme" aria-label="Naar je positie"><i class="ti ti-current-location" aria-hidden="true"></i></button>
+    <button type="button" class="compass mscompass" id="mscompass" hidden aria-label="Kaart met het noorden naar boven"><svg viewBox="0 0 24 24" aria-hidden="true"><circle class="ring" cx="12" cy="12" r="10.5"/><path class="n" d="M12 4 15 12H9Z"/><path class="s" d="M12 20 9 12h6Z"/><circle class="hub" cx="12" cy="12" r="1.3"/></svg></button>
     <div class="actcard" id="actcard" hidden></div>
     <div class="mbtns" id="mbtns">
       <button type="button" class="roundbtn addbig" id="msback" aria-label="Terug"><i class="ti ti-arrow-left" aria-hidden="true"></i></button>
@@ -169,6 +170,6 @@
 </div>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-<script src="app.js?v=57"></script>
+<script src="app.js?v=58"></script>
 </body>
 </html>

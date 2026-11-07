@@ -219,6 +219,8 @@ body.legback #bottom-next { transform: translateX(calc(200% + 12px)); }
   background: rgba(28,28,30,.88); color: #fff; font-size: 14px; padding: 8px 12px; border-radius: 10px; text-align: center; pointer-events: none; }
 .mapsearch .pickme { bottom: auto; top: 66px; right: 12px; z-index: 3; }
 .mapsearch .mshint:not([hidden]) ~ .pickme { top: 110px; }
+.mapsearch .mscompass { position: absolute; right: 14px; top: 116px; z-index: 3; }
+.mapsearch .mshint:not([hidden]) ~ .mscompass { top: 160px; }
 .actcard { position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom) + 96px); z-index: 3;
   background: #fff; border-radius: 20px; padding: 8px; display: flex; gap: 10px; align-items: center; box-shadow: 0 2px 14px rgba(0,0,0,.18); }
 .actcard .roundbtn { width: 52px; height: 52px; }

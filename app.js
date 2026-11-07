@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '57';
+const VERSION = '58';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -666,10 +666,18 @@ const map = new maplibregl.Map({
 // Twee vingers: samen omhoog of omlaag schuiven kantelt, tegen elkaar in draaien roteert.
 // De gekozen kanteling blijft staan, ook als de kaart je weer volgt; navigeren en de
 // kaart zonder route hebben elk hun eigen kanteling.
-map.on('pitchend', e => { if (e.originalEvent && state.nav) state.pitch = map.getPitch(); });
-// Alleen tijdens het navigeren is de kaart gekanteld en draait hij mee; anders plat met het noorden boven.
-// Kantel of draai je hem zonder navigatie toch, dan stopt het volgen; het kompas zet hem terug.
-const camPitch = () => (state.nav ? state.pitch : 0);
+map.on('pitchend', e => { if (e.originalEvent && (state.nav || state.concept)) state.pitch = map.getPitch(); });
+// Alleen tijdens het navigeren (ook een conceptroute) is de kaart gekanteld en draait hij mee; anders
+// plat met het noorden boven. Kantel of draai je hem zonder navigatie toch, dan stopt het volgen; het kompas zet hem terug.
+const camPitch = () => (state.nav || state.concept ? state.pitch : 0);
+// Richting waarin de route vertrekt: zo kijk je bij het starten al de goede kant op
+function startBearing(shape) {
+  const a = shape[0];
+  for (let i = 1; i < shape.length; i++) if (dist(a, shape[i]) > 25) return bearing(a, shape[i]);
+  return shape.length > 1 ? bearing(a, shape[shape.length - 1]) : 0;
+}
+// Navigeren: je rijrichting boven; nog stilstaand (richting onbekend): de richting van de route
+const camBearing = () => (state.nav ? state.heading ?? startBearing(state.nav.shape) : 0);
 watchPublicBuildings(map);
 watchTrails(map);
 // Kaart weggevallen (meestal geheugen): melden; MapLibre tekent hem opnieuw zodra het kan
@@ -736,13 +744,29 @@ function addRouteLayers(m, coords) {
     layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': dark ? '#3D8BFF' : '#1F6FE0', 'line-width': 8 } });
 }
 
-// Conceptroute (vertrek niet vanaf je eigen positie): gestippeld, met blauw begin en rood eind
+// Een stip voor de conceptroute: blauw met een wit randje, scherp (2x)
+function dotImage(dark) {
+  const n = 44, c = document.createElement('canvas');
+  c.width = c.height = n;
+  const g = c.getContext('2d');
+  g.beginPath(); g.arc(n / 2, n / 2, n / 2 - 1, 0, Math.PI * 2); g.fillStyle = dark ? DARK_BG : '#ffffff'; g.fill();
+  g.beginPath(); g.arc(n / 2, n / 2, n / 2 - 7, 0, Math.PI * 2); g.fillStyle = dark ? '#3D8BFF' : '#1F6FE0'; g.fill();
+  return g.getImageData(0, 0, n, n);
+}
+
+// Conceptroute (vertrek niet vanaf je eigen positie): gestippeld, met blauw begin en rood eind.
+// Losse stippen langs de lijn in plaats van een gestreepte lijn: die blijven rond en scherp,
+// ook gekanteld in 3D en tussen twee zoomniveaus in.
 function addConceptLayers(m) {
   const dark = theme() === 'dark';
-  m.addSource('concept', { type: 'geojson', data: EMPTY_FC });
-  m.addLayer({ id: 'concept-line', type: 'line', source: 'concept', filter: ['==', ['geometry-type'], 'LineString'],
-    layout: { 'line-cap': 'round', 'line-join': 'round' },
-    paint: { 'line-color': dark ? '#3D8BFF' : '#1F6FE0', 'line-width': 8, 'line-dasharray': [0, 2] } });
+  m.addSource('concept', { type: 'geojson', data: EMPTY_FC, tolerance: 0.1 });
+  if (m.hasImage('cdot')) m.removeImage('cdot');
+  m.addImage('cdot', dotImage(dark), { pixelRatio: 2 });
+  m.addLayer({ id: 'concept-line', type: 'symbol', source: 'concept', filter: ['==', ['geometry-type'], 'LineString'],
+    layout: { 'symbol-placement': 'line', 'symbol-spacing': ['interpolate', ['linear'], ['zoom'], 10, 9, 15, 15, 18, 20],
+      'icon-image': 'cdot', 'icon-size': ['interpolate', ['linear'], ['zoom'], 8, 0.45, 12, 0.7, 15, 0.85, 18, 1.1],
+      'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-rotation-alignment': 'map', 'icon-pitch-alignment': 'map',
+      'icon-padding': 0, 'icon-keep-upright': false } });
   m.addLayer({ id: 'concept-ends', type: 'circle', source: 'concept', filter: ['==', ['geometry-type'], 'Point'],
     paint: { ...endsPaint(dark), 'circle-pitch-alignment': 'map', 'circle-pitch-scale': 'viewport' } });
   drawConcept();
@@ -773,7 +797,7 @@ function drawRouteEnds() {
 
 map.on('style.load', () => {
   addRouteLayers(map, routeCoords); addRouteEnds(map); addConceptLayers(map);
-  scaleLines(map, { 'route-casing': 13, 'route-line': 8, 'concept-line': 8 });
+  scaleLines(map, { 'route-casing': 13, 'route-line': 8 });
   if (msmap) { showMainLayers(false); addMsLayers(map); msDraw(); msTilt(true); }
 });
 
@@ -889,7 +913,7 @@ function updateCamera(p, duration = 1000) {
   const h = map.getContainer().clientHeight;
   // Navigeren: rijrichting boven (zonder bekende richting het noorden). Anders noord boven
   // en draait alleen het pijltje.
-  const bear = state.nav ? state.heading ?? 0 : 0;
+  const bear = camBearing();
   $('car').firstElementChild.style.transform = `rotate(${state.nav ? 0 : state.heading || 0}deg)`;
   map.easeTo({
     center: p,
@@ -1129,7 +1153,9 @@ function saveFavs(list) {
 const isFav = d => loadFavs().some(f => f.name === d.name);
 const favLabel = d => d.label || (loadFavs().find(f => f.name === d.name) || {}).label || '';
 function renameFav(d, label) {
-  saveFavs(loadFavs().map(f => (f.name === d.name ? { ...f, label: label.trim() || undefined } : f)));
+  const f = loadFavs().find(x => x.name === d.name);
+  saveFavs(loadFavs().map(x => (x.name === d.name ? { ...x, label: label.trim() || undefined } : x)));
+  if (f && f.pin) renamePin(f.pin, label.trim());
 }
 function deleteRecent(d) {
   try { localStorage.setItem('recent', JSON.stringify(loadRecent().filter(r => r.name !== d.name))); } catch (e) { /* geen opslag */ }
@@ -1329,23 +1355,30 @@ function swipeAway(li, then) {
   setTimeout(then, 200);
 }
 
-// Hernoemen: tekstveld met bevestigknop op de regel zelf
-function editLabel(li, d) {
+// Hernoemen: tekstveld met bevestigknop op de regel zelf. Een bewaarde route (tab Routes)
+// heeft een eigen naam; anders is het een favoriet.
+function editLabel(li, d, route = null) {
   const row = li.firstElementChild;
   row.style.transform = '';
   li.classList.remove('swiping');
   li.classList.add('editing');
   const text = row.querySelector('.rtext');
-  text.innerHTML = '<input class="rename" type="text" enterkeyhint="done" aria-label="Naam van deze favoriet">';
+  text.innerHTML = `<input class="rename" type="text" enterkeyhint="done" aria-label="Naam van deze ${route ? 'route' : 'favoriet'}">`;
   const input = text.querySelector('input');
-  input.value = favLabel(d) || (stopsOf(d) ? routeText(stopsOf(d)) : d.name.split(', ')[0]);
+  input.value = route ? route.label || routeText(route.stops) : favLabel(d) || (stopsOf(d) ? routeText(stopsOf(d)) : d.name.split(', ')[0]);
   const ok = document.createElement('button');
   ok.type = 'button';
   ok.className = 'renok';
   ok.setAttribute('aria-label', 'Naam bewaren');
   ok.innerHTML = '<i class="ti ti-check" aria-hidden="true"></i>';
   row.querySelector('.star').replaceWith(ok);
-  const save = () => { renameFav(d, input.value); showRecent(); };
+  const dl = row.querySelector('.dl');
+  if (dl) dl.hidden = true;
+  const save = () => {
+    if (route) storeSaved(loadSaved().map(x => (x.id === route.id ? { ...x, label: input.value.trim() || undefined } : x)));
+    else renameFav(d, input.value);
+    showRecent();
+  };
   ok.addEventListener('click', e => { e.stopPropagation(); save(); });
   input.addEventListener('click', e => e.stopPropagation());
   input.addEventListener('keydown', e => {
@@ -1357,8 +1390,10 @@ function editLabel(li, d) {
 }
 // Alleen plekken zijn favoriet; routes krijgen een boekenlint (tab Routes)
 function toggleFav(d) {
-  const favs = loadFavs();
-  saveFavs(isFav(d) ? favs.filter(f => f.name !== d.name) : [...favs, place(d)]);
+  const favs = loadFavs(), f = favs.find(x => x.name === d.name);
+  // Een pin van de kaart: uit favorieten halen haalt ook de pin weg
+  if (f && f.pin) { removePin(f.pin); return; }
+  saveFavs(f ? favs.filter(x => x !== f) : [...favs, place(d)]);
 }
 
 // Een regel in de lijst: klik kiest de bestemming, het sterretje maakt hem (geen) favoriet,
@@ -1375,7 +1410,7 @@ function recentItem(d, { star = false, handle = false } = {}) {
   li.className = 'recent';
   const fav = !list && isFav(d);
   li.innerHTML = '<div class="row">' + (handle ? '<span class="grip" aria-label="Verslepen"><i class="ti ti-grip-vertical" aria-hidden="true"></i></span>'
-    : `<i class="ti ${fav && !star ? 'ti-star' : route ? 'ti-route' : 'ti-map-pin'}" aria-hidden="true"></i>`)
+    : `<i class="ti ${route ? 'ti-route' : fav ? 'ti-map-pin-filled' : 'ti-history'}" aria-hidden="true"></i>`)
     + '<div class="rtext"><div class="r1"></div><div class="r2"></div></div></div>';
   li.querySelector('.r1').textContent = first;
   li.querySelector('.r2').textContent = rest.join(', ');
@@ -1401,7 +1436,7 @@ function recentItem(d, { star = false, handle = false } = {}) {
     btn.className = 'star' + (fav ? ' on' : '');
     btn.setAttribute('aria-label', fav ? 'Uit favorieten halen' : 'Favoriet maken');
     btn.setAttribute('aria-pressed', String(fav));
-    btn.innerHTML = `<i class="ti ${fav ? 'ti-star-filled' : 'ti-star'}" aria-hidden="true"></i>`;
+    btn.innerHTML = `<i class="ti ${fav ? 'ti-map-pin-filled' : 'ti-map-pin'}" aria-hidden="true"></i>`;
     btn.addEventListener('click', e => {
       e.stopPropagation();
       toggleFav(d);
@@ -1502,8 +1537,8 @@ function savedItem(r) {
   li.innerHTML = `<div class="row"><i class="ti ${MODE_ICON[r.mode] || 'ti-route'}" aria-hidden="true"></i><div class="rtext"><div class="r1"></div><div class="r2"></div></div>`
     + `<button type="button" class="dl${r.offline ? ' on' : ''}"><i class="ti ti-download" aria-hidden="true"></i></button>`
     + '<button type="button" class="star on" aria-label="Boekenlint weghalen" aria-pressed="true"><i class="ti ti-bookmark-filled" aria-hidden="true"></i></button></div>';
-  li.querySelector('.r1').textContent = routeText(r.stops);
-  li.querySelector('.r2').textContent = [r.km != null && `${String(r.km).replace('.', ',')} km`, MODE_LABEL[r.mode], r.offline && 'ook zonder bereik'].filter(Boolean).join(' · ');
+  li.querySelector('.r1').textContent = r.label || routeText(r.stops);
+  li.querySelector('.r2').textContent = [r.label && routeText(r.stops), r.km != null && `${String(r.km).replace('.', ',')} km`, MODE_LABEL[r.mode], r.offline && 'ook zonder bereik'].filter(Boolean).join(' · ');
   li.querySelector('.star').addEventListener('click', e => {
     e.stopPropagation();
     storeSaved(loadSaved().map(x => (x.id === r.id ? { ...x, bookmark: false } : x)));
@@ -1513,7 +1548,8 @@ function savedItem(r) {
   dl.setAttribute('aria-label', r.offline ? 'Opgeslagen voor zonder bereik' : 'Kaart downloaden voor zonder bereik');
   dl.addEventListener('click', e => { e.stopPropagation(); downloadRoute(r, dl); });
   li.addEventListener('click', () => { if (!li.dataset.swiped) openSaved(r); });
-  swipeable(li, 'Verwijderen', () => swipeAway(li, () => { deleteSaved(r); showRecent(); }));
+  // Vegen hernoemt; weghalen doe je met het boekenlint
+  swipeable(li, 'Hernoemen', () => editLabel(li, null, r));
   return li;
 }
 
@@ -1974,7 +2010,7 @@ function showRecent() {
   const list = fav ? loadFavs().filter(d => !stopsOf(d)) : loadRecent();
   if (!fav && (editRow === 0 || !stops.some(s => s && s.here))) ul.appendChild(hereItem());
   if (!list.length) {
-    ul.insertAdjacentHTML('beforeend', `<li class="empty">${fav ? 'Nog geen favorieten. Tik bij Recent op het sterretje om er een toe te voegen.' : 'Nog geen recente bestemmingen.'}</li>`);
+    ul.insertAdjacentHTML('beforeend', `<li class="empty">${fav ? 'Nog geen favorieten. Tik bij Recent op het pin-icoontje, of druk lang op de kaart en kies Plaats pin.' : 'Nog geen recente bestemmingen.'}</li>`);
     return;
   }
   for (const d of list) {
@@ -2018,6 +2054,8 @@ function openSheet() {
 function showText(row, from) {
   editRow = row;
   textFrom = from;
+  if (from === 'home') listTab = 'recent';
+  else try { listTab = localStorage.getItem('listTab') || 'recent'; } catch (e) { /* geen opslag */ }
   showPane('textpane');
   // Leeg veld, zodat de tabs te zien zijn; het huidige adres staat er grijs in
   const s = stops[row];
@@ -2031,8 +2069,8 @@ function showText(row, from) {
   document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === listTab)));
   showRecent();
   // Op iOS opent het toetsenbord alleen als focus direct binnen de tik gebeurt.
-  // Bij In de buurt en Routes niet: dan zie je de hele lijst.
-  if (listTab !== 'near' && listTab !== 'routes') q.focus();
+  // Alleen bij Recent: bij de andere tabs zie je zo de hele lijst.
+  if (listTab === 'recent') q.focus();
 }
 
 // Waar naartoe?: alleen de bestemming invullen, vertrek is je eigen positie
@@ -2285,9 +2323,9 @@ function renderStops(fresh = -1) {
 }
 
 // Weghalen; er blijven altijd twee regels (vertrek en bestemming), dan wordt de regel leeg.
-// Het vertrekpunt wordt altijd leeg: zonder vertrek bekijk je de plek op de kaart (verrekijker).
+// Weg met het vertrekpunt: de volgende regel wordt het vertrekpunt.
 function removeRow(i) {
-  if (stops.length > 2 && i > 0) stops.splice(i, 1); else stops[i] = null;
+  if (stops.length > 2) stops.splice(i, 1); else stops[i] = null;
   savedPick = null;
   renderStops();
   computePreview();
@@ -2424,8 +2462,8 @@ $('pmap').addEventListener('click', e => {
 
 const MAX_DIST = { bicycle: 150000, pedestrian: 100000 };
 
-// Geen vertrekpunt maar wel een plek: de groene knop wordt een blauwe verrekijker
-const lookMode = () => !stops[0] && filled().length > 0;
+// Maar één plek (geen route): de groene knop wordt een blauwe verrekijker
+const lookMode = () => filled().length === 1 && !filled()[0].here;
 function syncOk() {
   const look = lookMode(), b = $('qok');
   b.classList.toggle('okbig', !look);
@@ -2442,7 +2480,10 @@ function clearLook() {
 function lookAt() {
   const p = resolveStop(filled()[0]);
   if (!p) return;
+  saveRecent(place(p));
   closeSearch();
+  // Een lopende route (of conceptroute) maakt plaats voor deze plek
+  stopRoute(true);
   stopFollowing();
   const el = document.createElement('div');
   el.className = 'lookpin';
@@ -2467,7 +2508,7 @@ async function computePreview(note) {
   };
   syncOk();
   if (lookMode()) {
-    noRoute('Geen vertrekpunt: bekijk op de kaart');
+    noRoute('Eén plek: bekijk hem op de kaart');
     $('qok').disabled = false;
     return;
   }
@@ -2476,7 +2517,12 @@ async function computePreview(note) {
   // Fietsen en lopen rekent de routedienst niet verder dan 150 en 100 km hemelsbreed
   const max = MAX_DIST[travelMode];
   const span = pts.slice(1).reduce((s, p, i) => s + dist([pts[i].lon, pts[i].lat], [p.lon, p.lat]), 0);
-  if (max && span > max) { noRoute(`Te ver om te ${travelMode === 'bicycle' ? 'fietsen' : 'lopen'} (meer dan ${max / 1000} km)`); return; }
+  // Verder dan dat: dan met de auto
+  if (max && span > max) {
+    note = `Te ver om te ${travelMode === 'bicycle' ? 'fietsen' : 'lopen'}, dus met de auto`;
+    setTravelMode('auto');
+    savedPick = null;
+  }
   noRoute('Route berekenen…');
   try {
     // Gedownloade route: zonder internet uit de opslag. Anders de snelste, en bij alleen
@@ -2523,9 +2569,7 @@ function confirmPreview() {
     showConcept({ nav, stops: list, mode: travelMode });
     return;
   }
-  clearConcept();
-  // Echte navigatie: de live kaart volgt meteen weer je eigen positie
-  follow();
+  clearConcept(true);
   // Zelfde bestemming opnieuw berekend: het blauwe beginpunt blijft waar je vertrok
   const dest = list[list.length - 1];
   const same = state.nav && state.dest && state.dest.name === dest.name;
@@ -2537,6 +2581,8 @@ function confirmPreview() {
   state.lastRouteAt = Date.now();
   if (DEMO) demo.along = 0;
   setMode('nav');
+  // Echte navigatie: de live kaart volgt meteen je eigen positie, gekanteld en in de rijrichting
+  follow();
   if (state.fix) updateNav([state.fix.lon, state.fix.lat]);
 }
 
@@ -2564,6 +2610,8 @@ async function openMapSearch(kind, back, row = 0, pois = null) {
   ms.legs = [];
   // Een nieuwe route maak je meteen; een bestaande bekijk je eerst (potlood), met + ga je toevoegen
   ms.adding = kind === 'build';
+  // front: met de grote + punten vóór het vertrekpunt zetten (de route groeit naar achteren)
+  ms.front = false;
   ms.fresh = null;
   const list = filled();
   if (kind !== 'row') {
@@ -2626,7 +2674,7 @@ function ensureMsMap() {
   map.stop();
   if (state.following && state.fix && Date.now() < (state.easeUntil || 0)) {
     const h = map.getContainer().clientHeight;
-    map.jumpTo({ center: [state.fix.lon, state.fix.lat], zoom: state.zoom, bearing: state.nav ? state.heading ?? 0 : 0,
+    map.jumpTo({ center: [state.fix.lon, state.fix.lat], zoom: state.zoom, bearing: camBearing(),
       pitch: camPitch(), padding: { top: Math.round(h * 0.4), bottom: 0, left: 0, right: 0 } });
   }
   // Hoe de kaart stond, om hem zo terug te zetten
@@ -2640,7 +2688,6 @@ function ensureMsMap() {
   $('msmap').appendChild(el);
   map.resize();
   map.jumpTo({ center: mid, padding: { top: 0, bottom: 0, left: 0, right: 0 } });
-  map.touchZoomRotate.disableRotation();
   marker.remove();
   showMainLayers(false);
   if (map.style && map.style._loaded && !map.getSource('pts')) addMsLayers(map);
@@ -2661,7 +2708,6 @@ function leaveMsMap(stay) {
   for (const id of MS_LAYERS) if (map.getLayer(id)) map.removeLayer(id);
   for (const id of MS_SOURCES) if (map.getSource(id)) map.removeSource(id);
   showMainLayers(true);
-  map.touchZoomRotate.enableRotation();
   map.setMaxPitch(sv.maxPitch);
   msmap = null;
   $('mapsearch').classList.remove('over');
@@ -2685,16 +2731,12 @@ function leaveMsMap(stay) {
   }
 }
 
-// Kantelen kan alleen in 3D: twee vingers samen omhoog of omlaag. Plat blijft plat,
-// dan valt de pin precies op de plek die je recht van boven ziet.
-const MS_PITCH = 50;
+// Kantelen kan alleen in 3D: twee vingers samen omhoog of omlaag. De kaart opent altijd
+// plat (en met het noorden boven, behalve vanaf het beginscherm: daar blijft hij zoals hij stond).
+// Draaien kan altijd; het kompas zet het noorden weer boven.
 function msTilt(animate, keep) {
   if (!msmap) return;
-  const relief = mapKind === 'terrain';
-  // Vanaf het beginscherm blijft de kanteling van die kaart staan
-  msmap.setMaxPitch(relief ? 70 : Math.min(70, keep || 0));
-  if (keep != null) return;
-  if (relief && msmap.getPitch() < 5) msmap.easeTo({ pitch: MS_PITCH, duration: animate ? 600 : 0 });
+  msmap.setMaxPitch(mapKind === 'terrain' ? 70 : Math.min(70, keep || 0));
 }
 
 function addMsLayers(m) {
@@ -2794,7 +2836,7 @@ function msMove(force) {
   else if (a && a.type === 'move') guide = [[P[a.i - 1] && ll(P[a.i - 1]), c, P[a.i + 1] && ll(P[a.i + 1])].filter(Boolean)];
   // Toevoegen: hulplijn vanaf het laatste punt van de route, zonder punten vanaf je telefoon
   else if (!a && ms.adding && ms.kind !== 'row' && ms.hover.type === 'free') {
-    const from = P.length ? ll(P[P.length - 1]) : hereNow() && ll(hereNow());
+    const from = P.length ? ll(P[ms.front ? 0 : P.length - 1]) : hereNow() && ll(hereNow());
     if (from) guide = [[from, c]];
   }
   // Eén adresregel wijzigen: hulplijn van de regel ervoor, via de pin, naar de regel erna
@@ -2803,7 +2845,7 @@ function msMove(force) {
     guide = [[prev && ll(prev), c, next && ll(next)].filter(Boolean)];
   }
   // Terug bij het vertrekpunt: de hulplijn blijft, ✓ maakt er een rondje van
-  else if (!a && roundTrip()) guide = [[ll(P[P.length - 1]), ll(P[0])]];
+  else if (!a && roundTrip()) guide = [[ll(P[ms.front ? 0 : P.length - 1]), ll(P[ms.front ? P.length - 1 : 0])]];
   // Etappes die nog berekend worden: een rechte hulplijn
   if (ms.kind !== 'row') ms.legs.forEach((l, i) => { if (!l) guide.push([ll(P[i]), ll(P[i + 1])]); });
   msmap.getSource('guide').setData({ type: 'FeatureCollection', features: guide.filter(g => g.length > 1).map(lineFeature) });
@@ -2824,7 +2866,7 @@ const ACT_TEXT = { insert: ['ti-plus', 'Punt'], move: ['ti-arrows-move', 'Verpla
 // Knoppen en hint; alleen opnieuw opbouwen als er iets verandert
 function msUi(force) {
   const a = ms.action, h = ms.hover;
-  const key = [ms.kind, a && a.type, h.type, h.i, ms.pts.length, ms.adding].join('|');
+  const key = [ms.kind, a && a.type, h.type, h.i, ms.pts.length, ms.adding, ms.front].join('|');
   if (key === ms.ui && !force) return;
   ms.ui = key;
   $('mbtns').classList.toggle('dim', !!a);
@@ -2833,7 +2875,7 @@ function msUi(force) {
   // Aan het toevoegen: + blauw en ✓ groen
   const adding = ms.adding && ms.kind !== 'row';
   $('msadd').className = 'roundbtn ' + (adding ? 'viewbig' : 'addbig');
-  $('msok').className = 'roundbtn ' + (adding ? 'okbig' : 'addbig');
+  $('msok').className = 'roundbtn ' + (adding || h.type === 'poi' ? 'okbig' : 'addbig');
   $('msadd').hidden = ms.kind === 'row' || !!a || h.type !== 'free';
   const card = $('actcard');
   card.replaceChildren();
@@ -2854,12 +2896,18 @@ function msUi(force) {
     lbl.querySelector('small').textContent = [p.extra != null ? fmtExtra(p.extra) : fmtDist(p.d), p.sub].filter(Boolean).join(' · ');
     const sep = document.createElement('span');
     sep.className = 'sep';
-    card.append(lbl, sep, actBtn('okbig', 'ti-check', 'Deze plek kiezen', msOk));
+    card.append(lbl);
   } else if (h.type === 'seg') {
     card.append(actBtn('viewbig', 'ti-plus', 'Hier een routepunt invoegen', () => msStart({ type: 'insert', i: h.i })));
   } else if (h.type === 'wp') {
     card.append(actBtn('yellowbig', 'ti-minus', 'Dit punt verwijderen', () => msRemove(h.i)),
       actBtn('addbig', 'ti-arrows-move', 'Dit punt verplaatsen', () => msStart({ type: 'move', i: h.i })));
+    // Vertrek- of eindpunt: vanaf daar verder 'plussen' met de grote +
+    const n = ms.pts.length, end = h.i === 0 ? 'front' : h.i === n - 1 ? 'back' : null;
+    if (n > 1 && end && !(ms.adding && ms.front === (end === 'front'))) {
+      card.append(actBtn('viewbig', 'ti-plus', end === 'front' ? 'Punten toevoegen vóór het vertrekpunt' : 'Punten toevoegen na het eindpunt',
+        () => msFrom(end === 'front')));
+    }
   }
   card.hidden = !card.childElementCount;
   const hint = a && a.type === 'insert' ? 'Schuif de kaart naar het nieuwe punt'
@@ -2871,8 +2919,18 @@ function msUi(force) {
   $('mshint').hidden = !hint;
 }
 
-// Aan het toevoegen en de pin staat op het vertrekpunt van een route
-const roundTrip = () => ms.adding && ms.kind !== 'row' && ms.hover.type === 'wp' && ms.hover.i === 0 && ms.pts.length > 1;
+// Aan het toevoegen en de pin staat op het andere uiteinde van de route
+const roundTrip = () => ms.adding && ms.kind !== 'row' && ms.hover.type === 'wp' && ms.pts.length > 1
+  && ms.hover.i === (ms.front ? ms.pts.length - 1 : 0);
+
+// Toevoegen vanaf het vertrekpunt (front) of vanaf het eindpunt
+function msFrom(front) {
+  ms.adding = true;
+  ms.front = front;
+  // De pin staat nu op dat punt: pas iets doen als je wegschuift
+  ms.fresh = ms.pts[front ? 0 : ms.pts.length - 1];
+  msMove(true);
+}
 
 function msStart(action) {
   ms.action = action;
@@ -2927,11 +2985,17 @@ function msConfirm() {
 function msAdd() {
   if (ms.action || ms.kind === 'row') return;
   // De eerste tik zet het toevoegen aan: pin en hulplijn verschijnen
-  if (!ms.adding) { ms.adding = true; msMove(true); return; }
-  ms.pts.push(ms.fresh = pinPlace());
-  if (ms.pts.length > 1) {
-    ms.legs.push(null);
-    computeLeg(ms.legs.length - 1);
+  if (!ms.adding) { ms.adding = true; ms.front = false; msMove(true); return; }
+  // Vóór het vertrekpunt: het nieuwe punt wordt het vertrekpunt
+  if (ms.front) {
+    ms.pts.unshift(ms.fresh = pinPlace());
+    if (ms.pts.length > 1) { ms.legs.unshift(null); computeLeg(0); }
+  } else {
+    ms.pts.push(ms.fresh = pinPlace());
+    if (ms.pts.length > 1) {
+      ms.legs.push(null);
+      computeLeg(ms.legs.length - 1);
+    }
   }
   msDraw();
 }
@@ -2982,13 +3046,14 @@ async function msOk() {
     streetCtx = null;
   } else {
     // Aan het toevoegen en de pin staat vrij: die plek is het laatste punt (de hulplijn liep ernaartoe)
-    const last = ms.pts[ms.pts.length - 1];
+    const last = ms.pts[ms.front ? 0 : ms.pts.length - 1];
     const c = msmap.getCenter().toArray();
-    if (ms.adding && ms.hover.type === 'free' && (!last || dist(ll(last), c) > 15)) ms.pts.push(pinPlace());
-    // Rondje: de aankomst is het vertrekpunt (als vaste plek, ook als dat je eigen positie was)
+    const put = q => (ms.front ? ms.pts.unshift(q) : ms.pts.push(q));
+    if (ms.adding && ms.hover.type === 'free' && (!last || dist(ll(last), c) > 15)) put(pinPlace());
+    // Rondje: de route komt terug bij het andere uiteinde (als vaste plek, ook als dat je eigen positie was)
     else if (roundTrip()) {
-      const s = ms.pts[0];
-      ms.pts.push(s.here ? placeAt(s.lat, s.lon) : { lat: s.lat, lon: s.lon, name: s.name });
+      const s = ms.pts[ms.front ? ms.pts.length - 1 : 0];
+      put(s.here ? placeAt(s.lat, s.lon) : { lat: s.lat, lon: s.lon, name: s.name });
     }
     if (ms.prefix.length + ms.pts.length < 2) { toast('Schuif de kaart naar je bestemming en tik op ✓.'); return; }
     stops = [...ms.prefix, ...ms.pts];
@@ -3042,7 +3107,8 @@ $('qmap').addEventListener('click', () => {
   if (textFrom === 'overview') openMapSearch('row', 'text', editRow);
   else openMapSearch('build', 'text');
 });
-$('stop').addEventListener('click', () => { stopRoute(); closeSearch(); });
+// Een conceptroute stoppen: de kaart blijft op dezelfde plek
+$('stop').addEventListener('click', () => { stopRoute(!!state.concept && !state.nav); closeSearch(); });
 $('qadd').addEventListener('click', addRow);
 $('qok').addEventListener('click', () => (lookMode() ? lookAt() : confirmPreview()));
 $('pmapedit').addEventListener('click', e => { e.stopPropagation(); openMapSearch('edit', 'overview'); });
@@ -3135,14 +3201,19 @@ function homeControls(on) {
 // Kompas alleen zonder navigatie, als de kaart gedraaid of gekanteld is
 function syncCompass() {
   const b = map.getBearing(), p = map.getPitch();
-  const show = !state.nav && !msmap && (Math.abs(b) > 0.5 || p > 0.5);
+  const show = !state.nav && !state.concept && !msmap && (Math.abs(b) > 0.5 || p > 0.5);
   $('compass').hidden = !show;
   if (show) $('compass').firstElementChild.style.transform = `rotate(${-b}deg)`;
+  // Zoekkaart: alleen gedraaid; de kanteling (3D) blijft
+  const ms2 = !!msmap && Math.abs(b) > 0.5;
+  $('mscompass').hidden = !ms2;
+  if (ms2) $('mscompass').firstElementChild.style.transform = `rotate(${-b}deg)`;
 }
 map.on('rotate', syncCompass);
 map.on('pitch', syncCompass);
 map.on('moveend', syncCompass);
 $('compass').addEventListener('click', () => map.easeTo({ bearing: 0, pitch: 0, duration: 400 }));
+$('mscompass').addEventListener('click', () => map.easeTo({ bearing: 0, duration: 400 }));
 
 // Tijdens het rijden weg, bij stilstand terug (met wat marge, zodat het niet knippert)
 function syncDriving() {
@@ -3324,22 +3395,40 @@ function drawPin(pin) {
   el.addEventListener('click', () => { if (!msmap && $('search').hidden) openPlaceMenu(pin, pin); });
   pinMarkers.set(pin.id, new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat([pin.lon, pin.lat]).addTo(map));
 }
+// Elke pin staat ook bij Favorieten (met zijn naam als label)
+const pinFav = pin => ({ lat: pin.lat, lon: pin.lon, name: pin.name, label: pin.label || undefined, pin: pin.id });
 async function addPin(p, label) {
   const pin = { id: Date.now(), lat: p.lat, lon: p.lon, name: p.name, label };
   savePins([...loadPins(), pin]);
   drawPin(pin);
-  if (!p.naming) return;
-  await p.naming;
-  pin.name = p.name;
-  savePins(loadPins().map(q => (q.id === pin.id ? { ...q, name: p.name } : q)));
+  if (p.naming) {
+    await p.naming;
+    pin.name = p.name;
+    savePins(loadPins().map(q => (q.id === pin.id ? { ...q, name: p.name } : q)));
+  }
+  if (loadPins().some(q => q.id === pin.id)) saveFavs([...loadFavs().filter(f => f.pin !== pin.id && f.name !== pin.name), pinFav(pin)]);
 }
 function removePin(id) {
   savePins(loadPins().filter(q => q.id !== id));
+  saveFavs(loadFavs().filter(f => f.pin !== id));
   const m = pinMarkers.get(id);
   if (m) m.remove();
   pinMarkers.delete(id);
 }
-loadPins().forEach(drawPin);
+function renamePin(id, label) {
+  const pin = loadPins().find(q => q.id === id);
+  if (!pin) return;
+  pin.label = label;
+  savePins(loadPins().map(q => (q.id === id ? pin : q)));
+  const m = pinMarkers.get(id);
+  if (m) m.remove();
+  drawPin(pin);
+}
+loadPins().forEach(pin => {
+  drawPin(pin);
+  // Pins van vóór deze versie alsnog bij Favorieten
+  if (!loadFavs().some(f => f.pin === pin.id)) saveFavs([...loadFavs().filter(f => f.name !== pin.name), pinFav(pin)]);
+});
 homeControls(true);
 document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => setListTab(b.dataset.tab)));
 $('qclear').addEventListener('click', () => {
@@ -3423,12 +3512,13 @@ async function reroute() {
   }
 }
 
-function stopRoute() {
+// stay: de kaart blijft waar hij is (en wordt plat), in plaats van terug naar je positie
+function stopRoute(stay = false) {
   state.nav = null;
   state.navStart = null;
   drawRouteEnds();
   state.dest = null;
-  clearConcept();
+  clearConcept(stay);
   setRouteLine([]);
   setMode('idle');
   renderBar();
@@ -3445,11 +3535,12 @@ function drawConcept() {
   src.setData({ type: 'FeatureCollection', features: [lineFeature(shape), ...ends.features] });
 }
 
-function clearConcept() {
+function clearConcept(stay = false) {
   if (!state.concept) return;
   state.concept = null;
   drawConcept();
-  follow();
+  if (!stay) { follow(); return; }
+  map.easeTo({ pitch: 0, bearing: 0, duration: 500 });
 }
 
 // De kaart gaat naar het vertrekpunt
@@ -3594,9 +3685,9 @@ function endSlide() {
 
 // Waar de kaart staat bij een gestippelde route: op het vertrekpunt, plat en noord boven
 function conceptView() {
-  const [a, b] = state.concept.nav.shape;
+  const shape = state.concept.nav.shape, a = shape[0];
   const h = map.getContainer().clientHeight;
-  map.easeTo({ center: a, bearing: 0, zoom: 15.5, pitch: camPitch(),
+  map.easeTo({ center: a, bearing: startBearing(shape), zoom: 15.5, pitch: camPitch(),
     padding: { top: Math.round(h * 0.4), bottom: 0, left: 0, right: 0 }, duration: farJump(a) ? 0 : 800 });
 }
 
