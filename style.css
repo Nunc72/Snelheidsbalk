@@ -348,6 +348,7 @@ body.driving .mapctl { opacity: 0; pointer-events: none; }
 /* Gekozen vertrekpunt boven Waar naartoe? */
 .fromrow { display: flex; align-items: center; gap: 8px; margin: -4px 0 10px; font-size: 15px; color: #3a3a3c; }
 .fromrow > .ti { font-size: 19px; color: #2E9E4F; }
+.fromrow > .ti-current-location { color: #1F6FE0; }
 .fromtxt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fromtxt b { font-weight: 600; }
 #fromx { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; color: #8a8a8a; }
@@ -466,6 +467,7 @@ body.driving .mapctl { opacity: 0; pointer-events: none; }
   .compass .hub { fill: #1c1c1e; }
   .grab { background: #48484A; }
   .fromrow { color: #c7c7cc; }
+  .fromrow > .ti-current-location { color: #5EA0FF; }
   .pcard, .ptail { background: #2c2c2e; }
   .pcard { box-shadow: 0 4px 20px rgba(0,0,0,.6); }
   .pcard button[data-act] { color: #f2f2f7; }

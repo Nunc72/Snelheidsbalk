@@ -15,7 +15,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
-<link rel="stylesheet" href="style.css?v=61">
+<link rel="stylesheet" href="style.css?v=62">
 </head>
 <body>
 <div id="map"></div>
@@ -49,7 +49,7 @@
   <div class="grab" aria-hidden="true"></div>
   <div class="fromrow" id="fromrow" hidden><i class="ti ti-flag" aria-hidden="true"></i><span class="fromtxt">Vanaf <b id="fromname"></b></span><button type="button" id="fromx" aria-label="Vertrekpunt wissen"><i class="ti ti-x" aria-hidden="true"></i></button></div>
   <div class="whererow">
-    <button class="where" id="where"><i class="ti ti-search" aria-hidden="true"></i>Waar naartoe?</button>
+    <button class="where" id="where"><i class="ti ti-search" aria-hidden="true"></i><span id="wheretxt">Waar naartoe?</span></button>
     <button class="wheremap" id="wheremap" aria-label="Zoek op kaart"><i class="ti ti-map-pin" aria-hidden="true"></i></button>
   </div>
   <div class="meta"><span id="gps">Wachten op GPS…</span><span id="demo-badge" hidden>DEMO</span><span>© OpenStreetMap · OpenFreeMap · Valhalla</span></div>
@@ -170,6 +170,6 @@
 </div>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-<script src="app.js?v=61"></script>
+<script src="app.js?v=62"></script>
 </body>
 </html>
