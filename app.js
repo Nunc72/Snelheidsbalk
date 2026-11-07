@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '59';
+const VERSION = '60';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -744,27 +744,28 @@ function addRouteLayers(m, coords) {
     layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': dark ? '#3D8BFF' : '#1F6FE0', 'line-width': 8 } });
 }
 
-// Een stip voor de conceptroute: blauw met een wit randje, scherp (2x)
-function dotImage(dark) {
-  const n = 44, c = document.createElement('canvas');
-  c.width = c.height = n;
+// Een streepje voor de conceptroute: een effen blauw rechthoekje (2x scherp), in de lijnrichting
+function dashImage(dark) {
+  const c = document.createElement('canvas');
+  c.width = 20;
+  c.height = 10;
   const g = c.getContext('2d');
-  g.beginPath(); g.arc(n / 2, n / 2, n / 2 - 1, 0, Math.PI * 2); g.fillStyle = dark ? DARK_BG : '#ffffff'; g.fill();
-  g.beginPath(); g.arc(n / 2, n / 2, n / 2 - 7, 0, Math.PI * 2); g.fillStyle = dark ? '#3D8BFF' : '#1F6FE0'; g.fill();
-  return g.getImageData(0, 0, n, n);
+  g.fillStyle = dark ? '#3D8BFF' : '#1F6FE0';
+  g.fillRect(0, 0, 20, 10);
+  return g.getImageData(0, 0, 20, 10);
 }
 
-// Conceptroute (vertrek niet vanaf je eigen positie): gestippeld, met blauw begin en rood eind.
-// Losse stippen langs de lijn in plaats van een gestreepte lijn: die blijven rond en scherp,
-// ook gekanteld in 3D en tussen twee zoomniveaus in.
+// Conceptroute (vertrek niet vanaf je eigen positie): gestreept, met blauw begin en rood eind.
+// Losse streepjes langs de lijn in plaats van een gestreepte lijn: die blijven scherp en even
+// lang, ook gekanteld in 3D en tussen twee zoomniveaus in.
 function addConceptLayers(m) {
   const dark = theme() === 'dark';
   m.addSource('concept', { type: 'geojson', data: EMPTY_FC, tolerance: 0.1 });
-  if (m.hasImage('cdot')) m.removeImage('cdot');
-  m.addImage('cdot', dotImage(dark), { pixelRatio: 2 });
+  if (m.hasImage('cdash')) m.removeImage('cdash');
+  m.addImage('cdash', dashImage(dark), { pixelRatio: 2 });
   m.addLayer({ id: 'concept-line', type: 'symbol', source: 'concept', filter: ['==', ['geometry-type'], 'LineString'],
-    layout: { 'symbol-placement': 'line', 'symbol-spacing': ['interpolate', ['linear'], ['zoom'], 10, 9, 15, 15, 18, 20],
-      'icon-image': 'cdot', 'icon-size': ['interpolate', ['linear'], ['zoom'], 8, 0.45, 12, 0.7, 15, 0.85, 18, 1.1],
+    layout: { 'symbol-placement': 'line', 'symbol-spacing': ['interpolate', ['linear'], ['zoom'], 8, 8, 12, 12, 15, 16, 18, 20],
+      'icon-image': 'cdash', 'icon-size': ['interpolate', ['linear'], ['zoom'], 8, 0.5, 12, 0.75, 15, 1, 18, 1.2],
       'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-rotation-alignment': 'map', 'icon-pitch-alignment': 'map',
       'icon-padding': 0, 'icon-keep-upright': false } });
   m.addLayer({ id: 'concept-ends', type: 'circle', source: 'concept', filter: ['==', ['geometry-type'], 'Point'],
@@ -1168,7 +1169,8 @@ const routeEntry = (list, mode) => ({ stops: list.map(place), mode, name: list.m
 // Oude regels hadden alleen van en naar
 const stopsOf = d => d.stops || (d.from ? [d.from, d.to] : null);
 const shortName = d => (d.here ? 'Huidige locatie' : favLabel(d) || d.name.split(', ')[0]);
-const routeText = list => list.map(shortName).join(' → ');
+// Meer dan twee punten: alleen vertrek … aankomst
+const routeText = list => (list.length > 2 ? `${shortName(list[0])} → … → ${shortName(list[list.length - 1])}` : list.map(shortName).join(' → '));
 
 // Vroeger stonden deze routes in een eigen tab; eenmalig naar Recent verhuizen
 try {
@@ -1538,7 +1540,7 @@ function savedItem(r) {
     + `<button type="button" class="dl${r.offline ? ' on' : ''}"><i class="ti ti-download" aria-hidden="true"></i></button>`
     + '<button type="button" class="star on" aria-label="Uit Routes halen" aria-pressed="true"><i class="ti ti-star-filled" aria-hidden="true"></i></button></div>';
   li.querySelector('.r1').textContent = r.label || routeText(r.stops);
-  li.querySelector('.r2').textContent = [r.label && routeText(r.stops), r.km != null && `${String(r.km).replace('.', ',')} km`, MODE_LABEL[r.mode], r.offline && 'ook zonder bereik'].filter(Boolean).join(' · ');
+  li.querySelector('.r2').textContent = [r.km != null && `${String(r.km).replace('.', ',')} km`, MODE_LABEL[r.mode], r.offline && 'ook zonder bereik'].filter(Boolean).join(' · ');
   li.querySelector('.star').addEventListener('click', e => {
     e.stopPropagation();
     storeSaved(loadSaved().map(x => (x.id === r.id ? { ...x, bookmark: false } : x)));
@@ -2322,26 +2324,27 @@ function renderStops(fresh = -1) {
   });
 }
 
-// Weghalen; er blijven altijd twee regels (vertrek en bestemming), dan wordt de regel leeg.
-// Weg met het vertrekpunt: de volgende regel wordt het vertrekpunt.
+// Weghalen. Het vertrekpunt verdwijnt echt: de volgende regel wordt het vertrekpunt, ook als
+// er dan maar één regel over is. Bij de andere regels blijven er twee over (dan wordt hij leeg).
 function removeRow(i) {
-  if (stops.length > 2) stops.splice(i, 1); else stops[i] = null;
+  if (stops.length > 2 || (i === 0 && stops.length > 1)) stops.splice(i, 1); else stops[i] = null;
   savedPick = null;
   renderStops();
   computePreview();
 }
 
-// De grijze +: een lege regel vóór de bestemming
+// De grijze +: een lege regel vóór de bestemming; met alleen een vertrekpunt erachter
 function addRow() {
-  stops.splice(stops.length - 1, 0, null);
-  renderStops(stops.length - 2);
+  const at = stops.length > 1 ? stops.length - 1 : stops.length;
+  stops.splice(at, 0, null);
+  renderStops(at);
   const ul = $('stops');
   ul.scrollTop = ul.scrollHeight;
 }
 
 function showOverview(note) {
   showPane('overview');
-  while (stops.length < 2) stops.push(null);
+  if (!stops.length) stops.push(null);
   renderStops();
   computePreview(note);
 }
@@ -2485,6 +2488,8 @@ function lookAt() {
   // Een lopende route (of conceptroute) maakt plaats voor deze plek
   stopRoute(true);
   stopFollowing();
+  // Deze plek is nu het vertrekpunt: verder zoeken (tekst of kaart) gaat vanaf hier
+  if (!p.here) setHomeStart(cleanPlace(p));
   const el = document.createElement('div');
   el.className = 'lookpin';
   el.innerHTML = '<svg viewBox="0 0 36 48" aria-hidden="true"><path d="M18 46.5C18 46.5 34 28.5 34 17A16 16 0 0 0 2 17C2 28.5 18 46.5 18 46.5Z"/><circle cx="18" cy="17" r="6"/></svg>';
