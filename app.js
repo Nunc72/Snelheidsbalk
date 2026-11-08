@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '77';
+const VERSION = '78';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -3762,28 +3762,34 @@ async function fetchRoutes(pts, alternates = 0, mode = travelMode, opts = null) 
 }
 
 // Welke routes je te zien krijgt, de gekozen route eerst.
-// Auto: altijd de snelste; de zuinigste (met het blaadje) als die minstens 3% zuiniger is, hoe
-// lang hij ook duurt; en zo mogelijk een middenweg die minstens 3% zuiniger is en hooguit twee
-// keer zoveel procent langzamer als hij bespaart (10% zuiniger mag 20% langer duren: op een uur
-// rijden 12 minuten). Van die middenwegen de zuinigste. Hooguit drie routes.
-// Gekozen: de zuinigste die hooguit twee minuten langzamer is dan de snelste.
+// Auto: de zuinigste (met het blaadje) als hij minstens 2% zuiniger is dan de snelste, en de
+// snelste als hij minstens 1% (en een minuut) sneller is dan de zuinigste; is het verschil kleiner, dan alleen
+// de een of de ander. Daarnaast zo mogelijk een middenweg: minstens 3% zuiniger dan de snelste,
+// hooguit twee keer zoveel procent langzamer als hij bespaart (10% zuiniger mag 20% langer duren:
+// op een uur rijden 12 minuten), en minstens 1% sneller dan de zuinigste. Hooguit drie routes.
+// Gekozen: de zuinigste die hooguit twee minuten langzamer is dan de snelste getoonde.
 // Fietsen en lopen: de snelste en de kortste.
-const MIN_SAVING = 0.03, TIME_PER_SAVING = 2;
+const ECO_MIN = 0.02, FAST_MIN = 0.01, MID_MIN = 0.03, TIME_PER_SAVING = 2;
 function shownRoutes(routes) {
-  const fast = routes.reduce((a, b) => (b.time < a.time ? b : a));
+  const most = (list, key) => list.reduce((a, b) => (key(b) < key(a) ? b : a), list[0]);
+  const fast = most(routes, r => r.time);
   if (travelMode !== 'auto') {
-    const short = routes.reduce((a, b) => (b.total < a.total ? b : a));
+    const short = most(routes, r => r.total);
     return short !== fast && short.total < fast.total * 0.95 ? [fast, short] : [fast];
   }
   const f = new Map(routes.map(r => [r, fuel(r)]));
-  const saving = r => 1 - f.get(r) / f.get(fast), slower = r => r.time / fast.time - 1;
-  const most = (list, key) => list.reduce((a, b) => (key(b) < key(a) ? b : a), list[0]);
-  const shown = [fast];
   const eco = most(routes, r => f.get(r));
-  if (eco !== fast && saving(eco) >= MIN_SAVING) shown.push(eco);
-  const mid = most(routes.filter(r => !shown.includes(r) && saving(r) >= MIN_SAVING && slower(r) <= TIME_PER_SAVING * saving(r)), r => f.get(r));
-  if (mid) shown.push(mid);
-  const pick = most(shown.filter(r => r.time <= fast.time + ECO_SLACK), r => f.get(r));
+  const saving = r => 1 - f.get(r) / f.get(fast), slower = r => r.time / fast.time - 1;
+  // Minstens 1% én een hele minuut sneller, anders staan er twee keer dezelfde tijden
+  const fasterThanEco = r => r.time <= eco.time * (1 - FAST_MIN) && Math.round(r.time / 60) < Math.round(eco.time / 60);
+  let shown;
+  if (eco === fast || saving(eco) < ECO_MIN) shown = [fast];
+  else shown = fasterThanEco(fast) ? [eco, fast] : [eco];
+  const mid = most(routes.filter(r => !shown.includes(r) && saving(r) >= MID_MIN && slower(r) <= TIME_PER_SAVING * saving(r)
+    && fasterThanEco(r)), r => f.get(r));
+  if (mid && shown.includes(eco)) shown.push(mid);
+  const quick = Math.min(...shown.map(r => r.time));
+  const pick = most(shown.filter(r => r.time <= quick + ECO_SLACK), r => f.get(r));
   return [pick, ...shown.filter(r => r !== pick).sort((a, b) => a.time - b.time)];
 }
 
