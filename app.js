@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '65';
+const VERSION = '66';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -2622,7 +2622,7 @@ async function computePreview(note) {
     // Gedownloade route: zonder internet uit de opslag. Anders de snelste, en bij alleen
     // vertrek en bestemming maximaal twee alternatieven
     const sp = savedPick;
-    const routes = sp && sp.sig === sigOf(list, travelMode) ? [freshNav(sp.nav)] : await fetchRoutes(pts, 2);
+    const routes = sp && sp.sig === sigOf(list, travelMode) ? [freshNav(sp.nav)] : await fetchWithShort(pts);
     if (seq !== previewSeq) return;
     for (const r of routes) r.legStops = pts.slice(1);
     // De snelste eerst; even snel (op de minuut): de zuinigste (met het blaadje) eerst
@@ -3576,7 +3576,7 @@ document.querySelectorAll('.modes button').forEach(b => b.addEventListener('clic
 
 // ---------- Route (Valhalla) ----------
 // Door alle punten, in volgorde. Je eigen positie als vertrek rijdt in je rijrichting weg.
-async function fetchRoutes(pts, alternates = 0, mode = travelMode) {
+async function fetchRoutes(pts, alternates = 0, mode = travelMode, opts = null) {
   const locations = pts.map((p, i) => {
     const l = { lat: p.lat, lon: p.lon, type: 'break' };
     if (i === 0 && p.here && state.heading != null && state.speedKmh > 5) { l.heading = Math.round(state.heading); l.heading_tolerance = 60; }
@@ -3588,12 +3588,24 @@ async function fetchRoutes(pts, alternates = 0, mode = travelMode) {
     language: 'nl-NL',
     directions_options: { units: 'kilometers', language: 'nl-NL' },
   };
+  if (opts) body.costing_options = { [mode]: opts };
   // Alternatieven kent de routedienst alleen zonder tussenstops
   if (alternates && pts.length === 2) body.alternates = alternates;
   const res = await fetch(`${VALHALLA}/route`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const data = await res.json();
   if (!data.trip) throw new Error(data.error || 'Geen route gevonden');
-  return [data.trip, ...(data.alternates || []).map(a => a.trip)].map(t => navFromTrip(t, mode, pts.slice(1)));
+  return [data.trip, ...(data.alternates || []).map(a => a.trip)].map(t => Object.assign(navFromTrip(t, mode, pts.slice(1)), opts && { opts }));
+}
+
+// Met de auto ook de route die de afstand meeweegt: even snel maar zonder omweg over de
+// snelweg (bijv. Amsterdam–Doldersum over de N-wegen, 30 km korter). Alleen als hij echt anders is.
+const SHORT = { use_distance: 0.2 };
+async function fetchWithShort(pts) {
+  const [routes, short] = await Promise.all([fetchRoutes(pts, 2),
+    travelMode === 'auto' ? fetchRoutes(pts, 0, 'auto', SHORT).catch(() => []) : []]);
+  // Bijna dubbele (even snel, op 1% na even lang) maar één keer
+  const same = (r, s) => Math.abs(r.total - s.total) < Math.max(300, r.total * 0.01) && Math.abs(r.time - s.time) < 60;
+  return [...routes, ...short].reduce((out, r) => (out.some(o => same(o, r)) ? out : [...out, r]), []);
 }
 
 // Alle etappes achter elkaar; per etappe het eindpunt op de route en de reistijd
@@ -3622,7 +3634,7 @@ async function reroute() {
   state.lastRouteAt = Date.now();
   toast('Nieuwe route…', 2000);
   try {
-    const [nav] = await fetchRoutes([hereNow(), ...n.legStops.slice(n.legIdx)], 0, n.mode);
+    const [nav] = await fetchRoutes([hereNow(), ...n.legStops.slice(n.legIdx)], 0, n.mode, n.opts);
     if (state.nav !== n) return;
     state.nav = nav;
     shownLeg = -1;
