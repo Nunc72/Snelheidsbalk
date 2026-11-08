@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '63';
+const VERSION = '64';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -837,10 +837,30 @@ function setRouteLine(coords) {
 function stopFollowing() {
   if (!state.following) return;
   state.following = false;
-  $('car').hidden = true;
   $('recenter').hidden = false;
-  // Bij zoeken op de kaart staat je positie er al als blauwe stip
-  if (state.fix && !msmap) marker.setLngLat([state.fix.lon, state.fix.lat]).setRotation(state.heading || 0).addTo(map);
+  showCar();
+}
+
+// Je positie: tijdens navigeren een vast pijltje in beeld; anders een stip die aan de kaart
+// vastzit, zodat hij niet verschuift als je de kaart beweegt. Bij zoeken op de kaart staat
+// je positie er al als blauwe stip.
+let markerOn = false;
+function showCar() {
+  const overlay = !!state.nav && state.following;
+  $('car').hidden = !overlay;
+  const on = !overlay && !!state.fix && !msmap;
+  if (on) marker.setLngLat([state.fix.lon, state.fix.lat]).setRotation(state.heading || 0);
+  if (on !== markerOn) { if (on) marker.addTo(map); else marker.remove(); markerOn = on; }
+}
+
+// Ruimte rond het midden van de kaart. Navigeren: je positie laag in beeld (70%), met
+// ruimte voor wat er voor je ligt. Anders midden in het stuk kaart boven het onderste paneel.
+function camPadding() {
+  const h = map.getContainer().clientHeight;
+  if (state.nav || state.concept) return { top: Math.round(h * 0.4), bottom: 0, left: 0, right: 0 };
+  const idle = $('bottom-idle');
+  const bottom = idle.hidden ? 0 : Math.max(0, h - idle.offsetTop);
+  return { top: 0, bottom, left: 0, right: 0 };
 }
 
 map.on('dragstart', e => { if (e.originalEvent) stopFollowing(); });
@@ -850,10 +870,9 @@ map.on('pitchstart', e => { if (e.originalEvent && !state.nav) stopFollowing(); 
 
 function follow() {
   state.following = true;
-  $('car').hidden = false;
   $('recenter').hidden = true;
-  marker.remove();
   peek(false);
+  showCar();
   clearLook();
   if (state.fix) updateCamera([state.fix.lon, state.fix.lat], 600);
   // De terugvlucht eerst afmaken: nieuwe GPS-metingen zouden hem steeds opnieuw laten beginnen
@@ -904,14 +923,11 @@ function updateCamera(p, duration = 1000) {
   // Achter het zoekscherm hoeft de live kaart niet mee te bewegen: dan heeft de
   // routekaart de telefoon voor zich alleen. Bij het sluiten volgt hij meteen weer.
   if (!$('search').hidden) return;
-  if (!state.following) {
-    marker.setLngLat(p).setRotation(state.heading || 0);
-    return;
-  }
+  showCar();
+  if (!state.following) return;
   if (Date.now() < (state.easeUntil || 0)) return;
   if (farJump(p)) duration = 0;
   state.zoom += (targetZoom(state.speedKmh) - state.zoom) * 0.25;
-  const h = map.getContainer().clientHeight;
   // Navigeren: rijrichting boven (zonder bekende richting het noorden). Anders noord boven
   // en draait alleen het pijltje.
   const bear = camBearing();
@@ -921,7 +937,7 @@ function updateCamera(p, duration = 1000) {
     bearing: bear,
     zoom: state.zoom,
     pitch: camPitch(),
-    padding: { top: Math.round(h * 0.4), bottom: 0, left: 0, right: 0 },
+    padding: camPadding(),
     duration,
     easing: t => t,
   });
@@ -2100,7 +2116,7 @@ function pickStart(d) {
   if (!p) { follow(); return; }
   stopFollowing();
   map.flyTo({ center: [p.lon, p.lat], zoom: Math.max(map.getZoom(), 15), bearing: 0, pitch: 0,
-    padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: 1400, essential: true });
+    padding: camPadding(), duration: 1400, essential: true });
 }
 
 // Wat er nu gepland staat: de lopende route, de conceptroute of alleen een gekozen vertrekpunt.
@@ -2523,7 +2539,7 @@ function lookAt() {
   el.innerHTML = '<svg viewBox="0 0 36 48" aria-hidden="true"><path d="M18 46.5C18 46.5 34 28.5 34 17A16 16 0 0 0 2 17C2 28.5 18 46.5 18 46.5Z"/><circle cx="18" cy="17" r="6"/></svg>';
   clearLook();
   lookMarker = new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat([p.lon, p.lat]).addTo(map);
-  map.flyTo({ center: [p.lon, p.lat], zoom: 16, bearing: 0, pitch: camPitch(), padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: 1600, essential: true });
+  map.flyTo({ center: [p.lon, p.lat], zoom: 16, bearing: 0, pitch: camPitch(), padding: camPadding(), duration: 1600, essential: true });
 }
 
 async function computePreview(note) {
@@ -2708,9 +2724,8 @@ function ensureMsMap() {
   // net terug naar je positie, dan meteen naar waar hij heen ging.
   map.stop();
   if (state.following && state.fix && Date.now() < (state.easeUntil || 0)) {
-    const h = map.getContainer().clientHeight;
     map.jumpTo({ center: [state.fix.lon, state.fix.lat], zoom: state.zoom, bearing: camBearing(),
-      pitch: camPitch(), padding: { top: Math.round(h * 0.4), bottom: 0, left: 0, right: 0 } });
+      pitch: camPitch(), padding: camPadding() });
   }
   // Hoe de kaart stond, om hem zo terug te zetten
   ms.saved = { cam: { center: map.getCenter(), zoom: map.getZoom(), pitch: map.getPitch(), bearing: map.getBearing(), padding: map.getPadding() },
@@ -2723,7 +2738,7 @@ function ensureMsMap() {
   $('msmap').appendChild(el);
   map.resize();
   map.jumpTo({ center: mid, padding: { top: 0, bottom: 0, left: 0, right: 0 } });
-  marker.remove();
+  showCar();
   showMainLayers(false);
   if (map.style && map.style._loaded && !map.getSource('pts')) addMsLayers(map);
   if (!ms.moveHook) {
@@ -2757,9 +2772,8 @@ function leaveMsMap(stay) {
   map.jumpTo(sv.cam);
   if (sv.following) {
     state.following = true;
-    $('car').hidden = false;
     $('recenter').hidden = true;
-    marker.remove();
+    showCar();
   } else {
     state.following = true;
     stopFollowing();

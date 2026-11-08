@@ -64,7 +64,8 @@ body.nobar .instr:not([hidden]) ~ .toast { top: calc(env(safe-area-inset-top) + 
 }
 .car > div { width: 52px; height: 52px; border-radius: 50%; background: #1F6FE0; display: flex; align-items: center; justify-content: center; }
 .car > div > div { width: 32px; height: 36px; background: #fff; clip-path: polygon(50% 0, 100% 100%, 50% 78%, 0 100%); margin-top: -4px; }
-.car.marker { position: static; transform: none; }
+/* Als kaartmarker: MapLibre zet hem op zijn plek, vanuit de linkerbovenhoek */
+.car.marker { position: absolute; top: 0; left: 0; }
 /* Zonder navigatie: een blauwe stip met witte rand, zonder pijl */
 .car.dot { width: 24px; height: 24px; }
 .car.dot > div { width: 17px; height: 17px; transform: none !important; }
@@ -372,7 +373,7 @@ body.driving .mapctl { opacity: 0; pointer-events: none; }
 .pmenu.below .ptail { margin: 0 0 -8px; box-shadow: -3px -3px 6px rgba(0,0,0,.06); }
 
 /* Eigen pins: paars, met de naam ernaast */
-.upin { position: relative; width: 28px; height: 37px; cursor: pointer; }
+.upin { width: 28px; height: 37px; cursor: pointer; }
 .upin svg { width: 28px; height: 37px; display: block; filter: drop-shadow(0 1px 2px rgba(0,0,0,.35)); }
 .upin path { fill: #8E4EC6; stroke: #fff; stroke-width: 2.5; }
 .upin circle { fill: #fff; }
