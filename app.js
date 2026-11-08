@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '74';
+const VERSION = '75';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -3745,7 +3745,10 @@ async function fetchRoutes(pts, alternates = 0, mode = travelMode, opts = null) 
   // Met de auto om afsluitingen heen. Ligt je start of bestemming er zelf in, dan zonder.
   const ex = mode === 'auto' ? closureExcludes(pts) : [];
   if (ex.length) body.exclude_locations = ex;
-  const post = b => fetch(`${VALHALLA}/route`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).then(r => r.json());
+  // Druk bij de routedienst (te veel vragen tegelijk): na een seconde nog één keer
+  const once = b => fetch(`${VALHALLA}/route`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) })
+    .then(r => (r.status === 429 || r.status >= 500 ? Promise.reject(new Error('routedienst bezet')) : r.json()));
+  const post = b => once(b).catch(() => new Promise(ok => setTimeout(ok, 1000 + Math.random() * 1000)).then(() => once(b)));
   let data = await post(body);
   if (!data.trip && ex.length) { delete body.exclude_locations; data = await post(body); }
   if (!data.trip) throw new Error(data.error || 'Geen route gevonden');
@@ -3756,37 +3759,28 @@ async function fetchRoutes(pts, alternates = 0, mode = travelMode, opts = null) 
 }
 
 // Welke routes je te zien krijgt, de gekozen route eerst.
-// Auto: altijd de snelste, tenzij een zuinigere bijna even snel is (minder dan 2% langzamer) en
-// duidelijk zuiniger (meer dan 2%): dan die in zijn plaats. Daarnaast routes die de moeite waard
-// zijn: minstens 3% zuiniger dan de snelste, en hooguit twee keer zoveel procent langzamer als ze
-// besparen (10% zuiniger mag 20% langer duren: op een uur rijden 12 minuten). Daarvan de
-// zuinigste (met het blaadje) en de snelste, dus hooguit drie routes.
-// Gekozen: de zuinigste die hooguit twee minuten langzamer is dan de snelste getoonde.
+// Auto: altijd de snelste; de zuinigste (met het blaadje) als die minstens 3% zuiniger is, hoe
+// lang hij ook duurt; en zo mogelijk een middenweg die minstens 3% zuiniger is en hooguit twee
+// keer zoveel procent langzamer als hij bespaart (10% zuiniger mag 20% langer duren: op een uur
+// rijden 12 minuten). Van die middenwegen de zuinigste. Hooguit drie routes.
+// Gekozen: de zuinigste die hooguit twee minuten langzamer is dan de snelste.
 // Fietsen en lopen: de snelste en de kortste.
 const MIN_SAVING = 0.03, TIME_PER_SAVING = 2;
 function shownRoutes(routes) {
-  let fast = routes.reduce((a, b) => (b.time < a.time ? b : a));
+  const fast = routes.reduce((a, b) => (b.time < a.time ? b : a));
   if (travelMode !== 'auto') {
     const short = routes.reduce((a, b) => (b.total < a.total ? b : a));
     return short !== fast && short.total < fast.total * 0.95 ? [fast, short] : [fast];
   }
   const f = new Map(routes.map(r => [r, fuel(r)]));
-  const twin = routes.filter(r => r.time < fast.time * 1.02 && f.get(r) < f.get(fast) * 0.98)
-    .sort((a, b) => f.get(a) - f.get(b))[0];
-  if (twin) fast = twin;
-  const worth = routes.filter(r => {
-    if (r === fast) return false;
-    const saving = 1 - f.get(r) / f.get(fast), slower = r.time / fast.time - 1;
-    return saving >= MIN_SAVING && slower <= TIME_PER_SAVING * saving;
-  });
+  const saving = r => 1 - f.get(r) / f.get(fast), slower = r => r.time / fast.time - 1;
+  const most = (list, key) => list.reduce((a, b) => (key(b) < key(a) ? b : a), list[0]);
   const shown = [fast];
-  if (worth.length) {
-    const eco = worth.reduce((a, b) => (f.get(b) < f.get(a) ? b : a));
-    const quick = worth.reduce((a, b) => (b.time < a.time ? b : a));
-    shown.push(eco);
-    if (quick !== eco) shown.push(quick);
-  }
-  const pick = shown.filter(r => r.time <= fast.time + ECO_SLACK).sort((a, b) => f.get(a) - f.get(b))[0];
+  const eco = most(routes, r => f.get(r));
+  if (eco !== fast && saving(eco) >= MIN_SAVING) shown.push(eco);
+  const mid = most(routes.filter(r => !shown.includes(r) && saving(r) >= MIN_SAVING && slower(r) <= TIME_PER_SAVING * saving(r)), r => f.get(r));
+  if (mid) shown.push(mid);
+  const pick = most(shown.filter(r => r.time <= fast.time + ECO_SLACK), r => f.get(r));
   return [pick, ...shown.filter(r => r !== pick).sort((a, b) => a.time - b.time)];
 }
 
