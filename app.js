@@ -1,6 +1,8 @@
 'use strict';
 
-const VERSION = '75';
+const VERSION = '76';
+// Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
+document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
