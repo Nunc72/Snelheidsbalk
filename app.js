@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '68';
+const VERSION = '69';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -3747,7 +3747,20 @@ async function fetchRoutes(pts, alternates = 0, mode = travelMode, opts = null) 
   let data = await post(body);
   if (!data.trip && ex.length) { delete body.exclude_locations; data = await post(body); }
   if (!data.trip) throw new Error(data.error || 'Geen route gevonden');
-  return [data.trip, ...(data.alternates || []).map(a => a.trip)].map(t => Object.assign(navFromTrip(t, mode, pts.slice(1)), opts && { opts }));
+  let trips = [data.trip, ...(data.alternates || []).map(a => a.trip)];
+  // Met tussenstops: alternatieven voor de langste etappe, de rest van de route blijft gelijk
+  if (alternates && pts.length > 2) trips = [data.trip, ...await legAlternates(data.trip, pts, alternates, mode, opts)];
+  return trips.map(t => Object.assign(navFromTrip(t, mode, pts.slice(1)), opts && { opts }));
+}
+
+async function legAlternates(trip, pts, alternates, mode, opts) {
+  const k = trip.legs.reduce((best, l, i) => (l.summary.length > trip.legs[best].summary.length ? i : best), 0);
+  const [a, b] = [pts[k], pts[k + 1]];
+  try {
+    const alts = await fetchRoutes([k ? { lat: a.lat, lon: a.lon } : a, { lat: b.lat, lon: b.lon }], alternates, mode, opts);
+    return alts.slice(1).map(n => n.trip).map(t => ({ legs: trip.legs.map((l, i) => (i === k ? t.legs[0] : l)),
+      summary: { time: trip.summary.time - trip.legs[k].summary.time + t.summary.time } }));
+  } catch (e) { return []; }
 }
 
 // Met de auto ook routes die de afstand meewegen: vaak even snel maar zonder omweg over de
@@ -3757,11 +3770,51 @@ async function fetchRoutes(pts, alternates = 0, mode = travelMode, opts = null) 
 const SHORT = [{ use_distance: 0.2 }, { use_distance: 0.6 }];
 const ECO_SLACK = 120;
 async function fetchWithShort(pts) {
+  // De sterk verkorte variant ook met alternatieven: die beginnen dan ook goed (bijv. via de
+  // Wibautstraat), in plaats van allemaal met dezelfde omweg als de gewone route
   const [routes, ...short] = await Promise.all([fetchRoutes(pts, 2),
-    ...(travelMode === 'auto' ? SHORT.map(o => fetchRoutes(pts, 0, 'auto', o).catch(() => [])) : [])]);
-  // Bijna dubbele (even snel, op 1% na even lang) maar één keer
-  const same = (r, s) => Math.abs(r.total - s.total) < Math.max(300, r.total * 0.01) && Math.abs(r.time - s.time) < 60;
-  return [...routes, ...short.flat()].reduce((out, r) => (out.some(o => same(o, r)) ? out : [...out, r]), []);
+    ...(travelMode === 'auto' ? SHORT.map(o => fetchRoutes(pts, o.use_distance >= 0.5 ? 2 : 0, 'auto', o).catch(() => [])) : [])]);
+  return distinctRoutes([...routes, ...short.flat()]).slice(0, 4);
+}
+
+// Een route valt af als een andere route grotendeels (75%) over dezelfde wegen gaat en
+// minstens even snel en niet langer is: dat is dezelfde route met een slechter stuk erin.
+function distinctRoutes(all) {
+  const byTime = [...all].sort((a, b) => a.time - b.time);
+  const kept = [];
+  for (const r of byTime) {
+    if (!kept.some(o => o.time <= r.time + 60 && o.total <= r.total * 1.02 && overlap(r, o) >= 0.75)) kept.push(r);
+  }
+  return kept;
+}
+// Welk deel van route r (om de 200 m gemeten) binnen zo'n 40 m van route o ligt
+const CELL = 0.0004;
+const cellKey = (x, y) => Math.round(x / (CELL * 1.6)) + ',' + Math.round(y / CELL);
+function routeCells(o) {
+  if (o._cells) return o._cells;
+  const cells = new Set();
+  for (let i = 1; i < o.shape.length; i++) {
+    const [a, b] = [o.shape[i - 1], o.shape[i]], steps = Math.max(1, Math.ceil(dist(a, b) / 30));
+    for (let j = 0; j <= steps; j++) cells.add(cellKey(a[0] + (b[0] - a[0]) * j / steps, a[1] + (b[1] - a[1]) * j / steps));
+  }
+  Object.defineProperty(o, '_cells', { value: cells, enumerable: false });
+  return cells;
+}
+function overlap(r, o) {
+  const cells = routeCells(o);
+  const near = ([x, y]) => {
+    const cx = Math.round(x / (CELL * 1.6)), cy = Math.round(y / CELL);
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) if (cells.has((cx + dx) + ',' + (cy + dy))) return true;
+    return false;
+  };
+  let n = 0, hit = 0, i = 1;
+  for (let a = 0; a <= r.total; a += 200) {
+    while (i < r.shape.length - 1 && r.cum[i] < a) i++;
+    const [p, q] = [r.shape[i - 1], r.shape[i]], seg = r.cum[i] - r.cum[i - 1], g = seg ? Math.min(1, (a - r.cum[i - 1]) / seg) : 0;
+    n++;
+    if (near([p[0] + g * (q[0] - p[0]), p[1] + g * (q[1] - p[1])])) hit++;
+  }
+  return n ? hit / n : 0;
 }
 
 // Alle etappes achter elkaar; per etappe het eindpunt op de route en de reistijd
@@ -3778,8 +3831,11 @@ function navFromTrip(trip, mode, legStops) {
   for (let i = 1; i < shape.length; i++) cum.push(cum[i - 1] + dist(shape[i - 1], shape[i]));
   let begin = 0;
   for (const l of legs) { l.begin = begin; l.end = cum[l.endIdx]; begin = l.end; }
-  return { shape, cum, maneuvers, legs, legStops, total: cum[cum.length - 1], time: trip.summary.time, mode,
+  const nav = { shape, cum, maneuvers, legs, legStops, total: cum[cum.length - 1], time: trip.summary.time, mode,
     idx: 0, along: 0, off: 0, arrivedAt: 0, legIdx: 0 };
+  // De ruwe route van de dienst, niet opgeslagen (zie legAlternates)
+  Object.defineProperty(nav, 'trip', { value: trip, enumerable: false });
+  return nav;
 }
 
 // Van de route afgeraakt: opnieuw vanaf je positie, langs de stops die nog komen
