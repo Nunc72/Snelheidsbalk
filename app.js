@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '71';
+const VERSION = '72';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -2658,6 +2658,13 @@ async function computePreview(note) {
       routes.splice(routes.indexOf(eco), 1);
       routes.unshift(eco);
     }
+    // Alleen alternatieven met een voordeel: bijna even snel (hooguit 10% langzamer, en
+    // minstens 5 minuten speling) of zuiniger dan de gekozen route; fietsen en lopen: korter.
+    // Een route die langzamer én duurder is, heeft geen zin.
+    const pick = routes[0], fastest = Math.min(...routes.map(r => r.time));
+    const worth = r => r === pick || r.time <= fastest + Math.max(300, fastest * 0.1)
+      || (travelMode === 'auto' ? fuel(r) < fuel(pick) * 0.98 : r.total < pick.total * 0.95);
+    for (let i = routes.length - 1; i > 0; i--) if (!worth(routes[i])) routes.splice(i, 1);
     previewNav = routes[0];
     previewData = { coords: previewNav.shape, pts, routes, sel: 0, note };
     drawPreview();
