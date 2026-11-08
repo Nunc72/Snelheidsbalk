@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '69';
+const VERSION = '70';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -1805,10 +1805,12 @@ function nearList(cat, at, want = 5) {
   const key = cat + '|' + want + '|' + at.lat.toFixed(3) + '|' + at.lon.toFixed(3) + (cat === 'charging' ? '|' + Math.floor(Date.now() / NDW_FRESH) : '');
   if (!nearMemo.has(key)) {
     nearMemo.set(key, (async () => {
-      // Laadpalen: NDW heeft er veel meer dan de kaart, met vrij of bezet. Buiten Nederland de kaart.
+      // Laadpalen: die van NDW (met vrij of bezet) én die van de kaart. NDW mist er veel,
+      // bijvoorbeeld alle openbare laadpalen van de gemeente Amsterdam.
       if (cat === 'charging') {
-        const nd = await ndwNear(at, want).catch(() => []);
-        if (nd.length) return nd;
+        const [nd, t] = await Promise.all([ndwNear(at, want).catch(() => []), tileNear(cat, at, want).catch(() => ({ items: [] }))]);
+        const all = mergeChargers(nd, t.items).slice(0, 25);
+        if (all.length) return all;
       }
       const { items, enough } = await tileNear(cat, at, want);
       if (enough) return items;
@@ -1882,23 +1884,20 @@ async function rankMid(cat, bp) {
   const n = bp.nav;
   const near = n.shape.filter((c, i) => Math.abs(n.cum[i] - bp.along) < 14000);
   const toRoute = p => Math.min(...near.map(c => dist(c, ll(p))));
-  // Laadpalen van NDW (met vrij of bezet): alles in het vak rond dit stuk route
-  let found = null;
-  if (cat === 'charging') {
-    const lats = near.map(c => c[1]), lons = near.map(c => c[0]), dLat = 1000 / 111320, dLon = dLat / Math.cos(rad(bp.lat));
-    found = await ndwChargers(Math.min(...lats) - dLat, Math.min(...lons) - dLon, Math.max(...lats) + dLat, Math.max(...lons) + dLon)
-      .then(l => l.map(p => ({ ...p, d: dist(ll(bp), ll(p)) }))).catch(() => []);
-    if (!found.length) found = null;
+  // De tegels langs de route, van 12 km ervoor tot 12 km erna, met 1 km speling opzij
+  const ids = new Set(), dLat = 1000 / 111320;
+  for (let a = bp.along - 12000; a <= bp.along + 12000; a += 400) {
+    const q = alongPoint(n, a), dLon = dLat / Math.cos(rad(q.lat));
+    const [x1, y1] = tileAt(q.lon - dLon, q.lat + dLat, POI_Z), [x2, y2] = tileAt(q.lon + dLon, q.lat - dLat, POI_Z);
+    for (let x = x1; x <= x2; x++) for (let y = y1; y <= y2; y++) ids.add(x + '/' + y);
   }
-  if (!found) {
-    // De tegels langs de route, van 12 km ervoor tot 12 km erna, met 1 km speling opzij
-    const ids = new Set(), dLat = 1000 / 111320;
-    for (let a = bp.along - 12000; a <= bp.along + 12000; a += 400) {
-      const q = alongPoint(n, a), dLon = dLat / Math.cos(rad(q.lat));
-      const [x1, y1] = tileAt(q.lon - dLon, q.lat + dLat, POI_Z), [x2, y2] = tileAt(q.lon + dLon, q.lat - dLat, POI_Z);
-      for (let x = x1; x <= x2; x++) for (let y = y1; y <= y2; y++) ids.add(x + '/' + y);
-    }
-    found = tileItems(cat, await Promise.all([...ids].map(k => poiTile(...k.split('/').map(Number)))), bp);
+  let found = tileItems(cat, await Promise.all([...ids].map(k => poiTile(...k.split('/').map(Number)))), bp);
+  // Laadpalen: ook die van NDW (met vrij of bezet) in het vak rond dit stuk route
+  if (cat === 'charging') {
+    const lats = near.map(c => c[1]), lons = near.map(c => c[0]), dLon = dLat / Math.cos(rad(bp.lat));
+    const nd = await ndwChargers(Math.min(...lats) - dLat, Math.min(...lons) - dLon, Math.max(...lats) + dLat, Math.max(...lons) + dLon)
+      .then(l => l.map(p => ({ ...p, d: dist(ll(bp), ll(p)) }))).catch(() => []);
+    found = mergeChargers(nd, found);
   }
   let cands = found.map(p => ({ ...p, r: toRoute(p) })).filter(p => p.r <= 1000);
   // Weinig langs de route: ook Photon, iets verder van de weg
@@ -3647,6 +3646,16 @@ async function ndwNear(at, want) {
     if (items.length >= want || km === 12) return items.slice(0, 25);
   }
   return [];
+}
+// Laadpalen van NDW aangevuld met die van de kaart die NDW niet heeft (niet binnen 30 m van
+// een NDW-laadpaal). Die van de kaart heten 'Laadpaal', met de aanbieder eronder.
+function mergeChargers(nd, osm) {
+  const extra = osm.filter(p => p.total == null && !nd.some(q => dist(ll(p), ll(q)) < 30)).map(p => {
+    const op = p.title !== 'Laadpaal' ? p.title : '';
+    const place = p.sub.replace(/^Laadpaal( · )?/, '');
+    return { ...p, title: 'Laadpaal', sub: [op, place].filter(Boolean).join(' · '), name: ['Laadpaal', op, place].filter(Boolean).join(', ') };
+  });
+  return [...nd, ...extra].sort((a, b) => a.d - b.d);
 }
 // '2 van 4 vrij', 'Bezet' of 'Status onbekend' (alleen bij laadpalen van NDW)
 function availOf(p) {
