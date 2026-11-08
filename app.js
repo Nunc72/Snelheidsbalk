@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '79';
+const VERSION = '80';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -3814,9 +3814,16 @@ async function fetchWithShort(pts) {
   // Wibautstraat), in plaats van allemaal met dezelfde omweg als de gewone route
   const [routes, ...short] = await Promise.all([fetchRoutes(pts, 2),
     ...(travelMode === 'auto' ? SHORT.map(o => fetchRoutes(pts, o.use_distance >= 0.5 ? 2 : 0, 'auto', o).catch(() => [])) : [])]);
-  let all = [...routes, ...short.flat()];
-  if (travelMode === 'auto') all = await betterStarts(distinctRoutes(all), pts);
-  return distinctRoutes(all);
+  let all = distinctRoutes([...routes, ...short.flat()]);
+  // Alleen de routes die je te zien krijgt (hooguit drie) een beter begin geven, met de beginnen
+  // van alle routes: dat scheelt de helft van de vragen aan de routedienst. Daarna opnieuw
+  // kiezen, want een verbeterde route kan een andere verdringen.
+  if (travelMode === 'auto' && all.length > 1) {
+    const shown = shownRoutes(all);
+    const better = await betterStarts(shown, pts, all);
+    all = distinctRoutes([...better, ...all.filter(r => !shown.includes(r))]);
+  }
+  return all;
 }
 
 // De routes van de dienst beginnen niet altijd via de snelste weg naar de snelweg: vanuit
@@ -3824,14 +3831,14 @@ async function fetchWithShort(pts) {
 // A10 sneller is. Daarom verzamelen we de verschillende manieren waarop de routes de snelweg
 // opgaan (tot vlak voor hun eerste snelweg), en proberen we die bij elke route; daarna volgt
 // hij zijn eigen weg (vastgepind). Sneller? Dan die versie.
-async function betterStarts(routes, pts) {
+async function betterStarts(routes, pts, sources = routes) {
   const from = ll(pts[0]);
   const pin = (r, a) => {
     const q = alongPoint(r, a), q2 = alongPoint(r, a + 50);
     return { lat: q.lat, lon: q.lon, through: true, heading: Math.round((bearing(ll(q), ll(q2)) + 360) % 360) };
   };
   const starts = [];
-  for (const r of [...routes].sort((a, b) => a.time - b.time)) {
+  for (const r of [...sources].sort((a, b) => a.time - b.time)) {
     const mi = r.maneuvers.findIndex(m => (m.street_names || []).some(n => /^A\d+$/.test(n)));
     if (mi < 0) continue;
     const a = r.cum[r.maneuvers[mi].begin_shape_index];
