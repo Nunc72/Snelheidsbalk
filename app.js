@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '78';
+const VERSION = '79';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -3781,13 +3781,13 @@ function shownRoutes(routes) {
   const eco = most(routes, r => f.get(r));
   const saving = r => 1 - f.get(r) / f.get(fast), slower = r => r.time / fast.time - 1;
   // Minstens 1% én een hele minuut sneller, anders staan er twee keer dezelfde tijden
-  const fasterThanEco = r => r.time <= eco.time * (1 - FAST_MIN) && Math.round(r.time / 60) < Math.round(eco.time / 60);
-  let shown;
-  if (eco === fast || saving(eco) < ECO_MIN) shown = [fast];
-  else shown = fasterThanEco(fast) ? [eco, fast] : [eco];
-  const mid = most(routes.filter(r => !shown.includes(r) && saving(r) >= MID_MIN && slower(r) <= TIME_PER_SAVING * saving(r)
-    && fasterThanEco(r)), r => f.get(r));
-  if (mid && shown.includes(eco)) shown.push(mid);
+  const fasterThan = (r, o) => r.time <= o.time * (1 - FAST_MIN) && Math.round(r.time / 60) < Math.round(o.time / 60);
+  if (eco === fast || saving(eco) < ECO_MIN) return [fast];
+  const mid = most(routes.filter(r => r !== eco && r !== fast && saving(r) >= MID_MIN && slower(r) <= TIME_PER_SAVING * saving(r)
+    && fasterThan(r, eco)), r => f.get(r));
+  // De snelste alleen als hij echt sneller is dan elke zuinigere die we tonen
+  const shown = [eco, ...(mid ? [mid] : [])];
+  if (shown.every(o => fasterThan(fast, o))) shown.push(fast);
   const quick = Math.min(...shown.map(r => r.time));
   const pick = most(shown.filter(r => r.time <= quick + ECO_SLACK), r => f.get(r));
   return [pick, ...shown.filter(r => r !== pick).sort((a, b) => a.time - b.time)];
@@ -3815,40 +3815,46 @@ async function fetchWithShort(pts) {
   const [routes, ...short] = await Promise.all([fetchRoutes(pts, 2),
     ...(travelMode === 'auto' ? SHORT.map(o => fetchRoutes(pts, o.use_distance >= 0.5 ? 2 : 0, 'auto', o).catch(() => [])) : [])]);
   let all = [...routes, ...short.flat()];
-  if (travelMode === 'auto') all = await betterStarts(all, pts);
+  if (travelMode === 'auto') all = await betterStarts(distinctRoutes(all), pts);
   return distinctRoutes(all);
 }
 
-// De alternatieven van de routedienst beginnen allemaal zoals de gewone route, ook als die een
-// omweg maakt (vanuit Amsterdam-Oost via het Zeeburgereiland in plaats van via de Wibautstraat
-// de A10 op). Per alternatief proberen we het begin van de snelste route: tot vlak voor diens
-// eerste snelweg, daarna vastgepind op het alternatief. Sneller? Dan dat.
+// De routes van de dienst beginnen niet altijd via de snelste weg naar de snelweg: vanuit
+// Amsterdam-Oost gaat de gewone route via het Zeeburgereiland, terwijl de Wibautstraat naar de
+// A10 sneller is. Daarom verzamelen we de verschillende manieren waarop de routes de snelweg
+// opgaan (tot vlak voor hun eerste snelweg), en proberen we die bij elke route; daarna volgt
+// hij zijn eigen weg (vastgepind). Sneller? Dan die versie.
 async function betterStarts(routes, pts) {
-  const best = routes.reduce((a, b) => (b.time < a.time ? b : a));
-  const mi = best.maneuvers.findIndex(m => (m.street_names || []).some(n => /^A\d+$/.test(n)));
-  if (mi < 0) return routes;
-  const sAlong = best.cum[best.maneuvers[mi].begin_shape_index];
-  if (sAlong < 1500 || sAlong > 15000) return routes;
-  const S = alongPoint(best, sAlong - 300);
-  const from = ll(pts[0]), reach = dist(from, ll(S)) + 8000;
+  const from = ll(pts[0]);
   const pin = (r, a) => {
     const q = alongPoint(r, a), q2 = alongPoint(r, a + 50);
     return { lat: q.lat, lon: q.lon, through: true, heading: Math.round((bearing(ll(q), ll(q2)) + 360) % 360) };
   };
+  const starts = [];
+  for (const r of [...routes].sort((a, b) => a.time - b.time)) {
+    const mi = r.maneuvers.findIndex(m => (m.street_names || []).some(n => /^A\d+$/.test(n)));
+    if (mi < 0) continue;
+    const a = r.cum[r.maneuvers[mi].begin_shape_index];
+    if (a < 1500 || a > 15000) continue;
+    const S = pin(r, a - 300);
+    if (!starts.some(o => dist(ll(o), ll(S)) < 300)) starts.push(S);
+    if (starts.length === 3) break;
+  }
+  if (starts.length < 2) return routes;
   return Promise.all(routes.map(async r => {
-    if (r === best) return r;
-    // Komt hij al langs dat begin, dan valt er niets te winnen
-    if (passes(r, ll(S))) return r;
-    let i = 0;
-    while (i < r.shape.length - 1 && dist(from, r.shape[i]) < reach) i++;
-    const pins = [];
-    // Alleen in de eerste etappe; daarna gewoon langs de tussenstops
-    for (let a = r.cum[i]; a < r.legs[0].end - 8000; a += 20000) pins.push(pin(r, a));
-    if (!pins.length) return r;
-    try {
-      const [n] = await fetchRoutes([pts[0], { lat: S.lat, lon: S.lon, through: true, heading: pin(best, sAlong - 300).heading }, ...pins, ...pts.slice(1)], 0, 'auto');
-      return n.time < r.time - 30 ? n : r;
-    } catch (e) { return r; }
+    const tries = starts.filter(S => !passes(r, ll(S)));
+    const versions = await Promise.all(tries.map(async S => {
+      // Vastpinnen vanaf waar hij ver genoeg van het begin is, alleen in de eerste etappe
+      const reach = dist(from, ll(S)) + 8000;
+      let i = 0;
+      while (i < r.shape.length - 1 && dist(from, r.shape[i]) < reach) i++;
+      const pins = [];
+      for (let a = r.cum[i]; a < r.legs[0].end - 8000; a += 20000) pins.push(pin(r, a));
+      if (!pins.length) return null;
+      try { return (await fetchRoutes([pts[0], S, ...pins, ...pts.slice(1)], 0, 'auto'))[0]; } catch (e) { return null; }
+    }));
+    const best = versions.filter(Boolean).reduce((a, b) => (b.time < a.time ? b : a), r);
+    return best.time < r.time - 30 ? best : r;
   }));
 }
 
