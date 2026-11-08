@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '66';
+const VERSION = '67';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -2625,9 +2625,16 @@ async function computePreview(note) {
     const routes = sp && sp.sig === sigOf(list, travelMode) ? [freshNav(sp.nav)] : await fetchWithShort(pts);
     if (seq !== previewSeq) return;
     for (const r of routes) r.legStops = pts.slice(1);
-    // De snelste eerst; even snel (op de minuut): de zuinigste (met het blaadje) eerst
+    // De snelste eerst. Met de auto mag de zuinigste (met het blaadje) voor, als hij hooguit
+    // twee minuten langzamer is: liever iets korter dan een omweg over de snelweg.
     const mins = r => Math.round(r.time / 60);
     if (routes.length > 1) routes.sort((a, b) => mins(a) - mins(b) || (travelMode === 'auto' ? fuel(a) - fuel(b) : 0));
+    if (travelMode === 'auto' && routes.length > 1) {
+      const near = routes.filter(r => r.time <= routes[0].time + ECO_SLACK);
+      const eco = near.reduce((a, b) => (fuel(b) < fuel(a) ? b : a));
+      routes.splice(routes.indexOf(eco), 1);
+      routes.unshift(eco);
+    }
     previewNav = routes[0];
     previewData = { coords: previewNav.shape, pts, routes, sel: 0, note };
     drawPreview();
@@ -3597,15 +3604,18 @@ async function fetchRoutes(pts, alternates = 0, mode = travelMode, opts = null) 
   return [data.trip, ...(data.alternates || []).map(a => a.trip)].map(t => Object.assign(navFromTrip(t, mode, pts.slice(1)), opts && { opts }));
 }
 
-// Met de auto ook de route die de afstand meeweegt: even snel maar zonder omweg over de
-// snelweg (bijv. Amsterdam–Doldersum over de N-wegen, 30 km korter). Alleen als hij echt anders is.
-const SHORT = { use_distance: 0.2 };
+// Met de auto ook routes die de afstand meewegen: vaak even snel maar zonder omweg over de
+// snelweg. Licht (0,2): Amsterdam–Doldersum over de N-wegen, 30 km korter. Sterker (0,6): vanuit
+// Amsterdam-Oost over de Wibautstraat naar de A10 in plaats van via Zeeburgereiland. Alleen
+// zelf gekozen als hij niet (veel) langzamer is, zie ECO_SLACK; anders staat hij als alternatief.
+const SHORT = [{ use_distance: 0.2 }, { use_distance: 0.6 }];
+const ECO_SLACK = 120;
 async function fetchWithShort(pts) {
-  const [routes, short] = await Promise.all([fetchRoutes(pts, 2),
-    travelMode === 'auto' ? fetchRoutes(pts, 0, 'auto', SHORT).catch(() => []) : []]);
+  const [routes, ...short] = await Promise.all([fetchRoutes(pts, 2),
+    ...(travelMode === 'auto' ? SHORT.map(o => fetchRoutes(pts, 0, 'auto', o).catch(() => [])) : [])]);
   // Bijna dubbele (even snel, op 1% na even lang) maar één keer
   const same = (r, s) => Math.abs(r.total - s.total) < Math.max(300, r.total * 0.01) && Math.abs(r.time - s.time) < 60;
-  return [...routes, ...short].reduce((out, r) => (out.some(o => same(o, r)) ? out : [...out, r]), []);
+  return [...routes, ...short.flat()].reduce((out, r) => (out.some(o => same(o, r)) ? out : [...out, r]), []);
 }
 
 // Alle etappes achter elkaar; per etappe het eindpunt op de route en de reistijd
