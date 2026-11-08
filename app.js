@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '67';
+const VERSION = '68';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -820,6 +820,7 @@ function drawRouteEnds() {
 }
 
 map.on('style.load', () => {
+  addClosureLayer(map);
   addRouteLayers(map, routeCoords); addRouteEnds(map); addConceptLayers(map);
   scaleLines(map, { 'route-casing': 13, 'route-line': 8 });
   if (msmap) { showMainLayers(false); addMsLayers(map); msDraw(); msTilt(true); }
@@ -1801,9 +1802,14 @@ function renderCats() {
 // Plekken rond één punt: eerst binnen 4 km, is daar weinig dan binnen 25 km
 // 'want': zoveel plekken zijn nodig (5 per reeks, 25 voor de lijst Dichtbij)
 function nearList(cat, at, want = 5) {
-  const key = cat + '|' + want + '|' + at.lat.toFixed(3) + '|' + at.lon.toFixed(3);
+  const key = cat + '|' + want + '|' + at.lat.toFixed(3) + '|' + at.lon.toFixed(3) + (cat === 'charging' ? '|' + Math.floor(Date.now() / NDW_FRESH) : '');
   if (!nearMemo.has(key)) {
     nearMemo.set(key, (async () => {
+      // Laadpalen: NDW heeft er veel meer dan de kaart, met vrij of bezet. Buiten Nederland de kaart.
+      if (cat === 'charging') {
+        const nd = await ndwNear(at, want).catch(() => []);
+        if (nd.length) return nd;
+      }
       const { items, enough } = await tileNear(cat, at, want);
       if (enough) return items;
       // Te weinig dichtbij (platteland, of een vol stadscentrum): Photon vult aan, tot 25 km
@@ -1874,17 +1880,27 @@ function midList(cat, bp) {
 }
 async function rankMid(cat, bp) {
   const n = bp.nav;
-  // De tegels langs de route, van 12 km ervoor tot 12 km erna, met 1 km speling opzij
-  const ids = new Set(), dLat = 1000 / 111320;
-  for (let a = bp.along - 12000; a <= bp.along + 12000; a += 400) {
-    const q = alongPoint(n, a), dLon = dLat / Math.cos(rad(q.lat));
-    const [x1, y1] = tileAt(q.lon - dLon, q.lat + dLat, POI_Z), [x2, y2] = tileAt(q.lon + dLon, q.lat - dLat, POI_Z);
-    for (let x = x1; x <= x2; x++) for (let y = y1; y <= y2; y++) ids.add(x + '/' + y);
-  }
-  const tiles = await Promise.all([...ids].map(k => poiTile(...k.split('/').map(Number))));
   const near = n.shape.filter((c, i) => Math.abs(n.cum[i] - bp.along) < 14000);
   const toRoute = p => Math.min(...near.map(c => dist(c, ll(p))));
-  let cands = tileItems(cat, tiles, bp).map(p => ({ ...p, r: toRoute(p) })).filter(p => p.r <= 1000);
+  // Laadpalen van NDW (met vrij of bezet): alles in het vak rond dit stuk route
+  let found = null;
+  if (cat === 'charging') {
+    const lats = near.map(c => c[1]), lons = near.map(c => c[0]), dLat = 1000 / 111320, dLon = dLat / Math.cos(rad(bp.lat));
+    found = await ndwChargers(Math.min(...lats) - dLat, Math.min(...lons) - dLon, Math.max(...lats) + dLat, Math.max(...lons) + dLon)
+      .then(l => l.map(p => ({ ...p, d: dist(ll(bp), ll(p)) }))).catch(() => []);
+    if (!found.length) found = null;
+  }
+  if (!found) {
+    // De tegels langs de route, van 12 km ervoor tot 12 km erna, met 1 km speling opzij
+    const ids = new Set(), dLat = 1000 / 111320;
+    for (let a = bp.along - 12000; a <= bp.along + 12000; a += 400) {
+      const q = alongPoint(n, a), dLon = dLat / Math.cos(rad(q.lat));
+      const [x1, y1] = tileAt(q.lon - dLon, q.lat + dLat, POI_Z), [x2, y2] = tileAt(q.lon + dLon, q.lat - dLat, POI_Z);
+      for (let x = x1; x <= x2; x++) for (let y = y1; y <= y2; y++) ids.add(x + '/' + y);
+    }
+    found = tileItems(cat, await Promise.all([...ids].map(k => poiTile(...k.split('/').map(Number)))), bp);
+  }
+  let cands = found.map(p => ({ ...p, r: toRoute(p) })).filter(p => p.r <= 1000);
   // Weinig langs de route: ook Photon, iets verder van de weg
   if (cands.length < 5) {
     const seen = new Set(cands.map(p => p.lat.toFixed(4) + '|' + p.lon.toFixed(4)));
@@ -1919,6 +1935,13 @@ function nearItem(p, cat) {
   li.innerHTML = `<div class="row"><i class="ti ${NEAR[cat].icon}" aria-hidden="true"></i><div class="rtext"><div class="r1"></div><div class="r2"></div></div><span class="dist"></span></div>`;
   li.querySelector('.r1').textContent = p.title;
   li.querySelector('.r2').textContent = p.sub;
+  const av = availOf(p);
+  if (av) {
+    const b = document.createElement('span');
+    b.className = 'avail ' + av.cls;
+    b.textContent = av.text;
+    li.querySelector('.r2').prepend(b, p.sub ? ' · ' : '');
+  }
   li.querySelector('.dist').textContent = p.extra != null ? fmtExtra(p.extra) : fmtDist(p.d);
   li.addEventListener('click', () => useChoice({ lat: p.lat, lon: p.lon, name: p.name }));
   return li;
@@ -2526,6 +2549,7 @@ async function ensurePreviewMap() {
   pmap._dark = theme();
   pmap.on('style.load', () => {
     const dark = theme() === 'dark';
+    addClosureLayer(pmap);
     addRouteLayers(pmap, []);
     // Kleine overzichtskaart: dunnere lijnen dan tijdens het rijden
     pmap.setPaintProperty('route-casing', 'line-width', 7);
@@ -2998,7 +3022,7 @@ function msUi(force) {
     lbl.className = 'lbltxt poitxt';
     lbl.innerHTML = `<i class="ti ${NEAR[ms.pois.cat].icon}" aria-hidden="true"></i><span class="pt"><b></b><small></small></span>`;
     lbl.querySelector('b').textContent = p.title;
-    lbl.querySelector('small').textContent = [p.extra != null ? fmtExtra(p.extra) : fmtDist(p.d), p.sub].filter(Boolean).join(' · ');
+    lbl.querySelector('small').textContent = [p.extra != null ? fmtExtra(p.extra) : fmtDist(p.d), (availOf(p) || {}).text, p.sub].filter(Boolean).join(' · ');
     const sep = document.createElement('span');
     sep.className = 'sep';
     card.append(lbl);
@@ -3581,6 +3605,124 @@ document.querySelectorAll('.modes button').forEach(b => b.addEventListener('clic
   else computePreview();
 }));
 
+// ---------- NDW: laadpalen (vrij of bezet) en afsluitingen ----------
+// Open data van NDW, elke 5 minuten klaargezet door tools/ndw.py (GitHub Action) op de
+// branch ndw-data: laadpalen in vakjes van 0,05 graad, en de afsluitingen van nu.
+const NDW = 'https://raw.githubusercontent.com/Nunc72/Snelheidsbalk/ndw-data/';
+const NDW_GRID = 0.05, NDW_FRESH = 4 * 60 * 1000;
+const ndwMemo = new Map();
+function ndwGet(path) {
+  const hit = ndwMemo.get(path);
+  if (hit && Date.now() - hit.at < NDW_FRESH) return hit.p;
+  // Een vakje zonder laadpalen (zee, buitenland) bestaat niet: dan leeg
+  const p = fetch(NDW + path, { cache: 'no-cache' })
+    .then(r => (r.ok ? r.json() : r.status === 404 ? null : Promise.reject(new Error('NDW ' + r.status))));
+  p.catch(() => ndwMemo.delete(path));
+  if (ndwMemo.size > 300) ndwMemo.delete(ndwMemo.keys().next().value);
+  ndwMemo.set(path, { at: Date.now(), p });
+  return p;
+}
+
+// Laadpalen binnen een vak (zuid, west, noord, oost)
+async function ndwChargers(s, w, n, e) {
+  const keys = [];
+  for (let r = Math.floor(s / NDW_GRID); r <= Math.floor(n / NDW_GRID); r++)
+    for (let c = Math.floor(w / NDW_GRID); c <= Math.floor(e / NDW_GRID); c++) keys.push(`c/${r}_${c}.json`);
+  if (keys.length > 40) return [];
+  const tiles = await Promise.all(keys.map(ndwGet));
+  return tiles.flatMap(t => t || []).filter(([lat, lon]) => lat >= s && lat <= n && lon >= w && lon <= e).map(chargerItem);
+}
+function chargerItem([lat, lon, addr, city, op, total, free, busy, kw]) {
+  const title = addr || op || 'Laadpaal';
+  const power = kw ? kw + ' kW' + (kw >= 50 ? ' snellader' : '') : '';
+  return { lat, lon, title, sub: [addr ? op : '', power, city].filter(Boolean).join(' · '),
+    name: [title, city].filter(Boolean).join(', '), total, free, busy };
+}
+// Rond een punt, steeds ruimer tot er genoeg zijn (tot 12 km)
+async function ndwNear(at, want) {
+  for (const km of [2, 5, 12]) {
+    const dLat = km / 111.32, dLon = dLat / Math.cos(rad(at.lat));
+    const items = (await ndwChargers(at.lat - dLat, at.lon - dLon, at.lat + dLat, at.lon + dLon))
+      .map(p => ({ ...p, d: dist(ll(at), ll(p)) })).filter(p => p.d <= km * 1000).sort((a, b) => a.d - b.d);
+    if (items.length >= want || km === 12) return items.slice(0, 25);
+  }
+  return [];
+}
+// '2 van 4 vrij', 'Bezet' of 'Status onbekend' (alleen bij laadpalen van NDW)
+function availOf(p) {
+  if (p.total == null) return null;
+  if (p.free) return { cls: 'ok', text: `${p.free} van ${p.total} vrij` };
+  if (p.busy) return { cls: 'busy', text: 'Bezet' };
+  return { cls: 'unk', text: 'Status onbekend' };
+}
+
+// Afsluitingen: alleen waar een hele rijbaan, toe- of afrit of weg dicht is. Rood op de kaart,
+// en de autoroute gaat eromheen.
+let closures = [];
+const closureActive = (c, t = Date.now() / 1000) => (!c.s || c.s <= t) && (!c.e || t <= c.e)
+  && (!c.p || c.p.some(([a, b]) => (!a || a <= t) && (!b || t <= b)));
+function closureData() {
+  return { type: 'FeatureCollection', features: closures.filter(c => closureActive(c))
+    .map(c => ({ type: 'Feature', geometry: { type: 'MultiLineString', coordinates: c.l }, properties: { w: c.w, c: c.c } })) };
+}
+function addClosureLayer(m, before) {
+  const dark = theme() === 'dark';
+  m.addSource('closures', { type: 'geojson', data: closureData() });
+  m.addLayer({ id: 'closures', type: 'line', source: 'closures', minzoom: 8,
+    layout: { 'line-cap': 'butt', 'line-join': 'round' },
+    paint: { 'line-color': dark ? '#FF6369' : '#E5484D', 'line-opacity': 0.9, 'line-dasharray': [1.4, 0.8],
+      'line-width': ['interpolate', ['linear'], ['zoom'], 8, 2.5, 13, 4, 16, 6] } }, before);
+}
+async function loadClosures() {
+  try {
+    const list = await ndwGet('closures.json');
+    if (!Array.isArray(list)) return;
+    closures = list;
+    for (const m of [map, pmap]) if (m && m.getSource('closures')) m.getSource('closures').setData(closureData());
+  } catch (e) { /* volgende keer opnieuw */ }
+}
+loadClosures();
+setInterval(loadClosures, 5 * 60 * 1000);
+
+// Waar de route niet langs mag: elke 1,5 km van een afsluiting een punt, met de rijrichting
+// (de routedienst sluit dan alleen die kant van de weg af). Alleen rond de route, hooguit 50.
+function closureExcludes(pts) {
+  const t = Date.now() / 1000;
+  const lats = pts.map(p => p.lat), lons = pts.map(p => p.lon), pad = 0.15;
+  const s = Math.min(...lats) - pad, n = Math.max(...lats) + pad;
+  const w = Math.min(...lons) - pad * 1.6, e = Math.max(...lons) + pad * 1.6;
+  const out = [];
+  for (const c of closures) {
+    if (!closureActive(c, t)) continue;
+    for (const line of c.l) {
+      const cum = [0];
+      for (let i = 1; i < line.length; i++) cum.push(cum[i - 1] + dist(line[i - 1], line[i]));
+      const len = cum[cum.length - 1];
+      const at = len <= 1500 ? [len / 2] : Array.from({ length: Math.floor(len / 1500) }, (_, k) => 750 + k * 1500);
+      for (const a of at) {
+        let i = 1;
+        while (i < line.length - 1 && cum[i] < a) i++;
+        const f = (a - cum[i - 1]) / ((cum[i] - cum[i - 1]) || 1);
+        const lon = line[i - 1][0] + f * (line[i][0] - line[i - 1][0]), lat = line[i - 1][1] + f * (line[i][1] - line[i - 1][1]);
+        if (lat < s || lat > n || lon < w || lon > e) continue;
+        out.push({ lat: +lat.toFixed(6), lon: +lon.toFixed(6), heading: Math.round((bearing(line[i - 1], line[i]) + 360) % 360), heading_tolerance: 45 });
+      }
+    }
+  }
+  if (out.length <= 50) return out;
+  // Te veel: de punten het dichtst bij de rechte lijn langs alle adressen
+  const off = q => Math.min(...pts.slice(1).map((p, i) => segDist(ll(q), ll(pts[i]), ll(p))));
+  return out.map(q => ({ q, d: off(q) })).sort((a, b) => a.d - b.d).slice(0, 50).map(x => x.q);
+}
+// Afstand (ongeveer, in graden) van punt p tot het lijnstuk a-b
+function segDist(p, a, b) {
+  const k = Math.cos(rad(p[1]));
+  const [px, py, ax, ay, bx, by] = [p[0] * k, p[1], a[0] * k, a[1], b[0] * k, b[1]];
+  const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+  const u = l2 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / l2)) : 0;
+  return Math.hypot(px - ax - u * dx, py - ay - u * dy);
+}
+
 // ---------- Route (Valhalla) ----------
 // Door alle punten, in volgorde. Je eigen positie als vertrek rijdt in je rijrichting weg.
 async function fetchRoutes(pts, alternates = 0, mode = travelMode, opts = null) {
@@ -3598,8 +3740,12 @@ async function fetchRoutes(pts, alternates = 0, mode = travelMode, opts = null) 
   if (opts) body.costing_options = { [mode]: opts };
   // Alternatieven kent de routedienst alleen zonder tussenstops
   if (alternates && pts.length === 2) body.alternates = alternates;
-  const res = await fetch(`${VALHALLA}/route`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  const data = await res.json();
+  // Met de auto om afsluitingen heen. Ligt je start of bestemming er zelf in, dan zonder.
+  const ex = mode === 'auto' ? closureExcludes(pts) : [];
+  if (ex.length) body.exclude_locations = ex;
+  const post = b => fetch(`${VALHALLA}/route`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).then(r => r.json());
+  let data = await post(body);
+  if (!data.trip && ex.length) { delete body.exclude_locations; data = await post(body); }
   if (!data.trip) throw new Error(data.error || 'Geen route gevonden');
   return [data.trip, ...(data.alternates || []).map(a => a.trip)].map(t => Object.assign(navFromTrip(t, mode, pts.slice(1)), opts && { opts }));
 }

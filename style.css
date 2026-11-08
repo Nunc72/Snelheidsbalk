@@ -194,6 +194,10 @@ body.legback #bottom-next { transform: translateX(calc(200% + 12px)); }
 .cats button { line-height: 1.15; text-align: center; }
 .cats button[aria-checked="true"] { background: #1F6FE0; color: #fff; }
 #results .dist { flex: none; font-size: 13px; color: #8a8a8a; }
+/* Laadpalen: vrij (groen) of bezet (rood) */
+.avail { font-weight: 600; }
+.avail.ok { color: #2E9E4F; }
+.avail.busy { color: #C4554D; }
 /* In de buurt: kopje per reeks (vertrek, na 90 minuten, aankomst) */
 #results li.sect { display: flex; align-items: baseline; gap: 8px; padding: 16px 16px 6px; cursor: default; border-bottom: none; }
 #results li.sect:active { background: none; }
@@ -437,6 +441,8 @@ body.driving .mapctl { opacity: 0; pointer-events: none; }
 /* Dark mode: volgt de instelling van de iPhone */
 @media (prefers-color-scheme: dark) {
   body { background: #23262B; color: #f2f2f7; }
+  .avail.ok { color: #4CC46F; }
+  .avail.busy { color: #FF7A72; }
   .card { background: #1c1c1e; color: #f2f2f7; }
   .instr { background: #2c2c2e; }
   .bottom { box-shadow: 0 2px 14px rgba(0,0,0,.5); }
