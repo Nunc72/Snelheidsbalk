@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '64';
+const VERSION = '65';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -587,6 +587,11 @@ function setTrailType(key, on) {
 const PUBLIC_POI = new Set(['place_of_worship', 'museum', 'town_hall', 'library', 'theatre', 'cinema', 'art_gallery',
   'hospital', 'college', 'school', 'police', 'fire_station', 'post', 'castle']);
 const EMPTY_FC = { type: 'FeatureCollection', features: [] };
+const PUBLIC_NL = { place_of_worship: 'Kerk', museum: 'Museum', town_hall: 'Openbaar gebouw', library: 'Bibliotheek', theatre: 'Theater',
+  cinema: 'Bioscoop', art_gallery: 'Galerie', hospital: 'Ziekenhuis', college: 'Hogeschool', school: 'School', police: 'Politie',
+  fire_station: 'Brandweer', post: 'Postkantoor', castle: 'Kasteel' };
+// Publieke gebouwen met een naam in de kaartdelen die geladen zijn: daar kun je ook op zoeken
+let publicPlaces = [];
 
 function inRing(pt, ring) {
   let inside = false;
@@ -602,7 +607,12 @@ function findPublicBuildings(m) {
   if (!src || !m.getSource('openmaptiles')) return;
   const pois = m.querySourceFeatures('openmaptiles', { sourceLayer: 'poi' })
     .filter(f => f.geometry.type === 'Point' && PUBLIC_POI.has(f.properties.class))
-    .map(f => f.geometry.coordinates);
+    .map(f => ({ c: f.geometry.coordinates, name: f.properties['name:nl'] || f.properties.name || '', cls: f.properties.class }));
+  if (m === map) {
+    const seen = new Set();
+    publicPlaces = pois.filter(q => q.name && !seen.has(q.name + q.c[0].toFixed(3)) && seen.add(q.name + q.c[0].toFixed(3)))
+      .map(q => ({ name: q.name, lon: q.c[0], lat: q.c[1], kind: PUBLIC_NL[q.cls] || 'Openbaar gebouw' }));
+  }
   const out = [];
   if (pois.length) {
     for (const b of m.querySourceFeatures('openmaptiles', { sourceLayer: 'building' })) {
@@ -612,9 +622,8 @@ function findPublicBuildings(m) {
         const ring = poly[0];
         let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
         for (const [x, y] of ring) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
-        if (pois.some(p => p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1 && inRing(p, ring))) {
-          out.push({ type: 'Feature', geometry: { type: 'Polygon', coordinates: poly }, properties: {} });
-        }
+        const hit = pois.find(({ c: p }) => p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1 && inRing(p, ring));
+        if (hit) out.push({ type: 'Feature', geometry: { type: 'Polygon', coordinates: poly }, properties: { name: hit.name } });
       }
     }
   }
@@ -629,6 +638,14 @@ function addPublicLayer(m) {
   m.addSource('public', { type: 'geojson', data: EMPTY_FC });
   m.addLayer({ id: 'public-building', type: 'fill', source: 'public',
     paint: { 'fill-color': dark ? '#3B3F47' : '#D9D8D0', 'fill-outline-color': dark ? '#474B54' : '#C9C8C0' } }, next && next.id);
+  // De naam midden in het gebouw, pas flink ingezoomd; onder de straatnamen en de route
+  const label = m.getStyle().layers.find(l => l.type === 'symbol');
+  m.addLayer({ id: 'public-label', type: 'symbol', source: 'public', minzoom: 16, filter: ['!=', ['get', 'name'], ''],
+    layout: { 'text-field': ['get', 'name'], 'text-font': ['Noto Sans Italic'], 'text-size': 11.5, 'text-max-width': 8,
+      'text-padding': 4 },
+    paint: dark
+      ? { 'text-color': '#B9BDC6', 'text-halo-color': 'rgba(35,38,43,0.9)', 'text-halo-width': 1.4 }
+      : { 'text-color': '#5E5D57', 'text-halo-color': 'rgba(255,255,255,0.9)', 'text-halo-width': 1.4 } }, label && label.id);
   findPublicBuildings(m);
 }
 
@@ -675,6 +692,12 @@ function startBearing(shape) {
   const a = shape[0];
   for (let i = 1; i < shape.length; i++) if (dist(a, shape[i]) > 25) return bearing(a, shape[i]);
   return shape.length > 1 ? bearing(a, shape[shape.length - 1]) : 0;
+}
+// Richting waarin de route bij punt i aankomt
+function arriveBearing(shape, i) {
+  const b = shape[i];
+  for (let j = i - 1; j >= 0; j--) if (dist(shape[j], b) > 25) return bearing(shape[j], b);
+  return i + 1 < shape.length ? bearing(b, shape[i + 1]) : 0;
 }
 // Navigeren: je rijrichting boven; nog stilstaand (richting onbekend): de richting van de route
 const camBearing = () => (state.nav ? state.heading ?? startBearing(state.nav.shape) : 0);
@@ -2273,18 +2296,23 @@ async function search() {
   ul.innerHTML = '';
   for (const d of recents) ul.appendChild(recentItem(d));
   if (q.length < 3) return;
+  const known = new Set(recents.map(d => d.name));
+  const local = publicMatches(v).filter(d => !known.has(d.name));
+  for (const d of local) ul.appendChild(publicItem(d));
   const params = new URLSearchParams({ q, limit: '12' });
   if (state.fix) { params.set('lat', state.fix.lat); params.set('lon', state.fix.lon); }
   try {
     const res = await fetch(`${PHOTON}?${params}`);
     const data = await res.json();
     if (seq !== searchSeq) return;
-    const known = new Set(recents.map(d => d.name));
+    // Hetzelfde gebouw als uit de kaart (zelfde naam, vlakbij) niet nog een keer
+    const same = f => local.some(d => d.name.toLowerCase() === describe(f.properties).title.toLowerCase() && dist([d.lon, d.lat], f.geometry.coordinates) < 300);
     const features = dedupe(data.features)
-      .filter(f => { const { title, sub } = describe(f.properties); return !known.has([title, sub].filter(Boolean).join(', ')); })
-      .slice(0, 8);
+      .filter(f => { const { title, sub } = describe(f.properties); return !known.has([title, sub].filter(Boolean).join(', ')) && !same(f); })
+      .slice(0, 8 - local.length);
     firstResult = features[0] || null;
-    if (!features.length && !recents.length) { ul.innerHTML = '<li class="empty">Niets gevonden</li>'; return; }
+    if (!firstResult && local.length) firstResult = local[0].feature;
+    if (!features.length && !recents.length && !local.length) { ul.innerHTML = '<li class="empty">Niets gevonden</li>'; return; }
     for (const f of features) {
       const { title, sub } = describe(f.properties);
       const li = document.createElement('li');
@@ -2297,6 +2325,24 @@ async function search() {
   } catch (e) {
     if (seq === searchSeq) ul.innerHTML = '<li class="empty">Zoeken lukt nu niet. Controleer je verbinding.</li>';
   }
+}
+
+// Publieke gebouwen op de kaart waarvan de naam past, dichtstbij eerst
+function publicMatches(v) {
+  const t = v.trim().toLowerCase();
+  if (t.length < 3) return [];
+  const at = state.fix ? [state.fix.lon, state.fix.lat] : map.getCenter().toArray();
+  return publicPlaces.filter(d => d.name.toLowerCase().includes(t))
+    .sort((a, b) => dist(at, [a.lon, a.lat]) - dist(at, [b.lon, b.lat])).slice(0, 3)
+    .map(d => ({ ...d, feature: { properties: { name: d.name }, geometry: { coordinates: [d.lon, d.lat] } } }));
+}
+function publicItem(d) {
+  const li = document.createElement('li');
+  li.innerHTML = '<div class="r1"></div><div class="r2"></div>';
+  li.querySelector('.r1').textContent = d.name;
+  li.querySelector('.r2').textContent = d.kind;
+  li.addEventListener('click', () => choose(d.feature));
+  return li;
 }
 
 function onSearchInput() {
@@ -2579,6 +2625,9 @@ async function computePreview(note) {
     const routes = sp && sp.sig === sigOf(list, travelMode) ? [freshNav(sp.nav)] : await fetchRoutes(pts, 2);
     if (seq !== previewSeq) return;
     for (const r of routes) r.legStops = pts.slice(1);
+    // De snelste eerst; even snel (op de minuut): de zuinigste (met het blaadje) eerst
+    const mins = r => Math.round(r.time / 60);
+    if (routes.length > 1) routes.sort((a, b) => mins(a) - mins(b) || (travelMode === 'auto' ? fuel(a) - fuel(b) : 0));
     previewNav = routes[0];
     previewData = { coords: previewNav.shape, pts, routes, sel: 0, note };
     drawPreview();
@@ -3782,10 +3831,11 @@ function slideLeg(dir) {
     return;
   }
   stopFollowing();
-  // De stop midden in beeld (zonder de ruimte boven die je eigen positie lager zet)
-  const p = n.shape[n.legs[n.legIdx + v - 1].endIdx];
-  map.easeTo({ center: p, zoom: 15.5, pitch: camPitch(), padding: { top: 0, bottom: 0, left: 0, right: 0 },
-    duration: farJump(p) ? 0 : 800 });
+  // De stop midden in beeld (zonder de ruimte boven die je eigen positie lager zet),
+  // in de rijrichting waarin je er aankomt
+  const i = n.legs[n.legIdx + v - 1].endIdx, p = n.shape[i];
+  map.easeTo({ center: p, zoom: 15.5, bearing: arriveBearing(n.shape, i), pitch: camPitch(),
+    padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: farJump(p) ? 0 : 800 });
 }
 
 // Vinger op het kaartje: het schuift mee; ver genoeg en het volgende of vorige kaartje komt
