@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '72';
+const VERSION = '73';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -2648,23 +2648,7 @@ async function computePreview(note) {
     const routes = sp && sp.sig === sigOf(list, travelMode) ? [freshNav(sp.nav)] : await fetchWithShort(pts);
     if (seq !== previewSeq) return;
     for (const r of routes) r.legStops = pts.slice(1);
-    // De snelste eerst. Met de auto mag de zuinigste (met het blaadje) voor, als hij hooguit
-    // twee minuten langzamer is: liever iets korter dan een omweg over de snelweg.
-    const mins = r => Math.round(r.time / 60);
-    if (routes.length > 1) routes.sort((a, b) => mins(a) - mins(b) || (travelMode === 'auto' ? fuel(a) - fuel(b) : 0));
-    if (travelMode === 'auto' && routes.length > 1) {
-      const near = routes.filter(r => r.time <= routes[0].time + ECO_SLACK);
-      const eco = near.reduce((a, b) => (fuel(b) < fuel(a) ? b : a));
-      routes.splice(routes.indexOf(eco), 1);
-      routes.unshift(eco);
-    }
-    // Alleen alternatieven met een voordeel: bijna even snel (hooguit 10% langzamer, en
-    // minstens 5 minuten speling) of zuiniger dan de gekozen route; fietsen en lopen: korter.
-    // Een route die langzamer én duurder is, heeft geen zin.
-    const pick = routes[0], fastest = Math.min(...routes.map(r => r.time));
-    const worth = r => r === pick || r.time <= fastest + Math.max(300, fastest * 0.1)
-      || (travelMode === 'auto' ? fuel(r) < fuel(pick) * 0.98 : r.total < pick.total * 0.95);
-    for (let i = routes.length - 1; i > 0; i--) if (!worth(routes[i])) routes.splice(i, 1);
+    if (routes.length > 1) routes.splice(0, routes.length, ...shownRoutes(routes));
     previewNav = routes[0];
     previewData = { coords: previewNav.shape, pts, routes, sel: 0, note };
     drawPreview();
@@ -3771,6 +3755,30 @@ async function fetchRoutes(pts, alternates = 0, mode = travelMode, opts = null) 
   return trips.map(t => Object.assign(navFromTrip(t, mode, pts.slice(1).filter(p => !p.through)), opts && { opts }));
 }
 
+// Welke routes je te zien krijgt, de gekozen route eerst.
+// Auto: altijd de zuinigste (met het blaadje), hoe lang hij ook duurt; altijd de snelste, tenzij
+// de zuinigste bijna even snel is (minder dan 2% langzamer) en duidelijk zuiniger (meer dan 2%);
+// en zo mogelijk een middenweg: hooguit 20% langzamer dan de snelste maar minstens 10% zuiniger.
+// Gekozen: de zuinigste van die routes die hooguit twee minuten langzamer is dan de snelste.
+// Fietsen en lopen: de snelste en de kortste.
+function shownRoutes(routes) {
+  const fast = routes.reduce((a, b) => (b.time < a.time ? b : a));
+  if (travelMode !== 'auto') {
+    const short = routes.reduce((a, b) => (b.total < a.total ? b : a));
+    return short !== fast && short.total < fast.total * 0.95 ? [fast, short] : [fast];
+  }
+  const f = new Map(routes.map(r => [r, fuel(r)]));
+  const eco = routes.reduce((a, b) => (f.get(b) < f.get(a) ? b : a));
+  const shown = [eco];
+  if (fast !== eco && !(eco.time < fast.time * 1.02 && f.get(eco) < f.get(fast) * 0.98)) shown.push(fast);
+  const mid = routes.filter(r => !shown.includes(r) && r.time <= fast.time * 1.2 && f.get(r) <= f.get(fast) * 0.9)
+    .sort((a, b) => a.time - b.time)[0];
+  if (mid) shown.push(mid);
+  const quick = Math.min(...shown.map(r => r.time));
+  const pick = shown.filter(r => r.time <= quick + ECO_SLACK).sort((a, b) => f.get(a) - f.get(b))[0];
+  return [pick, ...shown.filter(r => r !== pick).sort((a, b) => a.time - b.time)];
+}
+
 async function legAlternates(trip, pts, alternates, mode, opts) {
   const k = trip.legs.reduce((best, l, i) => (l.summary.length > trip.legs[best].summary.length ? i : best), 0);
   const [a, b] = [pts[k], pts[k + 1]];
@@ -3794,7 +3802,7 @@ async function fetchWithShort(pts) {
     ...(travelMode === 'auto' ? SHORT.map(o => fetchRoutes(pts, o.use_distance >= 0.5 ? 2 : 0, 'auto', o).catch(() => [])) : [])]);
   let all = [...routes, ...short.flat()];
   if (travelMode === 'auto') all = await betterStarts(all, pts);
-  return distinctRoutes(all).slice(0, 4);
+  return distinctRoutes(all);
 }
 
 // De alternatieven van de routedienst beginnen allemaal zoals de gewone route, ook als die een
