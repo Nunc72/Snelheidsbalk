@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '76';
+const VERSION = '77';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -2644,10 +2644,11 @@ async function computePreview(note) {
   }
   noRoute('Route berekenen…');
   try {
-    // Gedownloade route: zonder internet uit de opslag. Anders de snelste, en bij alleen
-    // vertrek en bestemming maximaal twee alternatieven
-    const sp = savedPick;
-    const routes = sp && sp.sig === sigOf(list, travelMode) ? [freshNav(sp.nav)] : await fetchWithShort(pts);
+    // Gedownloade route: alleen zonder internet uit de opslag (of als berekenen niet lukt).
+    // Met internet gewoon opnieuw, met alternatieven: misschien is er nu een betere.
+    const sp = savedPick && savedPick.sig === sigOf(list, travelMode) ? savedPick : null;
+    const routes = sp && !navigator.onLine ? [freshNav(sp.nav)]
+      : await fetchWithShort(pts).catch(e => { if (sp) return [freshNav(sp.nav)]; throw e; });
     if (seq !== previewSeq) return;
     for (const r of routes) r.legStops = pts.slice(1);
     if (routes.length > 1) routes.splice(0, routes.length, ...shownRoutes(routes));
