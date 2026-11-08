@@ -4,7 +4,8 @@
 name: NDW-data
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    # Niet precies op het hele uur (dan is GitHub het drukst)
+    - cron: '2-59/5 * * * *'
   workflow_dispatch:
 permissions:
   contents: write
