@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '70';
+const VERSION = '71';
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 const STYLES = {
@@ -3736,6 +3736,8 @@ function segDist(p, a, b) {
 // Door alle punten, in volgorde. Je eigen positie als vertrek rijdt in je rijrichting weg.
 async function fetchRoutes(pts, alternates = 0, mode = travelMode, opts = null) {
   const locations = pts.map((p, i) => {
+    // Doorrijpunt (zie betterStarts): geen stop, en in de rijrichting van de route
+    if (p.through) return { lat: p.lat, lon: p.lon, type: 'through', heading: p.heading, heading_tolerance: 45 };
     const l = { lat: p.lat, lon: p.lon, type: 'break' };
     if (i === 0 && p.here && state.heading != null && state.speedKmh > 5) { l.heading = Math.round(state.heading); l.heading_tolerance = 60; }
     return l;
@@ -3759,7 +3761,7 @@ async function fetchRoutes(pts, alternates = 0, mode = travelMode, opts = null) 
   let trips = [data.trip, ...(data.alternates || []).map(a => a.trip)];
   // Met tussenstops: alternatieven voor de langste etappe, de rest van de route blijft gelijk
   if (alternates && pts.length > 2) trips = [data.trip, ...await legAlternates(data.trip, pts, alternates, mode, opts)];
-  return trips.map(t => Object.assign(navFromTrip(t, mode, pts.slice(1)), opts && { opts }));
+  return trips.map(t => Object.assign(navFromTrip(t, mode, pts.slice(1).filter(p => !p.through)), opts && { opts }));
 }
 
 async function legAlternates(trip, pts, alternates, mode, opts) {
@@ -3783,16 +3785,51 @@ async function fetchWithShort(pts) {
   // Wibautstraat), in plaats van allemaal met dezelfde omweg als de gewone route
   const [routes, ...short] = await Promise.all([fetchRoutes(pts, 2),
     ...(travelMode === 'auto' ? SHORT.map(o => fetchRoutes(pts, o.use_distance >= 0.5 ? 2 : 0, 'auto', o).catch(() => [])) : [])]);
-  return distinctRoutes([...routes, ...short.flat()]).slice(0, 4);
+  let all = [...routes, ...short.flat()];
+  if (travelMode === 'auto') all = await betterStarts(all, pts);
+  return distinctRoutes(all).slice(0, 4);
 }
 
-// Een route valt af als een andere route grotendeels (75%) over dezelfde wegen gaat en
+// De alternatieven van de routedienst beginnen allemaal zoals de gewone route, ook als die een
+// omweg maakt (vanuit Amsterdam-Oost via het Zeeburgereiland in plaats van via de Wibautstraat
+// de A10 op). Per alternatief proberen we het begin van de snelste route: tot vlak voor diens
+// eerste snelweg, daarna vastgepind op het alternatief. Sneller? Dan dat.
+async function betterStarts(routes, pts) {
+  const best = routes.reduce((a, b) => (b.time < a.time ? b : a));
+  const mi = best.maneuvers.findIndex(m => (m.street_names || []).some(n => /^A\d+$/.test(n)));
+  if (mi < 0) return routes;
+  const sAlong = best.cum[best.maneuvers[mi].begin_shape_index];
+  if (sAlong < 1500 || sAlong > 15000) return routes;
+  const S = alongPoint(best, sAlong - 300);
+  const from = ll(pts[0]), reach = dist(from, ll(S)) + 8000;
+  const pin = (r, a) => {
+    const q = alongPoint(r, a), q2 = alongPoint(r, a + 50);
+    return { lat: q.lat, lon: q.lon, through: true, heading: Math.round((bearing(ll(q), ll(q2)) + 360) % 360) };
+  };
+  return Promise.all(routes.map(async r => {
+    if (r === best) return r;
+    // Komt hij al langs dat begin, dan valt er niets te winnen
+    if (passes(r, ll(S))) return r;
+    let i = 0;
+    while (i < r.shape.length - 1 && dist(from, r.shape[i]) < reach) i++;
+    const pins = [];
+    // Alleen in de eerste etappe; daarna gewoon langs de tussenstops
+    for (let a = r.cum[i]; a < r.legs[0].end - 8000; a += 20000) pins.push(pin(r, a));
+    if (!pins.length) return r;
+    try {
+      const [n] = await fetchRoutes([pts[0], { lat: S.lat, lon: S.lon, through: true, heading: pin(best, sAlong - 300).heading }, ...pins, ...pts.slice(1)], 0, 'auto');
+      return n.time < r.time - 30 ? n : r;
+    } catch (e) { return r; }
+  }));
+}
+
+// Een route valt af als een andere route grotendeels (60%) over dezelfde wegen gaat en
 // minstens even snel en niet langer is: dat is dezelfde route met een slechter stuk erin.
 function distinctRoutes(all) {
   const byTime = [...all].sort((a, b) => a.time - b.time);
   const kept = [];
   for (const r of byTime) {
-    if (!kept.some(o => o.time <= r.time + 60 && o.total <= r.total * 1.02 && overlap(r, o) >= 0.75)) kept.push(r);
+    if (!kept.some(o => o.time <= r.time + 60 && o.total <= r.total * 1.02 && overlap(r, o) >= 0.6)) kept.push(r);
   }
   return kept;
 }
@@ -3809,13 +3846,14 @@ function routeCells(o) {
   Object.defineProperty(o, '_cells', { value: cells, enumerable: false });
   return cells;
 }
+// Komt route o binnen zo'n 40 m langs punt [x, y]?
+function passes(o, [x, y]) {
+  const cells = routeCells(o), cx = Math.round(x / (CELL * 1.6)), cy = Math.round(y / CELL);
+  for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) if (cells.has((cx + dx) + ',' + (cy + dy))) return true;
+  return false;
+}
 function overlap(r, o) {
-  const cells = routeCells(o);
-  const near = ([x, y]) => {
-    const cx = Math.round(x / (CELL * 1.6)), cy = Math.round(y / CELL);
-    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) if (cells.has((cx + dx) + ',' + (cy + dy))) return true;
-    return false;
-  };
+  const near = p => passes(o, p);
   let n = 0, hit = 0, i = 1;
   for (let a = 0; a <= r.total; a += 200) {
     while (i < r.shape.length - 1 && r.cum[i] < a) i++;
