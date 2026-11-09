@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '80';
+const VERSION = '81';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -2128,7 +2128,7 @@ function showText(row, from) {
   const s = stops[row];
   const q = $('q');
   q.value = '';
-  q.placeholder = s ? withoutPostcode(s.name) : row === 0 && (stops.length > 1 || from === 'start') ? 'Vertrekpunt zoeken' : row === stops.length - 1 ? 'Zoek adres of plaats' : 'Tussenstop zoeken';
+  q.placeholder = s ? withoutPostcode(s.name) : from === 'start' ? 'Zoek plaats' : row === 0 && stops.length > 1 ? 'Vertrekpunt zoeken' : row === stops.length - 1 ? 'Zoek adres of plaats' : 'Tussenstop zoeken';
   $('q-postcode').value = '';
   $('q-city').value = '';
   streetCtx = null;
@@ -2155,15 +2155,17 @@ function openSearch() {
 
 // Het gekozen vertrekpunt: terug naar het beginscherm, met Waar naartoe? en 'Vanaf …' erboven.
 // De kaart gaat naar dat vertrekpunt (bij Huidige locatie: weer je eigen positie volgen).
+// Zoek plaats: de kaart vliegt naar de gevonden plek, met Hier vandaan en Hier naartoe.
+// Huidige locatie: vanaf je eigen positie, Waar naartoe? staat klaar.
 function pickStart(d) {
-  const p = d.here ? null : cleanPlace(d);
-  setHomeStart(p);
   closeSearch();
   peek(false);
-  if (!p) { follow(); return; }
+  if (d.here) { setHomeStart(null); follow(); return; }
+  const p = cleanPlace(d);
+  saveRecent(place(p));
+  stopRoute(true);
   stopFollowing();
-  map.flyTo({ center: [p.lon, p.lat], zoom: Math.max(map.getZoom(), 15), bearing: 0, pitch: 0,
-    padding: camPadding(), duration: 1400, essential: true });
+  showFound(p);
 }
 
 // Wat er nu gepland staat: de lopende route, de conceptroute of alleen een gekozen vertrekpunt.
@@ -2496,11 +2498,15 @@ function drawAltTags() {
   if (!routes || routes.length < 2) return;
   const fuels = routes.map(fuel);
   const eco = travelMode === 'auto' ? fuels.indexOf(Math.min(...fuels)) : -1;
+  // Bij de zuinigste: hoeveel procent minder brandstof dan de snelste
+  const fast = routes.reduce((a, r, i) => (r.time < routes[a].time ? i : a), 0);
+  const pct = eco >= 0 && eco !== fast ? Math.round((1 - fuels[eco] / fuels[fast]) * 100) : 0;
   routes.forEach((r, i) => {
     const el = document.createElement('button');
     el.type = 'button';
     el.className = 'alttag' + (i === sel ? ' sel' : '');
-    el.innerHTML = (i === eco ? '<i class="ti ti-leaf" aria-label="Zuinigst"></i>' : '') + fmtDuration(r.time);
+    el.innerHTML = (i === eco && pct > 0 ? `<span class="ecopct">${pct}%</span>` : '')
+      + (i === eco ? `<i class="ti ti-leaf" aria-label="Zuinigst${pct > 0 ? `, ${pct}% zuiniger dan de snelste` : ''}"></i>` : '') + fmtDuration(r.time);
     el.addEventListener('click', e => { e.stopPropagation(); selectAlt(i); });
     const at = labelPoint(r, routes.filter(o => o !== r), previewTags.map(t => pmap.project(t.getLngLat())));
     previewTags.push(new maplibregl.Marker({ element: el }).setLngLat(at).addTo(pmap));
@@ -2592,8 +2598,25 @@ function syncOk() {
 
 // Verrekijker: naar het eerste (of enige) punt op de live kaart, met een pin erop
 let lookMarker = null;
+let found = null;
 function clearLook() {
   if (lookMarker) { lookMarker.remove(); lookMarker = null; }
+  if (found) { found = null; syncFound(); }
+}
+// Het beginscherm met de gevonden plek: naam, en Hier vandaan / Hier naartoe in plaats van het zoekveld
+function syncFound() {
+  $('found').hidden = !found;
+  $('whererow').hidden = !!found;
+  $('fromrow').hidden = !!found || homeStart === false;
+  if (found) $('foundname').textContent = withoutPostcode(found.name);
+  placeRecenter();
+}
+function showFound(p) {
+  setHomeStart(false);
+  if (p.naming) p.naming.then(() => { delete p.naming; if (found === p) syncFound(); });
+  lookPin(p);
+  found = p;
+  syncFound();
 }
 function lookAt() {
   const p = resolveStop(filled()[0]);
@@ -2603,8 +2626,9 @@ function lookAt() {
   // Een lopende route (of conceptroute) maakt plaats voor deze plek
   stopRoute(true);
   stopFollowing();
-  // Deze plek is nu het vertrekpunt: verder zoeken (tekst of kaart) gaat vanaf hier
-  if (!p.here) setHomeStart(cleanPlace(p));
+  showFound(cleanPlace(p));
+}
+function lookPin(p) {
   const el = document.createElement('div');
   el.className = 'lookpin';
   el.innerHTML = '<svg viewBox="0 0 36 48" aria-hidden="true"><path d="M18 46.5C18 46.5 34 28.5 34 17A16 16 0 0 0 2 17C2 28.5 18 46.5 18 46.5Z"/><circle cx="18" cy="17" r="6"/></svg>';
@@ -2683,7 +2707,7 @@ function confirmPreview() {
   const fromHere = list[0].here;
   saveRecent(fromHere && list.length === 2 ? place(list[1]) : routeEntry(list, travelMode));
   rememberRoute(nav.legStops ? [resolveStop(list[0]), ...nav.legStops] : list.map(resolveStop), travelMode, nav);
-  setHomeStart(null);
+  setHomeStart(false);
   closeSearch();
   // Eigen vertrekpunt: de route alleen tonen (gestippeld), niet navigeren
   if (!fromHere) {
@@ -3246,7 +3270,15 @@ $('qmap').addEventListener('click', () => {
   else openMapSearch('build', 'text');
 });
 // Een conceptroute stoppen: de kaart blijft op dezelfde plek
-$('stop').addEventListener('click', () => { stopRoute(!!state.concept && !state.nav); closeSearch(); });
+// Rode knop: de route annuleren; vertrekpunt, bestemming en tussenstops zijn weg
+$('stop').addEventListener('click', () => {
+  stopRoute(!!state.concept && !state.nav);
+  stops = [];
+  savedPick = null;
+  closeSearch();
+  clearLook();
+  setHomeStart(false);
+});
 $('qadd').addEventListener('click', addRow);
 $('qok').addEventListener('click', () => (lookMode() ? lookAt() : confirmPreview()));
 $('pmapedit').addEventListener('click', e => { e.stopPropagation(); openMapSearch('edit', 'overview'); });
@@ -3399,9 +3431,9 @@ function setHomeStart(p) {
   $('fromrow').hidden = none;
   $('fromname').textContent = p ? withoutPostcode(p.name) : 'huidige locatie';
   $('fromrow').firstElementChild.className = 'ti ' + (p ? 'ti-flag' : 'ti-current-location');
-  $('wheretxt').textContent = none ? 'Zoek locatie' : 'Waar naartoe?';
-  $('where').setAttribute('aria-label', none ? 'Vertrekpunt zoeken' : 'Waar naartoe?');
-  $('wheremap').setAttribute('aria-label', none ? 'Vertrekpunt kiezen op de kaart' : 'Zoek op kaart');
+  $('wheretxt').textContent = none ? 'Zoek plaats' : 'Waar naartoe?';
+  $('where').setAttribute('aria-label', none ? 'Plaats zoeken' : 'Waar naartoe?');
+  $('wheremap').setAttribute('aria-label', none ? 'Plaats kiezen op de kaart' : 'Zoek op kaart');
   if (startMarker) { startMarker.remove(); startMarker = null; }
   if (p) {
     const el = document.createElement('div');
@@ -3412,7 +3444,22 @@ function setHomeStart(p) {
 }
 // Kruisje: niet vanaf hier vertrekken; dan eerst een vertrekpunt zoeken
 $('fromx').addEventListener('click', () => setHomeStart(false));
-setHomeStart(null);
+setHomeStart(false);
+// Hier vandaan: de plek wordt het vertrekpunt, daarna de bestemming zoeken
+$('foundfrom').addEventListener('click', () => {
+  const p = found;
+  clearLook();
+  setHomeStart(p);
+});
+// Hier naartoe: meteen het overzicht, vanaf je eigen positie
+$('foundto').addEventListener('click', () => {
+  const p = found;
+  clearLook();
+  openSheet();
+  stops = [HERE, p];
+  showOverview();
+});
+$('foundx').addEventListener('click', clearLook);
 
 // ---------- Lang drukken op de kaart: route, vertrekpunt of een pin ----------
 // Tikken in een menu of op een pin is niet ook een tik (of sleep) op de kaart
@@ -3515,7 +3562,7 @@ map.on('contextmenu', e => {
   lp.opened = true;
   openPlaceMenu({ lat: e.lngLat.lat, lon: e.lngLat.lng });
 });
-map.on('click', () => { if (Date.now() >= lp.eatUntil) { closePlaceMenu(); clearLook(); } });
+map.on('click', () => { if (Date.now() >= lp.eatUntil) { closePlaceMenu(); if (!found) clearLook(); } });
 
 // ---------- Eigen pins: blijven staan tot je ze verwijdert ----------
 function loadPins() {
