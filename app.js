@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '81';
+const VERSION = '82';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -2145,6 +2145,7 @@ function showText(row, from) {
 function openSearch() {
   openSheet();
   if (homeStart === false) {
+    forgetPreview();
     stops = [null];
     showText(0, 'start');
     return;
@@ -2491,6 +2492,15 @@ function labelPoint(route, others, taken) {
 }
 
 let previewTags = [];
+// Geannuleerd of opnieuw beginnen: geen oude route meer in het overzicht of op de zoekkaart
+function forgetPreview() {
+  previewSeq++;
+  previewNav = null;
+  previewData = null;
+  previewTags.forEach(t => t.remove());
+  previewTags = [];
+  if (pmap && pmap.getSource('route')) ['route', 'alts', 'ends'].forEach(s => pmap.getSource(s).setData(EMPTY_FC));
+}
 function drawAltTags() {
   previewTags.forEach(t => t.remove());
   previewTags = [];
@@ -3245,6 +3255,7 @@ $('wheremap').addEventListener('click', () => {
   openSheet();
   // Zonder vertrekpunt: met de pin het vertrekpunt kiezen
   if (homeStart === false) {
+    forgetPreview();
     stops = [null];
     textFrom = 'start';
     ms.keep = true;
@@ -3275,6 +3286,7 @@ $('stop').addEventListener('click', () => {
   stopRoute(!!state.concept && !state.nav);
   stops = [];
   savedPick = null;
+  forgetPreview();
   closeSearch();
   clearLook();
   setHomeStart(false);
