@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '84';
+const VERSION = '85';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -3871,7 +3871,7 @@ async function fetchRoutes(pts, alternates = 0, mode = travelMode, opts = null) 
 // op een uur rijden 12 minuten), en minstens 1% sneller dan de zuinigste. Hooguit drie routes.
 // Gekozen: de zuinigste die hooguit twee minuten langzamer is dan de snelste getoonde.
 // Fietsen en lopen: de snelste en de kortste.
-const PICK_SLACK = 0.10, OTHER_SLOWER = 0.20, OTHER_DIFF = 0.6;
+const PICK_SLACK = 0.10, OTHER_SLOWER = 0.20, OTHER_DIFF = 0.5;
 const ECO_MIN = 0.02, FAST_MIN = 0.01, MID_MIN = 0.03, TIME_PER_SAVING = 2;
 function shownRoutes(routes) {
   const most = (list, key) => list.reduce((a, b) => (key(b) < key(a) ? b : a), list[0]);
@@ -3891,11 +3891,12 @@ function shownRoutes(routes) {
   const quick = Math.min(...shown.map(r => r.time));
   const pick = most(shown.filter(r => r.time <= quick * (1 + PICK_SLACK)), r => f.get(r));
   const list = [pick, ...shown.filter(r => r !== pick).sort((a, b) => a.time - b.time)];
-  // Andere weg: de snelste route die voor minstens 60% over andere wegen gaat dan alle getoonde,
-  // hooguit 20% langzamer dan de snelste. Krijgt een oranje blaadje met hoeveel minder zuinig.
-  // Niet met dezelfde tijd (in minuten) als een getoonde route.
+  // Andere weg: de snelste route die voor minstens de helft over andere wegen gaat dan alle getoonde,
+  // hooguit 20% langzamer dan de snelste. Krijgt een oranje blaadje met hoeveel minder zuinig, dus
+  // dezelfde tijd als een getoonde route mag (Amsterdam-Oost–Broek in Waterland: IJtunnel of
+  // Zeeburgereiland, allebei 24 min). Korte ritten delen begin en eind, vandaar niet strenger.
   const other = most(routes.filter(r => !list.includes(r) && slower(r) <= OTHER_SLOWER
-    && list.every(o => overlap(r, o) <= 1 - OTHER_DIFF && Math.round(o.time / 60) !== Math.round(r.time / 60))), r => r.time);
+    && list.every(o => overlap(r, o) <= 1 - OTHER_DIFF)), r => r.time);
   if (other) { other.otherWay = true; list.push(other); }
   return list;
 }
