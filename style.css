@@ -98,6 +98,8 @@ body.nobar .instr:not([hidden]) ~ .toast { top: calc(env(safe-area-inset-top) + 
   background: #F1F0EC; border-radius: 12px; padding: 13px 14px; font-size: 18px; color: #6b6b6b; text-align: left;
 }
 .where .ti { font-size: 22px; }
+.where.to { color: #1F6FE0; font-weight: 600; }
+#fromrow { cursor: pointer; }
 .wheremap { flex: none; width: 52px; border-radius: 12px; background: #F1F0EC; color: #1F6FE0; display: flex; align-items: center; justify-content: center; }
 .wheremap .ti { font-size: 24px; }
 .meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; font-size: 11px; color: #8a8a8a; }
@@ -458,7 +460,7 @@ body.driving .mapctl { opacity: 0; pointer-events: none; }
   .bottom { box-shadow: 0 2px 14px rgba(0,0,0,.5); }
   .where { background: #2c2c2e; color: #a1a1a6; }
   .wheremap, .addbig, .sfield { background: #2c2c2e; color: #f2f2f7; }
-  .wheremap, .sbtn { color: #5EA0FF; }
+  .wheremap, .sbtn, .where.to { color: #5EA0FF; }
   .sfield.here { color: #5EA0FF; }
   .sfield.empty { color: #8e8e93; }
   .sfield.new { background: #1B2B44; color: #5EA0FF; }

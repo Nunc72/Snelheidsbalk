@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '82';
+const VERSION = '83';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -389,8 +389,9 @@ const TRAIL_TYPES = [
   { key: 'LOC', label: 'Lokaal', sub: 'rondwandelingen', color: '#9B4DCA', offset: 4.5 },
   { key: 'NDS', label: 'Wandelnetwerk', sub: 'knooppunten', color: '#1E8A5A', offset: 7.5 },
 ];
-let trailOff = [];
-try { trailOff = JSON.parse(localStorage.getItem('trailOff')) || []; } catch (e) { /* geen opslag */ }
+// Standaard staan alle soorten uit; aanzetten kan in de legenda bij de kaartinstellingen
+let trailOff = TRAIL_TYPES.map(t => t.key);
+try { trailOff = JSON.parse(localStorage.getItem('trailOff2')) || trailOff; } catch (e) { /* geen opslag */ }
 const trailFilter = () => ['!', ['in', ['get', 'g'], ['literal', trailOff]]];
 const byTrailType = prop => ['match', ['get', 'g'], ...TRAIL_TYPES.flatMap(t => [t.key, t[prop]]), 0];
 
@@ -450,6 +451,8 @@ function viewWidth(m) {
 // De routes komen als kaarttegels van zoomniveau 12 (circa 10 km breed), in webmercator
 const WMT = 'https://hiking.waymarkedtrails.org/api/v1';
 const TRAIL_Z = 12;
+// Wandelroutes te zien tot een kaartbeeld van 10 km breed
+const TRAIL_VIEW = 10000;
 const toMerc = (lon, lat) => [lon * 20037508.34 / 180, Math.log(Math.tan(Math.PI / 4 + rad(lat) / 2)) * 6378137];
 const fromMerc = ([x, y]) => [x / 20037508.34 * 180, deg(2 * Math.atan(Math.exp(y / 6378137)) - Math.PI / 2)];
 const tileX = lon => Math.floor((lon + 180) / 360 * 2 ** TRAIL_Z);
@@ -520,22 +523,24 @@ function loadTrailTile(x, y) {
     })();
     p.catch(() => trailTiles.delete(key));
     trailTiles.set(key, p);
-    // Hooguit 12 tegels bewaren (de oudste eruit)
-    if (trailTiles.size > 12) trailTiles.delete(trailTiles.keys().next().value);
+    // Hooguit 20 tegels bewaren (de oudste eruit)
+    if (trailTiles.size > 20) trailTiles.delete(trailTiles.keys().next().value);
   }
   return trailTiles.get(key);
 }
 
 async function updateTrails(m) {
   if (!m || !m.getLayer('trails')) return;
-  const show = travelMode === 'pedestrian' && viewWidth(m) <= 1000 ? 'visible' : 'none';
+  const width = viewWidth(m);
+  const show = travelMode === 'pedestrian' && width <= TRAIL_VIEW && trailOff.length < TRAIL_TYPES.length ? 'visible' : 'none';
   for (const id of ['trails', 'trails-label']) {
     if (m.getLayoutProperty(id, 'visibility') !== show) m.setLayoutProperty(id, 'visibility', show);
   }
   if (show === 'none') return;
-  // Alleen het gebied rond het midden (1 km naar elke kant). De randen van het beeld tellen
-  // niet mee: bij een gekantelde 3D-kaart reiken die tot de horizon, tientallen kilometers ver.
-  const c = m.getCenter(), dLat = 1000 / 111320, dLon = dLat / Math.cos(rad(c.lat));
+  // Alleen het gebied rond het midden (halve beeldbreedte, 1 tot 5 km naar elke kant). De randen van het beeld
+  // tellen niet mee: bij een gekantelde 3D-kaart reiken die tot de horizon, tientallen kilometers ver.
+  const r = Math.min(5000, Math.max(1000, width / 2));
+  const c = m.getCenter(), dLat = r / 111320, dLon = dLat / Math.cos(rad(c.lat));
   const keys = [];
   for (let x = tileX(c.lng - dLon); x <= tileX(c.lng + dLon); x++) {
     for (let y = tileY(c.lat + dLat); y <= tileY(c.lat - dLat); y++) keys.push([x, y]);
@@ -576,8 +581,10 @@ function watchTrails(m) {
 // Soorten wandelroutes aan of uit; geldt voor alle kaarten
 function setTrailType(key, on) {
   trailOff = on ? trailOff.filter(k => k !== key) : [...new Set([...trailOff, key])];
-  try { localStorage.setItem('trailOff', JSON.stringify(trailOff)); } catch (e) { /* geen opslag */ }
+  try { localStorage.setItem('trailOff2', JSON.stringify(trailOff)); } catch (e) { /* geen opslag */ }
   for (const m of [map]) {
+    m._trailKey = null;
+    updateTrails(m);
     if (!m.getLayer('trails')) continue;
     m.setFilter('trails', trailFilter());
     m.setFilter('trails-label', ['all', trailFilter(), ['!=', ['get', 'ref'], '']]);
@@ -1298,14 +1305,32 @@ async function rememberRoute(list, mode, nav) {
   const sig = sigOf(list, mode);
   const item = { id: Date.now().toString(36), stops: fixed, mode, km: Math.round(nav.total / 100) / 10, offline: false, sig };
   const all = loadSaved();
-  const same = r => savedSig(r) === sig || routeKey(r) === routeKey(item);
+  // Vanaf je eigen positie heeft het begin per keer een ander adres: binnen 300 m is het dezelfde route
+  const nearStart = r => list[0].here && r.mode === mode && r.stops.length === fixed.length
+    && r.stops.slice(1).every((s, i) => s.name === fixed[i + 1].name) && dist(ll(r.stops[0]), ll(fixed[0])) < 300;
+  const same = r => savedSig(r) === sig || routeKey(r) === routeKey(item) || nearStart(r);
   const old = all.find(same);
-  if (old) Object.assign(item, { id: old.id, offline: old.offline, relief: old.relief, bookmark: old.bookmark });
+  if (old) {
+    Object.assign(item, { id: old.id, offline: old.offline, relief: old.relief, bookmark: old.bookmark, label: old.label });
+    if (nearStart(old)) Object.assign(item, { stops: old.stops, sig: old.sig });
+  }
   // Routes met een boekenlint blijven altijd; van de rest de laatste 30
   const rest = [item, ...all.filter(r => !same(r))];
   const keep = rest.filter(r => r.bookmark || rest.filter(x => !x.bookmark).indexOf(r) < 30);
   for (const r of rest) if (!keep.includes(r)) dropSavedNav(r.id);
   storeSaved(keep);
+  if (item.offline) refreshOffline(item, nav);
+}
+
+// Een gedownloade route die je start (met bereik): de route zoals je hem nu rijdt of loopt opnieuw
+// opslaan, met de kaart erlangs. Zo werkt ook een ander begin (bijv. je eigen positie) zonder bereik.
+async function refreshOffline(r, nav) {
+  if (!navigator.onLine) return;
+  const fresh = freshNav(nav);
+  const [a, b] = await Promise.all([preloadMap(fresh, r.relief).catch(() => Infinity),
+    r.mode === 'pedestrian' ? preloadTrails(fresh).catch(() => Infinity) : 0]);
+  if (a || b) return;
+  try { await (await caches.open(ROUTE_CACHE)).put(routeUrl(r.id), new Response(JSON.stringify(fresh))); } catch (e) { /* geen opslag */ }
 }
 
 function deleteSaved(r) {
@@ -2792,7 +2817,7 @@ async function openMapSearch(kind, back, row = 0, pois = null) {
   if (!msmap) return;
   // Waar de kaart begint
   const target = pois ? null : kind === 'row' ? stops[row] && resolveStop(stops[row]) || resolveStop(stops[row - 1]) || hereNow()
-    : kind === 'build' ? hereNow() : null;
+    : kind === 'build' ? resolveStop(stops[0]) || hereNow() : null;
   const routeCoords = kind === 'row' && previewData ? previewData.coords : ms.legs.flat();
   const all = pois ? pois.list.map(ll) : [...routeCoords, ...ms.pts.map(ll)];
   // Vanaf het beginscherm blijft de kaart precies staan zoals hij stond
@@ -3444,6 +3469,7 @@ function setHomeStart(p) {
   $('fromname').textContent = p ? withoutPostcode(p.name) : 'huidige locatie';
   $('fromrow').firstElementChild.className = 'ti ' + (p ? 'ti-flag' : 'ti-current-location');
   $('wheretxt').textContent = none ? 'Zoek plaats' : 'Waar naartoe?';
+  $('where').classList.toggle('to', !none);
   $('where').setAttribute('aria-label', none ? 'Plaats zoeken' : 'Waar naartoe?');
   $('wheremap').setAttribute('aria-label', none ? 'Plaats kiezen op de kaart' : 'Zoek op kaart');
   if (startMarker) { startMarker.remove(); startMarker = null; }
@@ -3455,7 +3481,14 @@ function setHomeStart(p) {
   placeRecenter();
 }
 // Kruisje: niet vanaf hier vertrekken; dan eerst een vertrekpunt zoeken
-$('fromx').addEventListener('click', () => setHomeStart(false));
+$('fromx').addEventListener('click', e => { e.stopPropagation(); setHomeStart(false); });
+// Tik op de Vanaf-regel: de kaart gaat naar het vertrekpunt (of weer naar je eigen positie)
+$('fromrow').addEventListener('click', () => {
+  if (!homeStart) { follow(); return; }
+  stopFollowing();
+  map.flyTo({ center: ll(homeStart), zoom: Math.max(map.getZoom(), 15), bearing: 0, pitch: 0,
+    padding: camPadding(), duration: 1200, essential: true });
+});
 setHomeStart(false);
 // Hier vandaan: de plek wordt het vertrekpunt, daarna de bestemming zoeken
 $('foundfrom').addEventListener('click', () => {
