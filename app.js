@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '83';
+const VERSION = '84';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -2512,8 +2512,12 @@ function labelPoint(route, others, taken) {
   const cands = route.shape.filter((_, i) => i % step(route) === 0)
     .map(p => ({ p, d: pts.reduce((min, q) => Math.min(min, dist(p, q)), Infinity), px: pmap.project(p) }))
     .sort((a, b) => b.d - a.d);
-  const free = cands.find(c => !taken.some(t => Math.abs(t.x - c.px.x) < 80 && Math.abs(t.y - c.px.y) < 28));
-  return (free || cands[0]).p;
+  // Helemaal binnen de kaart (een label met percentage is zo'n 130 px breed)
+  const box = pmap.getContainer(), w = box.clientWidth, h = box.clientHeight;
+  const inside = cands.filter(c => c.px.x > 72 && c.px.x < w - 72 && c.px.y > 20 && c.px.y < h - 20);
+  const pool = inside.length ? inside : cands;
+  const free = pool.find(c => !taken.some(t => Math.abs(t.x - c.px.x) < 130 && Math.abs(t.y - c.px.y) < 28));
+  return (free || pool[0]).p;
 }
 
 let previewTags = [];
@@ -2534,13 +2538,19 @@ function drawAltTags() {
   const fuels = routes.map(fuel);
   const eco = travelMode === 'auto' ? fuels.indexOf(Math.min(...fuels)) : -1;
   // Bij de zuinigste: hoeveel procent minder brandstof dan de snelste
-  const fast = routes.reduce((a, r, i) => (r.time < routes[a].time ? i : a), 0);
+  // De snelste van de gewone routes (de andere weg telt niet mee)
+  const fast = routes.reduce((a, r, i) => (!r.otherWay && r.time < routes[a].time ? i : a), 0);
   const pct = eco >= 0 && eco !== fast ? Math.round((1 - fuels[eco] / fuels[fast]) * 100) : 0;
   routes.forEach((r, i) => {
     const el = document.createElement('button');
     el.type = 'button';
     el.className = 'alttag' + (i === sel ? ' sel' : '');
-    el.innerHTML = (i === eco && pct > 0 ? `<span class="ecopct">${pct}%</span>` : '')
+    // Andere weg: oranje blaadje met hoeveel procent minder zuinig dan de snelste
+    const worse = r.otherWay && i !== eco ? Math.round((fuels[i] / fuels[fast] - 1) * 100) : 0;
+    if (r.otherWay && i !== eco) {
+      el.innerHTML = (worse > 0 ? `<span class="ecopct worse">−${worse}%</span>` : '')
+        + `<i class="ti ti-leaf worse" aria-label="Andere weg${worse > 0 ? `, ${worse}% minder zuinig dan de snelste` : ''}"></i>` + fmtDuration(r.time);
+    } else el.innerHTML = (i === eco && pct > 0 ? `<span class="ecopct">${pct}%</span>` : '')
       + (i === eco ? `<i class="ti ti-leaf" aria-label="Zuinigst${pct > 0 ? `, ${pct}% zuiniger dan de snelste` : ''}"></i>` : '') + fmtDuration(r.time);
     el.addEventListener('click', e => { e.stopPropagation(); selectAlt(i); });
     const at = labelPoint(r, routes.filter(o => o !== r), previewTags.map(t => pmap.project(t.getLngLat())));
@@ -3861,6 +3871,7 @@ async function fetchRoutes(pts, alternates = 0, mode = travelMode, opts = null) 
 // op een uur rijden 12 minuten), en minstens 1% sneller dan de zuinigste. Hooguit drie routes.
 // Gekozen: de zuinigste die hooguit twee minuten langzamer is dan de snelste getoonde.
 // Fietsen en lopen: de snelste en de kortste.
+const PICK_SLACK = 0.10, OTHER_SLOWER = 0.20, OTHER_DIFF = 0.6;
 const ECO_MIN = 0.02, FAST_MIN = 0.01, MID_MIN = 0.03, TIME_PER_SAVING = 2;
 function shownRoutes(routes) {
   const most = (list, key) => list.reduce((a, b) => (key(b) < key(a) ? b : a), list[0]);
@@ -3874,15 +3885,27 @@ function shownRoutes(routes) {
   const saving = r => 1 - f.get(r) / f.get(fast), slower = r => r.time / fast.time - 1;
   // Minstens 1% én een hele minuut sneller, anders staan er twee keer dezelfde tijden
   const fasterThan = (r, o) => r.time <= o.time * (1 - FAST_MIN) && Math.round(r.time / 60) < Math.round(o.time / 60);
-  if (eco === fast || saving(eco) < ECO_MIN) return [fast];
+  routes.forEach(r => { delete r.otherWay; });
+  const shown = eco === fast || saving(eco) < ECO_MIN ? [fast] : ecoRoutes(routes, fast, eco, f, saving, slower, fasterThan, most);
+  // Voorkeur (blauw): de zuinigste die hooguit 10% langzamer is dan de snelste getoonde
+  const quick = Math.min(...shown.map(r => r.time));
+  const pick = most(shown.filter(r => r.time <= quick * (1 + PICK_SLACK)), r => f.get(r));
+  const list = [pick, ...shown.filter(r => r !== pick).sort((a, b) => a.time - b.time)];
+  // Andere weg: de snelste route die voor minstens 60% over andere wegen gaat dan alle getoonde,
+  // hooguit 20% langzamer dan de snelste. Krijgt een oranje blaadje met hoeveel minder zuinig.
+  // Niet met dezelfde tijd (in minuten) als een getoonde route.
+  const other = most(routes.filter(r => !list.includes(r) && slower(r) <= OTHER_SLOWER
+    && list.every(o => overlap(r, o) <= 1 - OTHER_DIFF && Math.round(o.time / 60) !== Math.round(r.time / 60))), r => r.time);
+  if (other) { other.otherWay = true; list.push(other); }
+  return list;
+}
+function ecoRoutes(routes, fast, eco, f, saving, slower, fasterThan, most) {
   const mid = most(routes.filter(r => r !== eco && r !== fast && saving(r) >= MID_MIN && slower(r) <= TIME_PER_SAVING * saving(r)
     && fasterThan(r, eco)), r => f.get(r));
   // De snelste alleen als hij echt sneller is dan elke zuinigere die we tonen
   const shown = [eco, ...(mid ? [mid] : [])];
   if (shown.every(o => fasterThan(fast, o))) shown.push(fast);
-  const quick = Math.min(...shown.map(r => r.time));
-  const pick = most(shown.filter(r => r.time <= quick + ECO_SLACK), r => f.get(r));
-  return [pick, ...shown.filter(r => r !== pick).sort((a, b) => a.time - b.time)];
+  return shown;
 }
 
 async function legAlternates(trip, pts, alternates, mode, opts) {
@@ -3897,10 +3920,9 @@ async function legAlternates(trip, pts, alternates, mode, opts) {
 
 // Met de auto ook routes die de afstand meewegen: vaak even snel maar zonder omweg over de
 // snelweg. Licht (0,2): Amsterdam–Doldersum over de N-wegen, 30 km korter. Sterker (0,6): vanuit
-// Amsterdam-Oost over de Wibautstraat naar de A10 in plaats van via Zeeburgereiland. Alleen
-// zelf gekozen als hij niet (veel) langzamer is, zie ECO_SLACK; anders staat hij als alternatief.
+// Amsterdam-Oost over de Wibautstraat naar de A10 in plaats van via Zeeburgereiland.
+// Welke routes je te zien krijgt en welke voorgekozen is: zie shownRoutes.
 const SHORT = [{ use_distance: 0.2 }, { use_distance: 0.6 }];
-const ECO_SLACK = 120;
 async function fetchWithShort(pts) {
   // De sterk verkorte variant ook met alternatieven: die beginnen dan ook goed (bijv. via de
   // Wibautstraat), in plaats van allemaal met dezelfde omweg als de gewone route
