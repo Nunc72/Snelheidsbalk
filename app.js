@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '87';
+const VERSION = '88';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -3959,11 +3959,11 @@ async function fetchWithShort(pts) {
   const [routes, ...short] = await Promise.all([fetchRoutes(pts, 2),
     ...(travelMode === 'auto' ? SHORT.map(o => fetchRoutes(pts, o.use_distance >= 0.5 ? 2 : 0, 'auto', o).catch(() => [])) : [])]);
   let all = distinctRoutes([...routes, ...short.flat()]);
-  // Alleen de getoonde snelste en zuinigste een beter begin geven (niet de andere weg), met de
-  // beginnen van alle routes: dat scheelt de helft van de vragen aan de routedienst. Daarna opnieuw
+  // Alleen de routes die je te zien krijgt (hooguit drie) een beter begin geven, met de beginnen
+  // van alle routes: dat scheelt de helft van de vragen aan de routedienst. Daarna opnieuw
   // kiezen, want een verbeterde route kan een andere verdringen.
   if (travelMode === 'auto' && all.length > 1) {
-    const shown = shownRoutes(all).filter(r => !r.otherWay);
+    const shown = shownRoutes(all);
     const better = await betterStarts(shown, pts, all);
     all = distinctRoutes([...better, ...all.filter(r => !shown.includes(r))]);
   }
