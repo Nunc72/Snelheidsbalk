@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '85';
+const VERSION = '86';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -2287,6 +2287,22 @@ function choose(f) {
   useChoice(dest);
 }
 
+// Zoeken rond het gekozen vertrekpunt (of het adres ervoor), anders rond je eigen positie of de kaart.
+// Zoom 14: wat dichtbij is telt flink mee (de standaard 12 gaf een Kerkstraat ver weg eerst)
+function searchFocus() {
+  const prev = textFrom === 'overview' && editRow > 0 ? stops[editRow - 1] : textFrom === 'home' ? homeStart : null;
+  if (prev && !prev.here && prev.lat != null) return { lat: prev.lat, lon: prev.lon };
+  if (state.fix) return { lat: state.fix.lat, lon: state.fix.lon };
+  const c = map.getCenter();
+  return { lat: c.lat, lon: c.lng };
+}
+function focusParams(params) {
+  const at = searchFocus();
+  params.set('lat', at.lat.toFixed(5));
+  params.set('lon', at.lon.toFixed(5));
+  params.set('zoom', '14');
+}
+
 function searchQuery() {
   let q = field().value.trim();
   const extra = [$('q-postcode').value, $('q-city').value].map(v => v.trim()).filter(Boolean);
@@ -2299,7 +2315,7 @@ function searchQuery() {
 async function resolveHouse(num, seq, go) {
   const { street, city, dest: streetDest } = streetCtx;
   const params = new URLSearchParams({ q: `${street} ${num}, ${city}`, limit: '10' });
-  if (state.fix) { params.set('lat', state.fix.lat); params.set('lon', state.fix.lon); }
+  focusParams(params);
   try {
     const data = await (await fetch(`${PHOTON}?${params}`)).json();
     if (seq !== searchSeq) return;
@@ -2352,7 +2368,7 @@ async function search() {
   const local = publicMatches(v).filter(d => !known.has(d.name));
   for (const d of local) ul.appendChild(publicItem(d));
   const params = new URLSearchParams({ q, limit: '12' });
-  if (state.fix) { params.set('lat', state.fix.lat); params.set('lon', state.fix.lon); }
+  focusParams(params);
   try {
     const res = await fetch(`${PHOTON}?${params}`);
     const data = await res.json();
@@ -2365,6 +2381,7 @@ async function search() {
     firstResult = features[0] || null;
     if (!firstResult && local.length) firstResult = local[0].feature;
     if (!features.length && !recents.length && !local.length) { ul.innerHTML = '<li class="empty">Niets gevonden</li>'; return; }
+    if (features.length + local.length > 1) ul.appendChild(resultsMapLink([...local.map(d => d.feature), ...features]));
     for (const f of features) {
       const { title, sub } = describe(f.properties);
       const li = document.createElement('li');
@@ -2379,11 +2396,31 @@ async function search() {
   }
 }
 
+// Toon op kaart: de gevonden plekken genummerd op de kaart; met de pin erop en ✓ kies je er een
+function resultsMapLink(features) {
+  const at = ll(searchFocus());
+  const list = features.map(f => {
+    const { title, sub } = describe(f.properties);
+    const [lon, lat] = f.geometry.coordinates;
+    return { lat, lon, title, sub, name: [title, sub].filter(Boolean).join(', '), d: dist(at, [lon, lat]) };
+  });
+  const head = document.createElement('li');
+  head.className = 'sect link';
+  head.setAttribute('role', 'button');
+  head.innerHTML = '<span class="st">Resultaten</span><span class="go">Toon op kaart<i class="ti ti-chevron-right" aria-hidden="true"></i></span>';
+  head.addEventListener('click', () => {
+    $('q').blur();
+    ms.nextStartPick = textFrom === 'start';
+    openMapSearch('row', 'near', editRow, { list, cat: 'search' });
+  });
+  return head;
+}
+
 // Publieke gebouwen op de kaart waarvan de naam past, dichtstbij eerst
 function publicMatches(v) {
   const t = v.trim().toLowerCase();
   if (t.length < 3) return [];
-  const at = state.fix ? [state.fix.lon, state.fix.lat] : map.getCenter().toArray();
+  const at = ll(searchFocus());
   return publicPlaces.filter(d => d.name.toLowerCase().includes(t))
     .sort((a, b) => dist(at, [a.lon, a.lat]) - dist(at, [b.lon, b.lat])).slice(0, 3)
     .map(d => ({ ...d, feature: { properties: { name: d.name }, geometry: { coordinates: [d.lon, d.lat] } } }));
@@ -2536,22 +2573,25 @@ function drawAltTags() {
   const { routes, sel } = previewData;
   if (!routes || routes.length < 2) return;
   const fuels = routes.map(fuel);
-  const eco = travelMode === 'auto' ? fuels.indexOf(Math.min(...fuels)) : -1;
-  // Bij de zuinigste: hoeveel procent minder brandstof dan de snelste
-  // De snelste van de gewone routes (de andere weg telt niet mee)
-  const fast = routes.reduce((a, r, i) => (!r.otherWay && r.time < routes[a].time ? i : a), 0);
-  const pct = eco >= 0 && eco !== fast ? Math.round((1 - fuels[eco] / fuels[fast]) * 100) : 0;
+  const auto = travelMode === 'auto';
+  const fast = routes.reduce((a, r, i) => (r.time < routes[a].time ? i : a), 0);
+  const eco = fuels.indexOf(Math.min(...fuels));
+  // Onder de 1% met één decimaal, zodat er nooit 0% staat
+  const pctText = v => (v < 1 ? v.toFixed(1).replace('.', ',') : String(Math.round(v)));
   routes.forEach((r, i) => {
     const el = document.createElement('button');
     el.type = 'button';
     el.className = 'alttag' + (i === sel ? ' sel' : '');
-    // Andere weg: oranje blaadje met hoeveel procent minder zuinig dan de snelste
-    const worse = r.otherWay && i !== eco ? Math.round((fuels[i] / fuels[fast] - 1) * 100) : 0;
-    if (r.otherWay && i !== eco) {
-      el.innerHTML = (worse > 0 ? `<span class="ecopct worse">−${worse}%</span>` : '')
-        + `<i class="ti ti-leaf worse" aria-label="Andere weg${worse > 0 ? `, ${worse}% minder zuinig dan de snelste` : ''}"></i>` + fmtDuration(r.time);
-    } else el.innerHTML = (i === eco && pct > 0 ? `<span class="ecopct">${pct}%</span>` : '')
-      + (i === eco ? `<i class="ti ti-leaf" aria-label="Zuinigst${pct > 0 ? `, ${pct}% zuiniger dan de snelste` : ''}"></i>` : '') + fmtDuration(r.time);
+    // Auto: de snelste een groen blaadje als hij ook de zuinigste is; elke andere route een blaadje
+    // met hoeveel procent zuiniger (groen) of minder zuinig (oranje) dan de snelste
+    let leaf = '';
+    if (auto && i === fast) leaf = i === eco ? '<i class="ti ti-leaf" aria-label="Snelst en zuinigst"></i>' : '';
+    else if (auto) {
+      const d = (1 - fuels[i] / fuels[fast]) * 100, t = pctText(Math.abs(d));
+      leaf = d >= 0 ? `<span class="ecopct">${t}%</span><i class="ti ti-leaf" aria-label="${t}% zuiniger dan de snelste"></i>`
+        : `<span class="ecopct worse">−${t}%</span><i class="ti ti-leaf worse" aria-label="${t}% minder zuinig dan de snelste"></i>`;
+    }
+    el.innerHTML = leaf + fmtDuration(r.time);
     el.addEventListener('click', e => { e.stopPropagation(); selectAlt(i); });
     const at = labelPoint(r, routes.filter(o => o !== r), previewTags.map(t => pmap.project(t.getLngLat())));
     previewTags.push(new maplibregl.Marker({ element: el }).setLngLat(at).addTo(pmap));
@@ -3082,7 +3122,7 @@ function msUi(force) {
     const p = ms.pois.list[h.i];
     const lbl = document.createElement('span');
     lbl.className = 'lbltxt poitxt';
-    lbl.innerHTML = `<i class="ti ${NEAR[ms.pois.cat].icon}" aria-hidden="true"></i><span class="pt"><b></b><small></small></span>`;
+    lbl.innerHTML = `<i class="ti ${(NEAR[ms.pois.cat] || { icon: 'ti-map-pin' }).icon}" aria-hidden="true"></i><span class="pt"><b></b><small></small></span>`;
     lbl.querySelector('b').textContent = p.title;
     lbl.querySelector('small').textContent = [p.extra != null ? fmtExtra(p.extra) : fmtDist(p.d), (availOf(p) || {}).text, p.sub].filter(Boolean).join(' · ');
     const sep = document.createElement('span');
@@ -3311,6 +3351,8 @@ $('qback').addEventListener('click', () => {
 });
 $('qmap').addEventListener('click', () => {
   $('q').blur();
+  // Vanaf het beginscherm opent de kaart waar je hem het laatst bekeek
+  if (textFrom !== 'overview') ms.keep = true;
   if (textFrom === 'overview') openMapSearch('row', 'text', editRow);
   else if (textFrom === 'start') { ms.nextStartPick = true; openMapSearch('row', 'text', 0); }
   else openMapSearch('build', 'text');
@@ -3864,15 +3906,15 @@ async function fetchRoutes(pts, alternates = 0, mode = travelMode, opts = null) 
 }
 
 // Welke routes je te zien krijgt, de gekozen route eerst.
-// Auto: de zuinigste (met het blaadje) als hij minstens 2% zuiniger is dan de snelste, en de
-// snelste als hij minstens 1% (en een minuut) sneller is dan de zuinigste; is het verschil kleiner, dan alleen
-// de een of de ander. Daarnaast zo mogelijk een middenweg: minstens 3% zuiniger dan de snelste,
-// hooguit twee keer zoveel procent langzamer als hij bespaart (10% zuiniger mag 20% langer duren:
-// op een uur rijden 12 minuten), en minstens 1% sneller dan de zuinigste. Hooguit drie routes.
-// Gekozen: de zuinigste die hooguit twee minuten langzamer is dan de snelste getoonde.
+// Auto: de snelste en de zuinigste (van de routes die hooguit 20% langzamer zijn). Allebei als de
+// snelste meer dan 2 minuten sneller is en ze voor minstens 30% over andere wegen gaan; anders alleen de
+// voorkeur. Voorkeur (blauw): de zuinigste als hij hooguit 10% langzamer is en minstens half zoveel
+// procent zuiniger als langzamer (4% langzamer, dan minstens 2% zuiniger); anders de snelste.
+// Daarbij zo mogelijk een andere weg: de snelste van de rest die voor minstens 35% over andere
+// wegen gaat dan alle getoonde, hooguit 15% langzamer dan de snelste.
 // Fietsen en lopen: de snelste en de kortste.
-const PICK_SLACK = 0.10, OTHER_SLOWER = 0.20, OTHER_DIFF = 0.5;
-const ECO_MIN = 0.02, FAST_MIN = 0.01, MID_MIN = 0.03, TIME_PER_SAVING = 2;
+const PICK_SLOWER = 0.10, PICK_RATIO = 0.5, ECO_SLOWER = 0.20, ECO_GAP = 120, SAME_WAY = 0.7;
+const OTHER_SLOWER = 0.15, OTHER_DIFF = 0.35;
 function shownRoutes(routes) {
   const most = (list, key) => list.reduce((a, b) => (key(b) < key(a) ? b : a), list[0]);
   const fast = most(routes, r => r.time);
@@ -3881,32 +3923,19 @@ function shownRoutes(routes) {
     return short !== fast && short.total < fast.total * 0.95 ? [fast, short] : [fast];
   }
   const f = new Map(routes.map(r => [r, fuel(r)]));
-  const eco = most(routes, r => f.get(r));
   const saving = r => 1 - f.get(r) / f.get(fast), slower = r => r.time / fast.time - 1;
-  // Minstens 1% én een hele minuut sneller, anders staan er twee keer dezelfde tijden
-  const fasterThan = (r, o) => r.time <= o.time * (1 - FAST_MIN) && Math.round(r.time / 60) < Math.round(o.time / 60);
+  // De zuinigste van de routes die hooguit 20% langzamer zijn
+  const eco = most(routes.filter(r => slower(r) <= ECO_SLOWER), r => f.get(r));
   routes.forEach(r => { delete r.otherWay; });
-  const shown = eco === fast || saving(eco) < ECO_MIN ? [fast] : ecoRoutes(routes, fast, eco, f, saving, slower, fasterThan, most);
-  // Voorkeur (blauw): de zuinigste die hooguit 10% langzamer is dan de snelste getoonde
-  const quick = Math.min(...shown.map(r => r.time));
-  const pick = most(shown.filter(r => r.time <= quick * (1 + PICK_SLACK)), r => f.get(r));
-  const list = [pick, ...shown.filter(r => r !== pick).sort((a, b) => a.time - b.time)];
-  // Andere weg: de snelste route die voor minstens de helft over andere wegen gaat dan alle getoonde,
-  // hooguit 20% langzamer dan de snelste. Krijgt een oranje blaadje met hoeveel minder zuinig, dus
-  // dezelfde tijd als een getoonde route mag (Amsterdam-Oost–Broek in Waterland: IJtunnel of
-  // Zeeburgereiland, allebei 24 min). Korte ritten delen begin en eind, vandaar niet strenger.
+  const pick = eco !== fast && slower(eco) <= PICK_SLOWER && saving(eco) >= PICK_RATIO * slower(eco) ? eco : fast;
+  // Bijna dezelfde route (70% dezelfde wegen) of nauwelijks zuiniger: alleen de voorkeur
+  const both = eco !== fast && eco.time - fast.time > ECO_GAP
+    && saving(eco) >= 0.005 && overlap(eco, fast) < SAME_WAY;
+  const list = both ? [pick, pick === eco ? fast : eco] : [pick];
   const other = most(routes.filter(r => !list.includes(r) && slower(r) <= OTHER_SLOWER
     && list.every(o => overlap(r, o) <= 1 - OTHER_DIFF)), r => r.time);
   if (other) { other.otherWay = true; list.push(other); }
   return list;
-}
-function ecoRoutes(routes, fast, eco, f, saving, slower, fasterThan, most) {
-  const mid = most(routes.filter(r => r !== eco && r !== fast && saving(r) >= MID_MIN && slower(r) <= TIME_PER_SAVING * saving(r)
-    && fasterThan(r, eco)), r => f.get(r));
-  // De snelste alleen als hij echt sneller is dan elke zuinigere die we tonen
-  const shown = [eco, ...(mid ? [mid] : [])];
-  if (shown.every(o => fasterThan(fast, o))) shown.push(fast);
-  return shown;
 }
 
 async function legAlternates(trip, pts, alternates, mode, opts) {
@@ -3930,11 +3959,11 @@ async function fetchWithShort(pts) {
   const [routes, ...short] = await Promise.all([fetchRoutes(pts, 2),
     ...(travelMode === 'auto' ? SHORT.map(o => fetchRoutes(pts, o.use_distance >= 0.5 ? 2 : 0, 'auto', o).catch(() => [])) : [])]);
   let all = distinctRoutes([...routes, ...short.flat()]);
-  // Alleen de routes die je te zien krijgt (hooguit drie) een beter begin geven, met de beginnen
-  // van alle routes: dat scheelt de helft van de vragen aan de routedienst. Daarna opnieuw
+  // Alleen de getoonde snelste en zuinigste een beter begin geven (niet de andere weg), met de
+  // beginnen van alle routes: dat scheelt de helft van de vragen aan de routedienst. Daarna opnieuw
   // kiezen, want een verbeterde route kan een andere verdringen.
   if (travelMode === 'auto' && all.length > 1) {
-    const shown = shownRoutes(all);
+    const shown = shownRoutes(all).filter(r => !r.otherWay);
     const better = await betterStarts(shown, pts, all);
     all = distinctRoutes([...better, ...all.filter(r => !shown.includes(r))]);
   }
