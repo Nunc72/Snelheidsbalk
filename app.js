@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '86';
+const VERSION = '87';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -3911,10 +3911,10 @@ async function fetchRoutes(pts, alternates = 0, mode = travelMode, opts = null) 
 // voorkeur. Voorkeur (blauw): de zuinigste als hij hooguit 10% langzamer is en minstens half zoveel
 // procent zuiniger als langzamer (4% langzamer, dan minstens 2% zuiniger); anders de snelste.
 // Daarbij zo mogelijk een andere weg: de snelste van de rest die voor minstens 35% over andere
-// wegen gaat dan alle getoonde, hooguit 15% langzamer dan de snelste.
+// wegen gaat dan alle getoonde, hooguit 20% langzamer dan de snelste.
 // Fietsen en lopen: de snelste en de kortste.
 const PICK_SLOWER = 0.10, PICK_RATIO = 0.5, ECO_SLOWER = 0.20, ECO_GAP = 120, SAME_WAY = 0.7;
-const OTHER_SLOWER = 0.15, OTHER_DIFF = 0.35;
+const OTHER_SLOWER = 0.20, OTHER_DIFF = 0.35;
 function shownRoutes(routes) {
   const most = (list, key) => list.reduce((a, b) => (key(b) < key(a) ? b : a), list[0]);
   const fast = most(routes, r => r.time);
