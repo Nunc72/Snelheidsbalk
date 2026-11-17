@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '90';
+const VERSION = '91';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -3721,9 +3721,10 @@ function placeAction(act, p, pin, el) {
   if (act === 'del') { removePin(pin.id); return; }
   if (act === 'start') { setHomeStart(p); peek(false); return; }
   // Route hier naartoe: een extra bestemming achter wat er al gepland staat (ook als dat alleen
-  // een vertrekpunt is); niets gepland: vanaf je eigen positie. Meteen het overzicht.
+  // een vertrekpunt is); niets gepland of nog geen vertrekpunt: vanaf je eigen positie. Meteen het overzicht.
   openSheet();
-  stops = [...(plannedStops() || [HERE]), p];
+  const planned = plannedStops();
+  stops = [...(planned && planned[0] ? planned : [HERE]), p];
   showOverview();
   if (p.naming) p.naming.then(() => { delete p.naming; if (!$('overview').hidden && stops.includes(p)) renderStops(); });
 }
