@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '89';
+const VERSION = '90';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -2267,6 +2267,7 @@ function streetItem() {
 }
 
 function choose(f) {
+  if (f.airport) { chooseAirport(f.airport); return; }
   const p = f.properties;
   const { title, sub } = describe(p);
   const [lon, lat] = f.geometry.coordinates;
@@ -2369,9 +2370,11 @@ async function search() {
   for (const d of local) ul.appendChild(publicItem(d));
   const params = new URLSearchParams({ q, limit: '12' });
   focusParams(params);
+  const airports = airportMatches(v).catch(() => []);
   try {
     const res = await fetch(`${PHOTON}?${params}`);
     const data = await res.json();
+    const found = await airports;
     if (seq !== searchSeq) return;
     // Hetzelfde gebouw als uit de kaart (zelfde naam, vlakbij) niet nog een keer
     const same = f => local.some(d => d.name.toLowerCase() === describe(f.properties).title.toLowerCase() && dist([d.lon, d.lat], f.geometry.coordinates) < 300);
@@ -2380,17 +2383,30 @@ async function search() {
       .slice(0, 8 - local.length);
     firstResult = features[0] || null;
     if (!firstResult && local.length) firstResult = local[0].feature;
-    if (!features.length && !recents.length && !local.length) { ul.innerHTML = '<li class="empty">Niets gevonden</li>'; return; }
-    if (features.length + local.length > 1) ul.appendChild(resultsMapLink([...local.map(d => d.feature), ...features]));
-    for (const f of features) {
+    if (!features.length && !recents.length && !local.length && !found.length) { ul.innerHTML = '<li class="empty">Niets gevonden</li>'; return; }
+    const item = f => {
       const { title, sub } = describe(f.properties);
       const li = document.createElement('li');
       li.innerHTML = `<div class="r1"></div><div class="r2"></div>`;
       li.querySelector('.r1').textContent = title;
       li.querySelector('.r2').textContent = sub;
       li.addEventListener('click', () => choose(f));
-      ul.appendChild(li);
+      return li;
+    };
+    if (found.length) {
+      // Luchthavens bovenaan, ook boven de recente. Kleine letters kunnen ook een plaatsnaam
+      // zijn ("oss"): een plaats met precies die naam blijft dan de eerste.
+      const exact = !/^[A-Z]{3}/.test(v.trim()) && features[0] && ['place', 'boundary'].includes(features[0].properties.osm_key)
+        && fold(describe(features[0].properties).title) === fold(v.trim());
+      const top = exact ? [features.shift()] : [];
+      const names = new Set(found.map(f => { const { title, sub } = describe(f.properties); return [title, sub].filter(Boolean).join(', '); }));
+      ul.replaceChildren(...top.map(item), ...found.map(airportItem), ...recents.filter(d => !names.has(d.name)).map(d => recentItem(d)),
+        ...local.map(publicItem));
+      firstRecent = null;
+      firstResult = top[0] || found[0];
     }
+    if (features.length + local.length + found.length > 1) ul.appendChild(resultsMapLink([...found, ...local.map(d => d.feature), ...features]));
+    for (const f of features) ul.appendChild(item(f));
   } catch (e) {
     if (seq === searchSeq) ul.innerHTML = '<li class="empty">Zoeken lukt nu niet. Controleer je verbinding.</li>';
   }
@@ -2431,6 +2447,92 @@ function publicItem(d) {
   li.querySelector('.r1').textContent = d.name;
   li.querySelector('.r2').textContent = d.kind;
   li.addEventListener('click', () => choose(d.feature));
+  return li;
+}
+
+// ---------- Luchthavens ----------
+// Een IATA-code (AMS, BCN, JFK) zet de luchthaven bovenaan, een stadscode (NYC, RIO) al zijn
+// luchthavens. Met meer terminals staan die er los (BCN T1, BCN T2); "BCN T2" geeft alleen die.
+// De lijst komt van tools/airports.py, de terminals uit OpenStreetMap (via Photon).
+const AIRPORT_Q = /^([a-z]{3})(?:\s+(?:t|terminal)\s*(\d{1,2}|[a-h])?)?$/i;
+// "Terminal 2", "T1", "Heathrow Terminal 5", "Terminal 2 (Building #4)"; geen 2A, pieren of "Former Terminal A"
+const TERMINAL_RE = /^(?!(?:new|former|old)\b)(?:\S+\s+)?(?:terminal|t)\s*(?:de\s+passageiros\s+)?(\d{1,2}|[a-h])(?:\s*[-(].*)?$/i;
+const SIDE_TERMINAL = /general aviation|cargo|vip|fbo|business|first ?class|royal|regierung|corporativ|ejecutiv|executive|airail|former/i;
+let airportData = null;
+const terminalCache = new Map();
+function loadAirports() {
+  return airportData ||= fetch('airports.json').then(r => r.json()).catch(() => { airportData = null; return { a: {}, m: {} }; });
+}
+let regionNames = null;
+try { regionNames = new Intl.DisplayNames(['nl'], { type: 'region' }); } catch (e) {}
+
+// De terminals rond een luchthaven, gesorteerd (T1, T2, … of A, B, C)
+function terminalsOf(code, ap) {
+  if (!terminalCache.has(code)) {
+    const params = new URLSearchParams({ lat: ap[3], lon: ap[4], radius: '5', osm_tag: 'aeroway:terminal', limit: '40' });
+    terminalCache.set(code, fetch(`${PHOTON.replace('/api/', '/reverse')}?${params}`).then(r => r.json()).then(data => {
+      const main = new Map();
+      let other = null;
+      for (const f of data.features) {
+        const name = (f.properties.name || '').trim();
+        const m = name.match(TERMINAL_RE);
+        if (m) { const ref = m[1].toUpperCase(); if (!main.has(ref)) main.set(ref, f.geometry.coordinates); }
+        else if (!other && /terminal/i.test(name) && !SIDE_TERMINAL.test(name)) other = f.geometry.coordinates;
+      }
+      const list = [...main].map(([ref, at]) => ({ ref, at }))
+        .sort((a, b) => (parseInt(a.ref) || 99) - (parseInt(b.ref) || 99) || a.ref.localeCompare(b.ref));
+      // Eén hoofdterminal (of alleen een andere): dan is dat het punt van de luchthaven
+      return list.length > 1 ? list : list.length ? [{ at: list[0].at }] : other ? [{ at: other }] : [];
+    }).catch(() => { terminalCache.delete(code); return []; }));
+  }
+  return terminalCache.get(code);
+}
+
+// Als zoekresultaat, net als die van Photon (dan werken kiezen en Toon op kaart vanzelf)
+function airportFeature(code, ap, { ref, at, metro } = {}) {
+  const country = ap[2] === 'NL' ? '' : (regionNames && regionNames.of(ap[2])) || ap[2];
+  const f = { properties: { name: `${code}${ref ? ' T' + ref : ''} · ${ap[0]}`, city: ap[1], country },
+    geometry: { coordinates: at || [ap[4], ap[3]] } };
+  if (metro) f.airport = code;
+  return f;
+}
+
+async function airportMatches(v, { single = false } = {}) {
+  const m = v.trim().match(AIRPORT_Q);
+  if (!m) return [];
+  const { a, m: metros } = await loadAirports();
+  const code = m[1].toUpperCase();
+  if (!single && metros[code] && !m[2]) return metros[code].map(c => airportFeature(c, a[c], { metro: true }));
+  const ap = a[code];
+  if (!ap) return [];
+  const terms = await terminalsOf(code, ap);
+  if (terms.length < 2) return [airportFeature(code, ap, { at: terms[0] && terms[0].at })];
+  const want = m[2] && m[2].toUpperCase();
+  const pick = terms.filter(t => t.ref === want);
+  return (pick.length ? pick : terms).map(t => airportFeature(code, ap, t));
+}
+// Op een luchthaven bij een stadscode getikt: met meer terminals die laten kiezen, anders meteen gaan
+async function chooseAirport(code) {
+  const seq = ++searchSeq;
+  const list = await airportMatches(code, { single: true });
+  if (seq !== searchSeq) return;
+  if (list.length === 1) { choose(list[0]); return; }
+  const q = field();
+  q.value = code;
+  updateClear();
+  const ul = $('results');
+  ul.replaceChildren(resultsMapLink(list), ...list.map(airportItem));
+  firstRecent = null;
+  firstResult = list[0];
+}
+function airportItem(f) {
+  const { title, sub } = describe(f.properties);
+  const li = document.createElement('li');
+  li.className = 'recent airport';
+  li.innerHTML = '<div class="row"><i class="ti ti-plane-departure" aria-hidden="true"></i><div class="rtext"><div class="r1"></div><div class="r2"></div></div></div>';
+  li.querySelector('.r1').textContent = title;
+  li.querySelector('.r2').textContent = sub;
+  li.addEventListener('click', () => choose(f));
   return li;
 }
 
