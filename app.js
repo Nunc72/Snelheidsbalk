@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '88';
+const VERSION = '89';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -3875,7 +3875,10 @@ function segDist(p, a, b) {
 async function fetchRoutes(pts, alternates = 0, mode = travelMode, opts = null) {
   const locations = pts.map((p, i) => {
     // Doorrijpunt (zie betterStarts): geen stop, en in de rijrichting van de route
-    if (p.through) return { lat: p.lat, lon: p.lon, type: 'through', heading: p.heading, heading_tolerance: 45 };
+    if (p.through) return { lat: p.lat, lon: p.lon, type: 'through', heading: p.heading, heading_tolerance: p.tolerance || 45,
+      ...(p.roads && { search_filter: { min_road_class: p.roads } }) };
+    // Punt uit een eigen route: erlangs, zonder te stoppen (keren mag)
+    if (p.via) return { lat: p.lat, lon: p.lon, type: 'via' };
     const l = { lat: p.lat, lon: p.lon, type: 'break' };
     if (i === 0 && p.here && state.heading != null && state.speedKmh > 5) { l.heading = Math.round(state.heading); l.heading_tolerance = 60; }
     return l;
@@ -3902,7 +3905,7 @@ async function fetchRoutes(pts, alternates = 0, mode = travelMode, opts = null) 
   let trips = [data.trip, ...(data.alternates || []).map(a => a.trip)];
   // Met tussenstops: alternatieven voor de langste etappe, de rest van de route blijft gelijk
   if (alternates && pts.length > 2) trips = [data.trip, ...await legAlternates(data.trip, pts, alternates, mode, opts)];
-  return trips.map(t => Object.assign(navFromTrip(t, mode, pts.slice(1).filter(p => !p.through)), opts && { opts }));
+  return trips.map(t => Object.assign(navFromTrip(t, mode, pts.slice(1).filter(p => !p.through && !p.via)), opts && { opts }));
 }
 
 // Welke routes je te zien krijgt, de gekozen route eerst.
@@ -3911,29 +3914,40 @@ async function fetchRoutes(pts, alternates = 0, mode = travelMode, opts = null) 
 // voorkeur. Voorkeur (blauw): de zuinigste als hij hooguit 10% langzamer is en minstens half zoveel
 // procent zuiniger als langzamer (4% langzamer, dan minstens 2% zuiniger); anders de snelste.
 // Daarbij zo mogelijk een andere weg: de snelste van de rest die voor minstens 35% over andere
-// wegen gaat dan alle getoonde, hooguit 20% langzamer dan de snelste.
-// Fietsen en lopen: de snelste en de kortste.
+// wegen gaat dan alle getoonde, hooguit 20% langzamer is dan de snelste en geen omweg maakt (waar
+// hij afwijkt hooguit 25% langer dan het stuk dat hij vervangt; Vall del Bac–Barcelona langs
+// Manresa: 32%). Of echt de andere kant op: voor minstens 80% over andere wegen en aan de andere
+// kant van de rechte lijn; die mag 35% langzamer zijn (Vall del Bac–Olot over Sant Pau).
+// Fietsen en lopen: de snelste en de kortste, en ook zo'n andere weg.
 const PICK_SLOWER = 0.10, PICK_RATIO = 0.5, ECO_SLOWER = 0.20, ECO_GAP = 120, SAME_WAY = 0.7;
-const OTHER_SLOWER = 0.20, OTHER_DIFF = 0.35;
+const OTHER_SLOWER = 0.20, OTHER_DIFF = 0.35, DETOUR_MAX = 1.25, SIDE_SLOWER = 0.35, SIDE_DIFF = 0.8;
+function otherWay(routes, list, slower) {
+  const ok = routes.filter(r => !list.includes(r) && slower(r) <= SIDE_SLOWER && list.every(o => overlap(r, o) <= 1 - OTHER_DIFF)
+    && ((slower(r) <= OTHER_SLOWER && list.every(o => detour(r, o) <= DETOUR_MAX))
+      || (list.every(o => overlap(r, o) <= 1 - SIDE_DIFF) && otherSide(r, list))));
+  return ok.reduce((a, b) => (b.time < a.time ? b : a), ok[0]);
+}
 function shownRoutes(routes) {
   const most = (list, key) => list.reduce((a, b) => (key(b) < key(a) ? b : a), list[0]);
   const fast = most(routes, r => r.time);
+  routes.forEach(r => { delete r.otherWay; });
   if (travelMode !== 'auto') {
     const short = most(routes, r => r.total);
-    return short !== fast && short.total < fast.total * 0.95 ? [fast, short] : [fast];
+    const list = short !== fast && short.total < fast.total * 0.95 ? [fast, short] : [fast];
+    const other = otherWay(routes, list, r => r.time / fast.time - 1);
+    if (other) { other.otherWay = true; list.push(other); }
+    return list;
   }
   const f = new Map(routes.map(r => [r, fuel(r)]));
   const saving = r => 1 - f.get(r) / f.get(fast), slower = r => r.time / fast.time - 1;
   // De zuinigste van de routes die hooguit 20% langzamer zijn
   const eco = most(routes.filter(r => slower(r) <= ECO_SLOWER), r => f.get(r));
-  routes.forEach(r => { delete r.otherWay; });
   const pick = eco !== fast && slower(eco) <= PICK_SLOWER && saving(eco) >= PICK_RATIO * slower(eco) ? eco : fast;
   // Bijna dezelfde route (70% dezelfde wegen) of nauwelijks zuiniger: alleen de voorkeur
   const both = eco !== fast && eco.time - fast.time > ECO_GAP
     && saving(eco) >= 0.005 && overlap(eco, fast) < SAME_WAY;
   const list = both ? [pick, pick === eco ? fast : eco] : [pick];
-  const other = most(routes.filter(r => !list.includes(r) && slower(r) <= OTHER_SLOWER
-    && list.every(o => overlap(r, o) <= 1 - OTHER_DIFF)), r => r.time);
+  const other = otherWay(routes, list, slower);
   if (other) { other.otherWay = true; list.push(other); }
   return list;
 }
@@ -3962,12 +3976,58 @@ async function fetchWithShort(pts) {
   // Alleen de routes die je te zien krijgt (hooguit drie) een beter begin geven, met de beginnen
   // van alle routes: dat scheelt de helft van de vragen aan de routedienst. Daarna opnieuw
   // kiezen, want een verbeterde route kan een andere verdringen.
-  if (travelMode === 'auto' && all.length > 1) {
-    const shown = shownRoutes(all);
-    const better = await betterStarts(shown, pts, all);
-    all = distinctRoutes([...better, ...all.filter(r => !shown.includes(r))]);
-  }
+  // Tegelijk: de andere kant op proberen en je eigen routes tussen dezelfde plekken
+  const shown = shownRoutes(all);
+  const [better, extra] = await Promise.all([travelMode === 'auto' && all.length > 1 ? betterStarts(shown, pts, all) : shown,
+    extraRoutes(pts, shown)]);
+  all = distinctRoutes([...better, ...all.filter(r => !shown.includes(r)), ...extra]);
   return all;
+}
+
+// De andere kant op: tonen we één route, of twee aan dezelfde kant van de rechte lijn, dan nog één
+// vraag via een punt aan de andere kant. Dat ligt een derde van de afstand naast het midden, op de
+// dichtstbijzijnde doorgaande weg in de rijrichting (bij een lange rit minstens een hoofdweg); de
+// routedienst zoekt zelf die weg. Alternatieven van de routedienst blijven vaak aan één kant
+// (Vall del Bac–Barcelona: via Vic, nooit via Girona).
+// Daarnaast je eigen routes tussen ongeveer dezelfde plekken, met hun tussenstops.
+async function extraRoutes(pts, shown) {
+  if (pts.length !== 2) return [];
+  const tries = [];
+  const a = ll(pts[0]), b = ll(pts[1]), D = dist(a, b);
+  const lean = r => samples(r).reduce((t, x) => t + sideOf(x.p, a, b), 0) / samples(r).length;
+  const sides = shown.map(lean), near = Math.max(200, D * 0.03);
+  const both = sides.some(v => v > near) && sides.some(v => v < -near);
+  if (D >= 3000 && shown.length <= 2 && !both) {
+    const side = sides.reduce((t, v) => t + v, 0) > 0 ? -1 : 1;
+    const k = Math.cos(rad(a[1])), [mx, my] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    const ux = (b[0] - a[0]) * k, uy = b[1] - a[1], len = Math.hypot(ux, uy);
+    // Linksaf staat haaks op de lijn: (-uy, ux)
+    const off = side * D / 3 / 110540 / len;
+    const P = { lat: my + ux * off, lon: mx - uy * off / k, through: true, heading: Math.round(bearing(a, b)), tolerance: 90,
+      roads: travelMode === 'auto' ? (D >= 40000 ? 'primary' : D >= 10000 ? 'secondary' : 'tertiary') : travelMode === 'bicycle' ? 'residential' : null };
+    tries.push(fetchRoutes([pts[0], P, pts[1]], 0).then(([r]) => (loops(r) ? [] : [withVia(r, [P])])));
+  }
+  const own = ownRoute(a, b, pts[0].here);
+  if (own) tries.push(fetchRoutes([pts[0], ...own, pts[1]], 0).then(([r]) => (loops(r) ? [] : [withVia(r, own)])));
+  return (await Promise.all(tries.map(t => t.catch(() => [])))).flat();
+}
+// Een eigen route (bewaard of eerder gereden) van ongeveer hier naar dezelfde bestemming, met
+// tussenstops: de tussenstops als punten waar de route langs moet
+function ownRoute(a, b, fromHere) {
+  const hit = loadSaved().find(r => r.mode === travelMode && r.stops.length > 2 && r.stops.every(Boolean)
+    && !r.stops[r.stops.length - 1].here && dist(b, ll(r.stops[r.stops.length - 1])) < 300
+    && (r.stops[0].here ? fromHere : r.stops[0].lat != null && dist(a, ll(r.stops[0])) < 1000)
+    && r.stops.slice(1, -1).every(x => x.lat != null));
+  return hit ? hit.stops.slice(1, -1).map(x => ({ lat: x.lat, lon: x.lon, via: true })) : null;
+}
+// Waar de route langs moet, ook als je ervan afwijkt en er een nieuwe route komt (zie reroute)
+function withVia(r, list) {
+  r.via = list.map(p => {
+    const at = alongOf(r, ll(p)), q = alongPoint(r, at), q2 = alongPoint(r, at + 50);
+    return p.via ? { lat: p.lat, lon: p.lon, via: true, at }
+      : { lat: q.lat, lon: q.lon, through: true, heading: Math.round((bearing(ll(q), ll(q2)) + 360) % 360), at };
+  });
+  return r;
 }
 
 // De routes van de dienst beginnen niet altijd via de snelste weg naar de snelweg: vanuit
@@ -4038,16 +4098,82 @@ function passes(o, [x, y]) {
   for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) if (cells.has((cx + dx) + ',' + (cy + dy))) return true;
   return false;
 }
-function overlap(r, o) {
-  const near = p => passes(o, p);
-  let n = 0, hit = 0, i = 1;
+// Punten van route r om de 200 m, met hoe ver langs de route ze liggen
+function samples(r) {
+  if (r._samples) return r._samples;
+  const out = [];
+  let i = 1;
   for (let a = 0; a <= r.total; a += 200) {
     while (i < r.shape.length - 1 && r.cum[i] < a) i++;
     const [p, q] = [r.shape[i - 1], r.shape[i]], seg = r.cum[i] - r.cum[i - 1], g = seg ? Math.min(1, (a - r.cum[i - 1]) / seg) : 0;
-    n++;
-    if (near([p[0] + g * (q[0] - p[0]), p[1] + g * (q[1] - p[1])])) hit++;
+    out.push({ a, p: [p[0] + g * (q[0] - p[0]), p[1] + g * (q[1] - p[1])] });
   }
-  return n ? hit / n : 0;
+  Object.defineProperty(r, '_samples', { value: out, enumerable: false });
+  return out;
+}
+function overlap(r, o) {
+  const ss = samples(r);
+  return ss.length ? ss.filter(s => passes(o, s.p)).length / ss.length : 0;
+}
+// Hoe ver langs route o het punt ligt dat het dichtst bij p is
+function alongOf(o, p) {
+  let best = 0, bd = Infinity;
+  o.shape.forEach((q, i) => { const d = dist(p, q); if (d < bd) { bd = d; best = i; } });
+  return o.cum[best];
+}
+// Aan welke kant van de rechte lijn a→b ligt p: positief links, negatief rechts (in meters)
+function sideOf(p, a, b) {
+  const k = Math.cos(rad(a[1]));
+  const bx = (b[0] - a[0]) * k, by = b[1] - a[1], px = (p[0] - a[0]) * k, py = p[1] - a[1];
+  return (bx * py - by * px) / (Math.hypot(bx, by) || 1e-9) * 110540;
+}
+// Het eigen deel van r (niet langs een van de routes in others): hoe lang, en welk deel daarvan
+// links of rechts van de rechte lijn ligt. Vlak bij de lijn telt als geen van beide.
+function ownPart(r, others) {
+  const a = r.shape[0], b = r.shape[r.shape.length - 1], near = Math.max(200, dist(a, b) * 0.03);
+  let n = 0, left = 0, right = 0;
+  for (const s of samples(r)) {
+    if (others.some(o => passes(o, s.p))) continue;
+    n++;
+    const d = sideOf(s.p, a, b);
+    if (d > near) left++;
+    else if (d < -near) right++;
+  }
+  return { len: n * 200, left: n ? left / n : 0, right: n ? right / n : 0 };
+}
+// Echt de andere kant op: het eigen deel van r ligt voor minstens driekwart aan één kant van de
+// rechte lijn, en van elke getoonde route ligt het eigen deel hooguit voor een kwart aan die kant
+function otherSide(r, list) {
+  const own = ownPart(r, list);
+  if (own.len < 1000) return false;
+  const side = own.left >= 0.75 ? 'left' : own.right >= 0.75 ? 'right' : null;
+  return !!side && list.every(o => ownPart(o, [r])[side] <= 0.25);
+}
+// Omweg: waar r van route o afwijkt en er later weer op uitkomt, hoeveel keer zo lang dat stuk is
+// als het stuk van o dat het vervangt (het grootste van alle afwijkende stukken van minstens 2 km)
+function detour(r, o) {
+  const ss = samples(r);
+  let worst = 1, i = 0;
+  while (i < ss.length) {
+    if (passes(o, ss[i].p)) { i++; continue; }
+    let j = i;
+    while (j < ss.length && !passes(o, ss[j].p)) j++;
+    const from = ss[Math.max(0, i - 1)], to = ss[Math.min(ss.length - 1, j)];
+    if (to.a - from.a >= 2000) worst = Math.max(worst, (to.a - from.a) / Math.max(200, Math.abs(alongOf(o, to.p) - alongOf(o, from.p))));
+    i = j;
+  }
+  return worst;
+}
+// Komt route r ergens terug waar hij al eerder (minstens een kilometer terug) was: een lus of keren
+function loops(r) {
+  const ss = samples(r), seen = new Map();
+  for (let i = 0; i < ss.length; i++) {
+    const [x, y] = ss[i].p, cx = Math.round(x / (CELL * 1.6)), cy = Math.round(y / CELL);
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) if ((seen.get((cx + dx) + ',' + (cy + dy)) ?? Infinity) < i - 5) return true;
+    const key = cx + ',' + cy;
+    if (!seen.has(key)) seen.set(key, i);
+  }
+  return false;
 }
 
 // Alle etappes achter elkaar; per etappe het eindpunt op de route en de reistijd
@@ -4079,8 +4205,11 @@ async function reroute() {
   state.lastRouteAt = Date.now();
   toast('Nieuwe route…', 2000);
   try {
-    const [nav] = await fetchRoutes([hereNow(), ...n.legStops.slice(n.legIdx)], 0, n.mode, n.opts);
+    // Langs de punten van de gekozen andere weg die nog voor je liggen
+    const ahead = n.legIdx === 0 ? (n.via || []).filter(v => v.at > (n.along || 0) + 300) : [];
+    const [nav] = await fetchRoutes([hereNow(), ...ahead, ...n.legStops.slice(n.legIdx)], 0, n.mode, n.opts);
     if (state.nav !== n) return;
+    if (ahead.length) withVia(nav, ahead);
     state.nav = nav;
     shownLeg = -1;
     if (DEMO) demo.along = 0;
