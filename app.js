@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '92';
+const VERSION = '93';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -3877,11 +3877,21 @@ function parkTile(lat, lon) {
 const inArea = (pt, a) => a.r.reduce((n, r) => n + inRing(pt, r), 0) % 2 === 1;
 
 // Wat er op een plek geldt: het betaalde gebied, de vergunninggebieden en de speciale dagen
+// Gebieden overlappen soms (een straat die bij twee buurten hoort): het kleinste eerst
+function areaSize(a) {
+  if (a._size == null) a._size = a.r.reduce((sum, r) => sum + Math.abs(r.reduce((s, p, i) => {
+    const q = r[(i + 1) % r.length];
+    return s + p[0] * q[1] - q[0] * p[1];
+  }, 0)), 0);
+  return a._size;
+}
+const bySize = (a, b) => areaSize(a) - areaSize(b);
+
 async function parkingAt(p) {
   const t = await parkTile(p.lat, p.lon).catch(() => null);
   if (!t) return null;
   const pt = [p.lon, p.lat];
-  const paid = t.a.find(a => inArea(pt, a)) || null, permit = t.v.filter(v => inArea(pt, v));
+  const paid = t.a.find(a => inArea(pt, a)) || null, permit = t.v.filter(v => inArea(pt, v)).sort(bySize);
   if (!paid && !permit.length) return null;
   return { paid, permit, special: t.s, mine: isMine(paid, permit) };
 }
@@ -3969,7 +3979,10 @@ function dayText(a, special, day) {
 }
 
 // ---------- Vergunning: alleen op de telefoon, per gebied ----------
-function loadPermits() { try { return JSON.parse(localStorage.getItem('parkPermits')) || []; } catch (e) { return []; } }
+// Tot v92 gold een regeling als "Vergunning" voor de hele gemeente (Amsterdam); alleen een regeling
+// die een gebied noemt ("Vergunningen gebied 1") geldt voor meer gebieden. De oude vallen weg.
+const stalePermit = p => /^\d+:R:/.test(p.k) && !/\bgebied\s*\d/i.test(p.n || '');
+function loadPermits() { try { return (JSON.parse(localStorage.getItem('parkPermits')) || []).filter(p => !stalePermit(p)); } catch (e) { return []; } }
 function savePermits(list) { try { localStorage.setItem('parkPermits', JSON.stringify(list)); } catch (e) { /* geen opslag */ } }
 function noPermit() { try { return localStorage.getItem('parkNoPermit') === '1'; } catch (e) { return false; } }
 function setNoPermit(on) { try { if (on) localStorage.setItem('parkNoPermit', '1'); else localStorage.removeItem('parkNoPermit'); } catch (e) { /* geen opslag */ } }
@@ -4264,7 +4277,7 @@ async function zoneUpdate() {
   if (seq !== zoneSeq) return;
   // Vergunninggebieden; heeft de gemeente die niet, dan de betaalde gebieden
   const zones = t ? (t.v.length ? t.v : t.a) : [];
-  zoneHit = zones.find(z => inArea(pt, z)) || null;
+  zoneHit = zones.filter(z => inArea(pt, z)).sort(bySize)[0] || null;
   const near = zones.filter(z => z.r.some(r => r.some(p => Math.abs(p[0] - c.lng) < 0.03 && Math.abs(p[1] - c.lat) < 0.02)));
   zmap.getSource('zones').setData({ type: 'FeatureCollection', features: near.map(z => ({ type: 'Feature', properties: { hit: z === zoneHit },
     geometry: { type: 'MultiPolygon', coordinates: z.r.map(r => [r]) } })) });

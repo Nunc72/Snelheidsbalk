@@ -34,6 +34,8 @@ SETS = {'geo': 'nsk3-v9n7', 'area': 'adw6-9hsg', 'name': 'mz4f-59fw', 'areg': 'q
 GRID = 0.05
 TODAY = date.today()
 NOW = TODAY.strftime('%Y%m%d')
+# Namen van gebieden die over andere heen liggen
+UMBRELLA = re.compile(r'overkoepelend|^(heel|geheel|de gehele|gehele|alle zones)\b|niet[- ]fiscaal|totaalgebied|fictief', re.I)
 DAYS = ['MAANDAG', 'DINSDAG', 'WOENSDAG', 'DONDERDAG', 'VRIJDAG', 'ZATERDAG', 'ZONDAG']
 
 
@@ -118,6 +120,8 @@ def bbox(rs):
 
 def clean_name(s):
     s = re.sub(r'\s*\([^)]*\)\s*$', '', (s or '').strip())
+    # Amsterdam zet de code ervoor: "SO36 Oost-2" wordt "Oost-2"
+    s = re.sub(r'^[A-Z]{2,3}\d{2,3}[A-Z]?(?:_U\d+)?\s+(?=\S)', '', s)
     return re.sub(r'\s+', ' ', s)
 
 
@@ -174,11 +178,11 @@ def main(out, folder=None):
                 paid_reg[key] = (r['RegulationId'], n)
         elif r['UsageId'] == 'VERGUNP':
             permit_reg[key] = r['RegulationId']
-    # Een vergunning geldt soms voor meer gebieden met dezelfde regeling (Utrecht: "Vergunningen
-    # gebied 1"), soms per gebied (Amsterdam: één regeling "Vergunning" voor alles)
-    per_mgr = defaultdict(set)
-    for (m, _), reg_id in permit_reg.items():
-        per_mgr[m].add(reg_id)
+    # Een vergunning geldt meestal per gebied. Alleen als de regeling zelf een gebied noemt
+    # (Utrecht: "Vergunningen gebied 1") geldt ze voor alle gebieden met die regeling. Een regeling
+    # als "Vergunning" of "Vergunninghouders ma-zo 00-24" zegt alleen iets over de tijden.
+    def by_reg(m, reg_id):
+        return bool(re.search(r'\bgebied\s*\d', regs[(m, reg_id)]['RegulationDesc'], re.I))
 
     special = defaultdict(dict)
     horizon = (TODAY + timedelta(days=21)).strftime('%Y%m%d')
@@ -187,13 +191,18 @@ def main(out, folder=None):
         if NOW <= d <= horizon:
             special[s['AreaManagerId']][d] = s['NameSpecialDay'].strip()
 
+    # Overkoepelende gebieden ("Heel Amsterdam", "Overkoepelend voor Noord 3") liggen over de
+    # gewone heen; daarin zou een vergunning overal lijken te gelden. Weg ermee. Andere overlap
+    # (een straat die bij twee buurten hoort) lost de app op door het kleinste gebied te kiezen.
+    umbrella = {key for key in permit_reg if UMBRELLA.search(name.get(key) or desc.get(key) or '')}
+
     tiles = defaultdict(lambda: {'a': [], 'v': [], 's': {}})
     n_paid = n_permit = 0
     for g in D['geo']:
         if not current(g['StartDateArea'], g['EndDateArea']):
             continue
         key = (g['AreaManagerId'], g['AreaId'])
-        if key not in paid_reg and key not in permit_reg:
+        if key not in paid_reg and (key not in permit_reg or key in umbrella):
             continue
         rs = rings(g['GeoDataAsText'])
         if not rs:
@@ -225,9 +234,9 @@ def main(out, folder=None):
                     item['x'] = round(x * 100)
                 items.append(('a', item))
                 n_paid += 1
-        if key in permit_reg:
+        if key in permit_reg and key not in umbrella:
             reg_id = permit_reg[key]
-            shared = len(per_mgr[m]) > 1
+            shared = by_reg(m, reg_id)
             pname = clean_name(regs[(m, reg_id)]['RegulationDesc']) if shared else nm
             items.append(('v', {'m': int(m), 'id': aid, 'k': f'{m}:R:{reg_id}' if shared else f'{m}:A:{aid}',
                                 'n': pname, 'g': city.get(m, ''), 'r': rs}))
