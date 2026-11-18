@@ -5,7 +5,7 @@ Draait elke nacht als GitHub Action (.github/workflows/parking.yml). De losse da
 de RDW (gebieden, regelingen, tijdvakken, tarieven) zijn samen ruim 20 MB en moeten aan
 elkaar geknoopt worden; de app krijgt per vak van 0,05 graad alleen wat daar ligt:
 
-  p/<rij>_<kolom>.json  {"a": betaalde gebieden, "v": vergunninggebieden, "s": speciale dagen}
+  p/<rij>_<kolom>.json  {"a": betaalde gebieden, "v": vergunninggebieden, "g": garages, "s": speciale dagen}
   meta.json             wanneer dit is gemaakt
 
 Het buitenland komt erbij uit tools/parking_abroad.py, in dezelfde vorm.
@@ -15,6 +15,7 @@ Een betaald gebied: {"m": beheerder, "id", "n": naam, "g": gemeente, "r": ringen
   dag = MAANDAG … ZONDAG of de naam van een speciale dag (FEESTDAG); van/tot in minuten.
   tarief = {"h": centen per uur, "s": [[na minuten, centen per uur], ...], "b": blok in minuten}
 Een vergunninggebied: {"m", "id", "k": sleutel van de vergunning, "n": naam, "g", "r"}
+Een garage of parkeerterrein: {"m", "id", "n", "g", "p": [lon, lat], en als het tarief bekend is "w", "f", "x"}
 
 Gebruik: python3 tools/parking.py <uitvoermap>
 """
@@ -157,6 +158,19 @@ def edge(sg, dr, dc, margin=110):
     return ok_x and ok_y
 
 
+def put_point(tiles, item, special):
+    t = tiles[(math.floor(item['p'][1] / GRID), math.floor(item['p'][0] / GRID))]
+    t['g'].append(item)
+    if item['m'] in special:
+        t['s'][item['m']] = special[item['m']]
+
+
+def fetch_json(url):
+    req = urllib.request.Request(url, headers={'User-Agent': 'VeloVerde (github.com/Nunc72/Snelheidsbalk)'})
+    with urllib.request.urlopen(req, timeout=300) as res:
+        return json.loads(res.read().decode('utf-8'))
+
+
 def place(tiles, items, rs, m, special):
     x1, y1, x2, y2 = bbox(rs)
     for row in range(math.floor(y1 / GRID), math.floor(y2 / GRID) + 1):
@@ -187,7 +201,7 @@ def main(out, folder=None):
             parts[(p['AreaManagerId'], p['FareCalculationCode'])].append(p)
 
     # Per gebied de regelingen die nu gelden
-    paid_reg, permit_reg = {}, {}
+    paid_reg, permit_reg, garage_reg = {}, {}, {}
     for r in D['areg']:
         if not current(r['StartDateAreaRegulation'], r['EndDateAreaRegulation']):
             continue
@@ -202,6 +216,10 @@ def main(out, folder=None):
                 paid_reg[key] = (r['RegulationId'], n)
         elif r['UsageId'] == 'VERGUNP':
             permit_reg[key] = r['RegulationId']
+        elif r['UsageId'] in ('GARAGEP', 'TERREINP'):
+            n = sum(1 for t in frames[(r['AreaManagerId'], r['RegulationId'])] if t['FareCalculationCode'])
+            if n and (key not in garage_reg or n > garage_reg[key][1]):
+                garage_reg[key] = (r['RegulationId'], n)
     # Een vergunning geldt meestal per gebied. Alleen als de regeling zelf een gebied noemt
     # (Utrecht: "Vergunningen gebied 1") geldt ze voor alle gebieden met die regeling. Een regeling
     # als "Vergunning" of "Vergunninghouders ma-zo 00-24" zegt alleen iets over de tijden.
@@ -220,7 +238,32 @@ def main(out, folder=None):
     # (een straat die bij twee buurten hoort) lost de app op door het kleinste gebied te kiezen.
     umbrella = {key for key in permit_reg if UMBRELLA.search(name.get(key) or desc.get(key) or '')}
 
-    tiles = defaultdict(lambda: {'a': [], 'v': [], 's': {}})
+    def week_of(m, reg_id):
+        """De betaalde tijdvakken per dag en de tarieven van een regeling, of None."""
+        fares, idx, week = [], {}, defaultdict(list)
+        for t in frames[(m, reg_id)]:
+            code = t['FareCalculationCode']
+            if not code:
+                continue
+            if code not in idx:
+                f = fare_of(parts[(m, code)])
+                if f is None:
+                    continue
+                idx[code] = len(fares)
+                fares.append(f)
+            s, e = int(num(t['StartTimeTimeFrame'])), int(num(t['EndTimeTimeFrame']))
+            week[t['DayTimeFrame'].strip()].append([s // 100 * 60 + s % 100, e // 100 * 60 + e % 100, idx[code]])
+        if not fares or not any(d in week for d in DAYS):
+            return None
+        for v in week.values():
+            v.sort()
+        out = {'w': week, 'f': fares}
+        x = num(regs[(m, reg_id)]['MaximumDayCharge'])
+        if x:
+            out['x'] = round(x * 100)
+        return out
+
+    tiles = defaultdict(lambda: {'a': [], 'v': [], 'g': [], 's': {}})
     n_paid = n_permit = 0
     for g in D['geo']:
         if not current(g['StartDateArea'], g['EndDateArea']):
@@ -235,28 +278,9 @@ def main(out, folder=None):
         nm = clean_name(name.get(key) or desc.get(key) or aid)
         items = []
         if key in paid_reg:
-            reg_id = paid_reg[key][0]
-            fares, idx, week = [], {}, defaultdict(list)
-            for t in frames[(m, reg_id)]:
-                code = t['FareCalculationCode']
-                if not code:
-                    continue
-                if code not in idx:
-                    f = fare_of(parts[(m, code)])
-                    if f is None:
-                        continue
-                    idx[code] = len(fares)
-                    fares.append(f)
-                s, e = int(num(t['StartTimeTimeFrame'])), int(num(t['EndTimeTimeFrame']))
-                week[t['DayTimeFrame'].strip()].append([s // 100 * 60 + s % 100, e // 100 * 60 + e % 100, idx[code]])
-            if fares and any(d in week for d in DAYS):
-                for v in week.values():
-                    v.sort()
-                item = {'m': int(m), 'id': aid, 'n': nm, 'g': city.get(m, ''), 'r': rs, 'w': week, 'f': fares}
-                x = num(regs[(m, reg_id)]['MaximumDayCharge'])
-                if x:
-                    item['x'] = round(x * 100)
-                items.append(('a', item))
+            tariff = week_of(m, paid_reg[key][0])
+            if tariff:
+                items.append(('a', {'m': int(m), 'id': aid, 'n': nm, 'g': city.get(m, ''), 'r': rs, **tariff}))
                 n_paid += 1
         if key in permit_reg and key not in umbrella:
             reg_id = permit_reg[key]
@@ -267,10 +291,31 @@ def main(out, folder=None):
             n_permit += 1
         place(tiles, items, rs, m, special)
 
+    # Garages en parkeerterreinen met een plek op de kaart (GEO Parkeer Garages), met het tarief erbij
+    n_garage = 0
+    for g in fetch_json('https://opendata.rdw.nl/resource/t5pc-eb34.json?$limit=50000'):
+        loc = g.get('location') or {}
+        try:
+            lat, lon = float(loc['latitude']), float(loc['longitude'])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not current(g.get('startdataarea'), g.get('enddataarea')):
+            continue
+        m, aid = g['areamanagerid'], g['areaid']
+        item = {'m': int(m), 'id': aid, 'n': clean_name(g.get('areadesc') or name.get((m, aid)) or aid), 'g': city.get(m, ''), 'p': [lon, lat]}
+        if (m, aid) in garage_reg:
+            item.update(week_of(m, garage_reg[(m, aid)][0]) or {})
+        put_point(tiles, item, special)
+        n_garage += 1
+
     # Buitenland: per stad wat de open data geeft (tools/parking_abroad.py)
     abroad, abroad_special = parking_abroad.collect(TODAY, simplify)
     special.update(abroad_special)
     for kind, item in abroad:
+        if kind == 'g':
+            put_point(tiles, item, special)
+            n_garage += 1
+            continue
         if not item.get('u'):
             place(tiles, [(kind, item)], item['r'], item['m'], special)
             continue
@@ -295,8 +340,8 @@ def main(out, folder=None):
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(t, f, ensure_ascii=False, separators=(',', ':'))
     with open(f'{out}/meta.json', 'w') as f:
-        json.dump({'t': int(time.time()), 'paid': n_paid, 'permit': n_permit, 'tiles': len(tiles)}, f)
-    print(f'{n_paid} betaalde gebieden, {n_permit} vergunninggebieden, {len(tiles)} vakken')
+        json.dump({'t': int(time.time()), 'paid': n_paid, 'permit': n_permit, 'garages': n_garage, 'tiles': len(tiles)}, f)
+    print(f'{n_paid} betaalde gebieden, {n_permit} vergunninggebieden, {n_garage} garages, {len(tiles)} vakken')
 
 
 if __name__ == '__main__':

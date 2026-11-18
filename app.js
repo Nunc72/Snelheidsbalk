@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '96';
+const VERSION = '97';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -830,6 +830,7 @@ function drawRouteEnds() {
 
 map.on('style.load', () => {
   addClosureLayer(map);
+  addZoneLayers(map);
   addRouteLayers(map, routeCoords); addRouteEnds(map); addConceptLayers(map);
   scaleLines(map, { 'route-casing': 13, 'route-line': 8 });
   if (msmap) { showMainLayers(false); addMsLayers(map); msDraw(); msTilt(true); }
@@ -1629,7 +1630,10 @@ function savedItem(r) {
 const NEAR = {
   charging: { label: 'Laden', icon: 'ti-charging-pile', tags: { amenity: ['charging_station'] } },
   fuel: { label: 'Tanken', icon: 'ti-gas-station', tags: { amenity: ['fuel'] } },
+  // Parkeren: zones op straat (parkeerdata) en garages; zie showParkNear
+  parking: { label: 'Parkeren', icon: 'ti-parking', tags: { amenity: ['parking'] } },
   food: { label: 'Eten', icon: 'ti-tools-kitchen-2', tags: { amenity: ['restaurant', 'cafe', 'fast_food', 'pub', 'biergarten', 'ice_cream'] } },
+  shop: { label: 'Supermarkt', icon: 'ti-shopping-cart', tags: { shop: ['supermarket'] } },
   sleep: { label: 'Slapen', icon: 'ti-bed', tags: { tourism: ['hotel', 'guest_house', 'hostel', 'motel', 'camp_site', 'chalet'] } },
   culture: { label: 'Cultuur', icon: 'ti-building-arch',
     tags: { tourism: ['museum', 'gallery', 'attraction'], amenity: ['theatre', 'arts_centre', 'cinema'],
@@ -1641,7 +1645,7 @@ const KIND_NL = {
   camp_site: 'Camping', chalet: 'Vakantiehuisje', museum: 'Museum', gallery: 'Galerie', attraction: 'Bezienswaardigheid',
   theatre: 'Theater', arts_centre: 'Kunstcentrum', cinema: 'Bioscoop', castle: 'Kasteel', monument: 'Monument', ruins: 'Ruïne',
   archaeological_site: 'Archeologie', fort: 'Fort', manor: 'Landhuis', city_gate: 'Stadspoort', memorial: 'Gedenkteken', windmill: 'Molen',
-  zoo: 'Dierentuin', theme_park: 'Pretpark', aquarium: 'Aquarium',
+  zoo: 'Dierentuin', theme_park: 'Pretpark', aquarium: 'Aquarium', supermarket: 'Supermarkt', parking: 'Parkeerplaats',
 };
 let nearCat = 'fuel';
 try { nearCat = localStorage.getItem('nearCat') || 'fuel'; } catch (e) { /* geen opslag */ }
@@ -1970,7 +1974,9 @@ function nearItem(p, cat) {
     li.querySelector('.r2').prepend(b, p.sub ? ' · ' : '');
   }
   li.querySelector('.dist').textContent = p.extra != null ? fmtExtra(p.extra) : fmtDist(p.d);
-  li.addEventListener('click', () => useChoice({ lat: p.lat, lon: p.lon, name: p.name }));
+  // Een parkeerzone: de navigatie gaat naar het punt van de zone het dichtst bij je bestemming,
+  // en de zone zelf staat op de kaart
+  li.addEventListener('click', () => { if (p.zone) ZONES.set(zoneKey(p), p.zone); useChoice({ lat: p.lat, lon: p.lon, name: p.name }); });
   return li;
 }
 
@@ -2003,6 +2009,7 @@ async function showNear() {
   const ul = $('results');
   ul.replaceChildren();
   const cat = nearCat;
+  if (cat === 'parking') { await showParkNear(seq); return; }
   const { prev, next } = nearLeg();
   const key = p => p.lat.toFixed(4) + '|' + p.lon.toFixed(4);
   const fail = (sec, e) => { if (seq === searchSeq) sec.note.textContent = 'Zoeken lukt nu niet: ' + e.message; };
@@ -2897,6 +2904,7 @@ function confirmPreview() {
   const nav = previewNav;
   previewNav = null;
   const fromHere = list[0].here;
+  state.zones = list.flatMap(st => { const r = resolveStop(st); return (r && ZONES.get(zoneKey(r))) || []; });
   saveRecent(fromHere && list.length === 2 ? place(list[1]) : routeEntry(list, travelMode));
   rememberRoute(nav.legStops ? [resolveStop(list[0]), ...nav.legStops] : list.map(resolveStop), travelMode, nav);
   setHomeStart(false);
@@ -2918,6 +2926,7 @@ function confirmPreview() {
   state.lastRouteAt = Date.now();
   if (DEMO) demo.along = 0;
   setMode('nav');
+  drawNavZone();
   // Vertrek uit een betaald gebied: parkeeractie gestopt?
   if (nav.mode === 'auto' && state.fix) parkAsk(state.fix);
   // Echte navigatie: de live kaart volgt meteen je eigen positie, gekanteld en in de rijrichting
@@ -3002,7 +3011,7 @@ async function openMapSearch(kind, back, row = 0, pois = null) {
 
 // Zoeken op de kaart gebruikt de hoofdkaart zelf: die verhuist zolang naar het zoekscherm.
 // Geen tweede kaart die moet laden (geen flits) en geen extra geheugen.
-const MAIN_LAYERS = ['route-casing', 'route-line', 'route-ends', 'concept-line', 'concept-ends'];
+const MAIN_LAYERS = ['route-casing', 'route-line', 'route-ends', 'concept-line', 'concept-ends', 'pzone-fill', 'pzone-line'];
 function showMainLayers(on) {
   for (const id of MAIN_LAYERS) if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
 }
@@ -4013,6 +4022,114 @@ function dayText(a, special, day) {
   return { times, rate, low: rates[rates.length - 1] < Math.max(...a.f.map(hourly)) };
 }
 
+// ---------- In de buurt → Parkeren: zones op straat binnen 500 m, en garages ----------
+const ZONE_NEAR = 500, GARAGE_NEAR = 1500;
+// Alle vakjes met parkeerdata binnen 'm' meter van een punt
+async function parkTilesNear(p, m) {
+  const dLat = m / 111320, dLon = dLat / Math.cos(rad(p.lat)), seen = new Set(), out = [];
+  for (const la of [p.lat - dLat, p.lat + dLat]) for (const lo of [p.lon - dLon, p.lon + dLon]) {
+    const k = Math.floor(la / PARK_GRID) + '_' + Math.floor(lo / PARK_GRID);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const t = await parkTile(la, lo).catch(() => null);
+    if (t) out.push(t);
+  }
+  return out;
+}
+// Het dichtstbijzijnde punt op een lijnstuk a–b (lengtegraad, breedtegraad), in meters vlak gerekend
+function nearestOnSeg(p, a, b) {
+  const kx = 111320 * Math.cos(rad(p[1])), ky = 111320;
+  const ax = (a[0] - p[0]) * kx, ay = (a[1] - p[1]) * ky, bx = (b[0] - p[0]) * kx, by = (b[1] - p[1]) * ky;
+  const dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy;
+  const u = L ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / L)) : 0;
+  return { d: Math.hypot(ax + u * dx, ay + u * dy), pt: [p[0] + (ax + u * dx) / kx, p[1] + (ay + u * dy) / ky] };
+}
+// De lijnen van een gebied: de randen, of bij Barcelona de straatdelen zelf
+function areaLines(a) {
+  if (a.sg) return a.sg.map(([x, y, dx, dy]) => [[a.o[0] + x / 1e5, a.o[1] + y / 1e5], [a.o[0] + (x + dx) / 1e5, a.o[1] + (y + dy) / 1e5]]);
+  return a.r.flatMap(r => r.map((q, i) => [q, r[(i + 1) % r.length]]));
+}
+// Afstand van een punt tot een gebied (0 als je erin staat) en het punt van het gebied het dichtst erbij
+function areaNearest(p, a) {
+  const pt = [p.lon, p.lat];
+  if (!a.sg && inArea(pt, a)) return { d: 0, pt };
+  let best = { d: Infinity, pt };
+  for (const [q, r] of areaLines(a)) { const n = nearestOnSeg(pt, q, r); if (n.d < best.d) best = n; }
+  return best;
+}
+// Wat een zone tekent op de kaart: de vlakken, of bij Barcelona smalle strookjes langs de stoep
+const zoneShape = a => (a.sg ? a.sg.map(sg => streetStrip(a.o, sg, 6, 3)) : a.r);
+const ZONES = new Map();
+const zoneKey = p => p.lat.toFixed(5) + ',' + p.lon.toFixed(5);
+
+async function parkZonesNear(p, at = new Date()) {
+  const tiles = await parkTilesNear(p, ZONE_NEAR + 100);
+  const groups = new Map();
+  for (const t of tiles) for (const a of t.a) {
+    const n = areaNearest(p, a);
+    if (n.d > ZONE_NEAR) continue;
+    const lab = parkLabel({ paid: a, permit: [], special: t.s, mine: false }, at);
+    const key = [a.g, a.n, lab.text].join('|');
+    const g = groups.get(key) || { a, special: t.s, lab, d: Infinity, pt: null, shape: [] };
+    if (n.d < g.d) Object.assign(g, { a, d: n.d, pt: n.pt });
+    g.shape.push(...zoneShape(a));
+    groups.set(key, g);
+  }
+  return [...groups.values()].sort((x, y) => x.d - y.d).slice(0, 10).map(g => ({
+    lat: g.pt[1], lon: g.pt[0], d: g.d, title: g.a.n, zone: g.shape,
+    sub: [g.a.g, g.lab.text].filter(Boolean).join(' · '), name: `Parkeerzone ${g.a.n}, ${g.a.g}`,
+  }));
+}
+
+async function parkGaragesNear(p, at = new Date()) {
+  const [tiles, osm] = await Promise.all([parkTilesNear(p, GARAGE_NEAR), tileNear('parking', p, 8).catch(() => ({ items: [] }))]);
+  const list = [];
+  for (const t of tiles) for (const g of t.g || []) {
+    const d = dist(ll(p), g.p);
+    if (d > GARAGE_NEAR) continue;
+    let rate = '';
+    if (g.f) { for (const f of g.f) f.c = g.c || 'EUR'; const st = parkStatus(g, t.s, at); rate = st.kind === 'paid' ? rateText(st.f, true) : 'Nu gratis'; }
+    list.push({ lat: g.p[1], lon: g.p[0], d, title: g.n, sub: [rate, g.g].filter(Boolean).join(' · '), name: [g.n, g.g].filter(Boolean).join(', ') });
+  }
+  // Uit de kaart: parkeerplaatsen met een naam (garages, P+R, grote terreinen), zonder tarief
+  for (const o of osm.items) {
+    if (o.title === KIND_NL.parking || o.d > GARAGE_NEAR || list.some(q => dist(ll(q), ll(o)) < 80)) continue;
+    list.push(o);
+  }
+  return list.sort((x, y) => x.d - y.d).slice(0, 8);
+}
+
+// Bij de bestemming van de etappe (of je positie): eerst de zones op straat, dan de garages
+async function showParkNear(seq) {
+  const ul = $('results');
+  const { prev, next } = nearLeg();
+  const at = next || (editRow > 0 && prev) || nearCentre();
+  const where = next ? stopLabel(next) : prev && editRow > 0 && !prev.here ? stopLabel(prev) : 'je positie';
+  const zs = nearSection('Op straat', 'binnen 500 m van ' + where), gs = nearSection('Garages', 'bij ' + where);
+  ul.append(zs.head, zs.note, gs.head, gs.note);
+  const fail = (sec, e) => { if (seq === searchSeq) sec.note.textContent = 'Zoeken lukt nu niet: ' + e.message; };
+  await Promise.all([
+    parkZonesNear(at).then(l => { if (seq === searchSeq) zs.fill(l, 'parking', null, true); }, e => fail(zs, e)),
+    parkGaragesNear(at).then(l => { if (seq === searchSeq) gs.fill(l, 'parking', null, true); }, e => fail(gs, e)),
+  ]);
+}
+
+// De gekozen zone op de live kaart, zolang je erheen rijdt
+function addZoneLayers(m) {
+  const dark = theme() === 'dark';
+  m.addSource('pzone', { type: 'geojson', data: EMPTY_FC });
+  m.addLayer({ id: 'pzone-fill', type: 'fill', source: 'pzone', paint: { 'fill-color': dark ? '#3D8BFF' : '#1F6FE0', 'fill-opacity': 0.16 } });
+  m.addLayer({ id: 'pzone-line', type: 'line', source: 'pzone', paint: { 'line-color': dark ? '#3D8BFF' : '#1F6FE0', 'line-width': 2, 'line-opacity': 0.8 } });
+  drawNavZone();
+}
+// (een zone als bestemming of als tussenstop, net als andere plekken uit In de buurt)
+function drawNavZone() {
+  const src = map.getSource('pzone');
+  if (!src) return;
+  const z = (state.nav || state.concept) && state.zones;
+  src.setData(z && z.length ? { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'MultiPolygon', coordinates: z.map(r => [[...r, r[0]]]) } }] } : EMPTY_FC);
+}
+
 // ---------- Vergunning: alleen op de telefoon, per gebied ----------
 // Tot v92 gold een regeling als "Vergunning" voor de hele gemeente (Amsterdam); alleen een regeling
 // die een gebied noemt ("Vergunningen gebied 1") geldt voor meer gebieden. De oude vallen weg.
@@ -4835,6 +4952,7 @@ function stopRoute(stay = false) {
   drawRouteEnds();
   state.dest = null;
   clearConcept(stay);
+  drawNavZone();
   setRouteLine([]);
   setMode('idle');
   renderBar();
@@ -4842,6 +4960,7 @@ function stopRoute(stay = false) {
 
 // ---------- Conceptroute: vanaf een ander vertrekpunt, alleen bekijken ----------
 function drawConcept() {
+  drawNavZone();
   const src = map.getSource('concept');
   if (!src) return;
   const c = state.concept;

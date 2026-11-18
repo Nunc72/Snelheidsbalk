@@ -127,6 +127,17 @@ def paris(today, simplify):
         items.append(('a', {'m': m, 'id': 'Z' + str(p['zone']), 'n': 'Zone ' + str(p['zone']), 'g': 'Paris',
                             'r': geo_rings(feat['geometry'], simplify), 'w': week, 'f': [f], 'c': 'EUR',
                             'src': 'Ville de Paris (open data)'}))
+    # Parkings (garages) van de stad, met de totaalprijs na 1, 2, 3, 4 en 24 uur
+    for g in get_json(PARIS.format('stationnement-en-ouvrage'))['features']:
+        p = g['properties']
+        pts = [(t, round(float(p[k]) * 100)) for t, k in ((60, 'tarif_1h'), (120, 'tarif_2h'), (180, 'tarif_3h'), (240, 'tarif_4h'), (1440, 'tarif_24h'))
+               if p.get(k) not in (None, '')]
+        item = {'m': m, 'id': str(p.get('id')), 'n': 'Parking ' + str(p.get('nom') or '').title(), 'g': 'Paris', 'p': g['geometry']['coordinates'][:2], 'c': 'EUR'}
+        if pts:
+            item.update({'w': {d: [[0, 1440, 0]] for d in WEEK}, 'f': [cumulative_fare(pts)]})
+        elif 'abonn' in str(p.get('type_usagers') or '').lower():
+            continue  # alleen voor abonnees
+        items.append(('g', item))
     for feat in get_json(PARIS.format('stationnement-sur-voie-publique-secteurs-residentiels'))['features']:
         nom = str(feat['properties']['nom'])
         items.append(('v', {'m': m, 'id': nom, 'k': f'{m}:A:{nom}', 'n': 'Secteur ' + nom, 'g': 'Paris',
@@ -328,7 +339,7 @@ def collect(today, simplify):
             continue
         items += got
         special.update(sp)
-        print(f'{name}: {sum(k == "a" for k, _ in got)} betaald, {sum(k == "v" for k, _ in got)} vergunning')
+        print(f'{name}: ' + ', '.join(f'{sum(k == x for k, _ in got)} {w}' for x, w in (('a', 'betaald'), ('v', 'vergunning'), ('g', 'garages'))))
     return items, special
 
 
