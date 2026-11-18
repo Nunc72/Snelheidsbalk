@@ -238,8 +238,10 @@ def main(out, folder=None):
     # (een straat die bij twee buurten hoort) lost de app op door het kleinste gebied te kiezen.
     umbrella = {key for key in permit_reg if UMBRELLA.search(name.get(key) or desc.get(key) or '')}
 
-    def week_of(m, reg_id):
-        """De betaalde tijdvakken per dag en de tarieven van een regeling, of None."""
+    def week_of(m, reg_id, street=False):
+        """De betaalde tijdvakken per dag en de tarieven van een regeling, of None. Op straat is meer
+        dan € 15 per uur een fout in de data (Delft: € 32,73 per uur na 5 gratis minuten); dan tonen we
+        alleen dat er betaald wordt."""
         fares, idx, week = [], {}, defaultdict(list)
         for t in frames[(m, reg_id)]:
             code = t['FareCalculationCode']
@@ -255,6 +257,9 @@ def main(out, folder=None):
             week[t['DayTimeFrame'].strip()].append([s // 100 * 60 + s % 100, e // 100 * 60 + e % 100, idx[code]])
         if not fares or not any(d in week for d in DAYS):
             return None
+        if street:
+            fares = [{'h': 0, 'zn': 'Betaald', 'lv': 3, 'bad': 1} if not f.get('b') and max([f['h']] + [r for _, r in f.get('s', [])]) > 1500 else f
+                     for f in fares]
         for v in week.values():
             v.sort()
         out = {'w': week, 'f': fares}
@@ -278,7 +283,7 @@ def main(out, folder=None):
         nm = clean_name(name.get(key) or desc.get(key) or aid)
         items = []
         if key in paid_reg:
-            tariff = week_of(m, paid_reg[key][0])
+            tariff = week_of(m, paid_reg[key][0], street=True)
             if tariff:
                 items.append(('a', {'m': int(m), 'id': aid, 'n': nm, 'g': city.get(m, ''), 'r': rs, **tariff}))
                 n_paid += 1

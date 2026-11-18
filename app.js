@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '98';
+const VERSION = '99';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -1631,9 +1631,9 @@ const NEAR = {
   charging: { label: 'Laden', icon: 'ti-charging-pile', tags: { amenity: ['charging_station'] } },
   fuel: { label: 'Tanken', icon: 'ti-gas-station', tags: { amenity: ['fuel'] } },
   // Parkeren: zones op straat (parkeerdata) en garages; zie showParkNear
-  parking: { label: 'Parkeren', icon: 'ti-parking', tags: { amenity: ['parking'] } },
+  parking: { label: 'Park', icon: 'ti-parking', tags: { amenity: ['parking'] } },
   food: { label: 'Eten', icon: 'ti-tools-kitchen-2', tags: { amenity: ['restaurant', 'cafe', 'fast_food', 'pub', 'biergarten', 'ice_cream'] } },
-  shop: { label: 'Supermarkt', icon: 'ti-shopping-cart', tags: { shop: ['supermarket'] } },
+  shop: { label: 'Super', icon: 'ti-shopping-cart', tags: { shop: ['supermarket'] } },
   sleep: { label: 'Slapen', icon: 'ti-bed', tags: { tourism: ['hotel', 'guest_house', 'hostel', 'motel', 'camp_site', 'chalet'] } },
   culture: { label: 'Cultuur', icon: 'ti-building-arch',
     tags: { tourism: ['museum', 'gallery', 'attraction'], amenity: ['theatre', 'arts_centre', 'cinema'],
@@ -2904,7 +2904,7 @@ function confirmPreview() {
   const nav = previewNav;
   previewNav = null;
   const fromHere = list[0].here;
-  state.zones = list.flatMap(st => { const r = resolveStop(st); return (r && ZONES.get(zoneKey(r))) || []; });
+  state.zones = list.flatMap(st => { const r = resolveStop(st), z = r && ZONES.get(zoneKey(r)); return z ? z.shape : []; });
   saveRecent(fromHere && list.length === 2 ? place(list[1]) : routeEntry(list, travelMode));
   rememberRoute(nav.legStops ? [resolveStop(list[0]), ...nav.legStops] : list.map(resolveStop), travelMode, nav);
   setHomeStart(false);
@@ -3988,7 +3988,8 @@ function rateText(f, perHour = false) {
   return euro(hourly(f), f.c) + (perHour ? ' per uur' : '');
 }
 // Prijs van het eerste uur: meestal het uurtarief, in Brussel is het eerste halfuur goedkoper
-const hourly = f => f.l ?? f.h;
+// (Delft: de eerste 5 minuten gratis, dan per uur: het bedrag van dat eerste uur)
+const hourly = f => f.l ?? (f.s && f.s[0][0] < 60 && !f.b ? fareSpan(f, 0, 60) : f.h);
 // Maximale parkeerduur van een tarief (Parijs 6 uur, Brussel rood 2 uur), als die niet langer is dan een dag
 const maxText = (f, unit = 'u') => {
   if (!f || !f.mx || f.mx > 1440) return '';
@@ -4028,7 +4029,7 @@ function dayText(a, special, day) {
 }
 
 // ---------- In de buurt → Parkeren: zones op straat binnen 500 m, en garages ----------
-const ZONE_NEAR = 500, GARAGE_NEAR = 1500;
+const ZONE_NEAR = 1000, GARAGE_NEAR = 1500;
 // Alle vakjes met parkeerdata binnen 'm' meter van een punt
 async function parkTilesNear(p, m) {
   const dLat = m / 111320, dLon = dLat / Math.cos(rad(p.lat)), seen = new Set(), out = [];
@@ -4066,24 +4067,67 @@ function areaNearest(p, a) {
 const zoneShape = a => (a.sg ? a.sg.map(sg => streetStrip(a.o, sg, 6, 3)) : a.r);
 const ZONES = new Map();
 const zoneKey = p => p.lat.toFixed(5) + ',' + p.lon.toFixed(5);
+// Gekozen zone als bestemming: wat daar geldt is die zone, ook als het punt op de rand ligt
+function zoneInfo(d) {
+  const z = d && ZONES.get(zoneKey(d));
+  return z && z.a ? { paid: z.a, permit: [], special: z.special, mine: isMine(z.a, []) } : null;
+}
+// Een punt net binnen de zone, en waar deze zone ook de zone is die de app daar kiest (het kleinste
+// gebied). Liever niet op de rand: daar telt de buurzone mee.
+function insidePoint(p, a, areas) {
+  const own = pt => inArea(pt, a) && !areas.some(b => b !== a && areaSize(b) < areaSize(a) && inArea(pt, b));
+  if (own([p.lon, p.lat])) return [p.lon, p.lat];
+  const kx = 111320 * Math.cos(rad(p.lat)), ky = 111320;
+  const cands = areaLines(a).map(([q, r]) => ({ q, r, n: nearestOnSeg([p.lon, p.lat], q, r) })).sort((x, y) => x.n.d - y.n.d).slice(0, 40);
+  for (const { q, r, n } of cands) {
+    const dx = (r[0] - q[0]) * kx, dy = (r[1] - q[1]) * ky, L = Math.hypot(dx, dy) || 1;
+    for (const step of [6, 15, 30]) for (const side of [1, -1]) {
+      const pt = [n.pt[0] - side * dy / L * step / kx, n.pt[1] + side * dx / L * step / ky];
+      if (own(pt)) return pt;
+    }
+  }
+  return null;
+}
 
+// Wat een uur parkeren nu kost (0 = gratis), of null als het bedrag onbekend is
+function zoneRate(a, special, at) {
+  const st = parkStatus(a, special, at);
+  if (st.kind !== 'paid') return 0;
+  return st.f.zn || st.f.nc ? null : fareSpan(st.f, 0, 60);
+}
+// De zone het dichtst bij, en verder alleen zones die even duur zijn (hooguit 2) of goedkoper; is er
+// een goedkopere, dan geldt die als nieuwe maat (weer hooguit 2), en zo verder, tot 1 km ver
 async function parkZonesNear(p, at = new Date()) {
   const tiles = await parkTilesNear(p, ZONE_NEAR + 100);
+  const areas = tiles.flatMap(t => t.a);
   const groups = new Map();
   for (const t of tiles) for (const a of t.a) {
     const n = areaNearest(p, a);
     if (n.d > ZONE_NEAR) continue;
     const lab = parkLabel({ paid: a, permit: [], special: t.s, mine: false }, at);
     const key = [a.g, a.n, lab.text].join('|');
-    const g = groups.get(key) || { a, special: t.s, lab, d: Infinity, pt: null, shape: [] };
-    if (n.d < g.d) Object.assign(g, { a, d: n.d, pt: n.pt });
+    const g = groups.get(key) || { a, special: t.s, lab, d: Infinity, shape: [] };
+    if (n.d < g.d) Object.assign(g, { a, special: t.s, d: n.d });
     g.shape.push(...zoneShape(a));
     groups.set(key, g);
   }
-  return [...groups.values()].sort((x, y) => x.d - y.d).slice(0, 10).map(g => ({
-    lat: g.pt[1], lon: g.pt[0], d: g.d, title: g.a.n, zone: g.shape,
-    sub: [g.a.g, g.lab.text].filter(Boolean).join(' · '), name: `Parkeerzone ${g.a.n}, ${g.a.g}`,
-  }));
+  const out = [];
+  let level = null, count = 0;
+  for (const g of [...groups.values()].sort((x, y) => x.d - y.d)) {
+    const r = zoneRate(g.a, g.special, at);
+    if (out.length) {
+      if (r == null || level == null || r > level) continue;
+      if (r < level) { level = r; count = 0; }
+      if (count >= 2) continue;
+      count++;
+    } else level = r ?? Infinity;  // eerste zone zonder bedrag: elke zone met een bedrag mag erbij
+    // Het punt waar de route heen gaat: net binnen de zone (barcelona: op de stoep zelf)
+    const pt = g.a.sg ? areaNearest(p, g.a).pt : insidePoint(p, g.a, areas);
+    if (!pt) continue;
+    out.push({ lat: pt[1], lon: pt[0], d: g.d, title: g.a.n, zone: { shape: g.shape, a: g.a, special: g.special },
+      sub: [g.a.g, g.lab.text].filter(Boolean).join(' · '), name: `${g.a.n}, ${g.a.g}` });
+  }
+  return out;
 }
 
 async function parkGaragesNear(p, at = new Date()) {
@@ -4107,10 +4151,13 @@ async function parkGaragesNear(p, at = new Date()) {
 // Bij de bestemming van de etappe (of je positie): eerst de zones op straat, dan de garages
 async function showParkNear(seq) {
   const ul = $('results');
+  // Rond de plek in de regel die je aanpast (je bestemming vervangen door een zone ernaast), anders
+  // rond de bestemming erna, anders rond het adres ervoor of je positie
   const { prev, next } = nearLeg();
-  const at = next || (editRow > 0 && prev) || nearCentre();
-  const where = next ? stopLabel(next) : prev && editRow > 0 && !prev.here ? stopLabel(prev) : 'je positie';
-  const zs = nearSection('Op straat', 'binnen 500 m van ' + where), gs = nearSection('Garages', 'bij ' + where);
+  const cur = stops[editRow] && !stops[editRow].here ? stops[editRow] : null;
+  const at = cur || next || (editRow > 0 && prev) || nearCentre();
+  const where = cur || next ? stopLabel(cur || next) : prev && editRow > 0 && !prev.here ? stopLabel(prev) : 'je positie';
+  const zs = nearSection('Op straat', 'bij ' + where), gs = nearSection('Garages', 'bij ' + where);
   ul.append(zs.head, zs.note, gs.head, gs.note);
   const fail = (sec, e) => { if (seq === searchSeq) sec.note.textContent = 'Zoeken lukt nu niet: ' + e.message; };
   await Promise.all([
@@ -4184,7 +4231,7 @@ async function updateParkChip() {
   const seq = parkSeq, list = filled(), dest = list[list.length - 1];
   if (travelMode !== 'auto' || !previewNav || list.length < 2 || !dest || dest.here) return;
   const at = new Date(Date.now() + previewNav.time * 1000);
-  const info = await parkingAt(dest);
+  const info = zoneInfo(dest) || await parkingAt(dest);
   if (seq !== parkSeq || !info) return;
   const lab = parkLabel(info, at);
   const chip = $('pchip');
@@ -4237,7 +4284,7 @@ function openParkSheet() {
   if (!parkData) return;
   const { info, at, dest } = parkData;
   const a = info.paid, area = a || info.permit[0];
-  const body = parkSheetShell('Parkeren bij ' + withoutPostcode(dest.name).split(',')[0], [area.g, area.n].filter(Boolean).join(' · '));
+  const body = parkSheetShell(withoutPostcode(dest.name).split(',')[0], [area.g, area.n].filter(Boolean).join(' · '));
   const now = document.createElement('div');
   now.className = 'pnow';
   now.innerHTML = '<div class="l"></div><div class="v"></div><div class="s"></div>';
@@ -4256,7 +4303,7 @@ function openParkSheet() {
     const st = parkStatus(a, info.special, at);
     if (st.kind === 'paid' && st.f.zn) {
       v.textContent = rateText(st.f);
-      s.textContent = 'Het tarief staat niet in de data: zie de automaat of de borden.';
+      s.textContent = st.f.bad ? 'Het tarief in de data klopt niet: zie de automaat of de borden.' : 'Het tarief staat niet in de data: zie de automaat of de borden.';
       now.classList.add(st.f.lv === 3 ? 'grey' : 'zone');
       body.parentElement.querySelector('.phead .psq').classList.add(st.f.lv === 3 ? 'plain' : 'zone');
     } else if (st.kind === 'paid') {
