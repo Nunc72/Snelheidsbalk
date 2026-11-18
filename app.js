@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '99';
+const VERSION = '100';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -1727,7 +1727,7 @@ function decodePois(buf, tx, ty, z = POI_Z) {
       const lon = (tx + px / extent) / n * 360 - 180;
       const lat = Math.atan(Math.sinh(Math.PI * (1 - 2 * (ty + py / extent) / n))) * 180 / Math.PI;
       const label = pr['name:nl'] || pr.name || '';
-      if (name === 'place') { if (label && PLACE_CLASSES.has(pr.class)) out.places.push({ lon, lat, name: label }); }
+      if (name === 'place') { if (label && PLACE_CLASSES.has(pr.class)) out.places.push({ lon, lat, name: label, cls: pr.class }); }
       else if (SUB_CAT.has(pr.subclass)) out.pois.push({ lon, lat, cat: SUB_CAT.get(pr.subclass), sub: pr.subclass, name: label });
     }
     pos = end;
@@ -1753,6 +1753,23 @@ function poiTile(x, y) {
   return tileMemo.get(key);
 }
 
+// De wijk of het dorp bij een plek. Buurtnamen staan als één punt midden in de buurt; welk
+// punt het dichtst bij is zegt weinig (drie winkels in één straat kregen drie buurten).
+// Daarom het stadsdeel (Amsterdam-Oost) binnen 3 km, anders het dichtstbijzijnde dorp of de stad.
+const PLACE_REACH = { suburb: 3000, hamlet: 2000, village: 5000, town: 8000, city: 15000 };
+function districtOf(p, places) {
+  let place = '', best = Infinity;
+  for (const pass of [['suburb'], ['hamlet', 'village', 'town', 'city']]) {
+    for (const q of places) {
+      if (!pass.includes(q.cls)) continue;
+      const d = dist(ll(p), ll(q));
+      if (d < PLACE_REACH[q.cls] && d < best) { best = d; place = q.name; }
+    }
+    if (place) return place;
+  }
+  return place;
+}
+
 // De plekken van één soort uit een stel tegels, met afstand tot 'at' en de wijk of het dorp erbij
 function tileItems(cat, tiles, at) {
   const places = tiles.flatMap(t => t.places);
@@ -1762,8 +1779,7 @@ function tileItems(cat, tiles, at) {
   const parks = all.filter(p => PARKS.includes(p.sub));
   const pois = all.filter(p => p.sub !== 'attraction' || !parks.some(q => dist(ll(p), ll(q)) < 450));
   return pois.map(p => {
-    let place = '', best = 6000;
-    for (const q of places) { const d = dist(ll(p), ll(q)); if (d < best) { best = d; place = q.name; } }
+    const place = districtOf(p, places);
     const kind = KIND_NL[p.sub] || '';
     const title = p.name || kind;
     return { lat: p.lat, lon: p.lon, title, sub: [p.name ? kind : '', place].filter(Boolean).join(' · '),
@@ -2013,9 +2029,12 @@ async function showNear() {
   const { prev, next } = nearLeg();
   const key = p => p.lat.toFixed(4) + '|' + p.lon.toFixed(4);
   const fail = (sec, e) => { if (seq === searchSeq) sec.note.textContent = 'Zoeken lukt nu niet: ' + e.message; };
+  // Staat er al een adres in de vertrek- of bestemmingsregel, dan rond dat adres (net als bij Park).
+  // Een tussenstop houdt de drie reeksen van de etappe.
+  const cur = !(prev && next) && stops[editRow] && !stops[editRow].here ? stops[editRow] : null;
   if (!(prev && next)) {
-    const at = editRow > 0 && prev || nearCentre();
-    const sec = nearSection('Dichtbij', prev && editRow > 0 && !prev.here ? stopLabel(prev) : 'je positie');
+    const at = cur || editRow > 0 && prev || nearCentre();
+    const sec = nearSection('Dichtbij', cur ? stopLabel(cur) : prev && editRow > 0 && !prev.here ? stopLabel(prev) : 'je positie');
     ul.append(sec.head, sec.note);
     try {
       const list = await nearList(cat, at, 25);
@@ -2121,8 +2140,10 @@ function showRecent() {
   }
 }
 
+// Het x-je: bij getypte tekst, of in een regel met een adres (dan maakt het die regel leeg)
 function updateClear() {
-  $('qclear').hidden = !$('q').value;
+  const s = textFrom !== 'start' && $('textpane') && !$('textpane').hidden && stops[editRow];
+  $('qclear').hidden = !$('q').value && !s;
 }
 
 // ---------- Het zoekscherm: tekst zoeken, overzicht en zoeken op kaart ----------
@@ -2151,6 +2172,8 @@ function openSheet() {
 }
 
 // Tekst zoeken voor één adresregel
+const rowPlaceholder = (row, from) => from === 'start' ? 'Zoek plaats' : row === 0 && stops.length > 1 ? 'Vertrekpunt zoeken'
+  : row === stops.length - 1 ? 'Zoek adres of plaats' : 'Tussenstop zoeken';
 function showText(row, from) {
   editRow = row;
   textFrom = from;
@@ -2161,7 +2184,7 @@ function showText(row, from) {
   const s = stops[row];
   const q = $('q');
   q.value = '';
-  q.placeholder = s ? withoutPostcode(s.name) : from === 'start' ? 'Zoek plaats' : row === 0 && stops.length > 1 ? 'Vertrekpunt zoeken' : row === stops.length - 1 ? 'Zoek adres of plaats' : 'Tussenstop zoeken';
+  q.placeholder = s ? withoutPostcode(s.name) : rowPlaceholder(row, from);
   $('q-postcode').value = '';
   $('q-city').value = '';
   streetCtx = null;
@@ -2595,13 +2618,15 @@ function renderStops(fresh = -1) {
     li.innerHTML = '<span class="grip" aria-label="Verslepen"><i class="ti ti-grip-vertical" aria-hidden="true"></i></span>'
       + `<span class="sdot k-${kind}" aria-hidden="true"></span>`
       + `<button type="button" class="sfield${!s ? ' empty' : s.here ? ' here' : ''}${i === fresh ? ' new' : ''}"></button>`
+      + (s ? '<button type="button" class="sclr" aria-label="Locatie leegmaken"><i class="ti ti-x" aria-hidden="true"></i></button>' : '')
       + '<button type="button" class="sbtn" aria-label="Kies op de kaart"><i class="ti ti-map-pin" aria-hidden="true"></i></button>'
-      + '<button type="button" class="sbtn x" aria-label="Regel weghalen"><i class="ti ti-x" aria-hidden="true"></i></button>';
+      + (stops.length > 1 ? '<button type="button" class="sbtn x" aria-label="Regel weghalen"><i class="ti ti-x" aria-hidden="true"></i></button>' : '');
     li.querySelector('.sfield').textContent = s ? withoutPostcode(s.name)
       : i === fresh ? 'Zoek adres of kies op kaart' : kind === 'start' ? 'Vertrekpunt' : kind === 'end' ? 'Bestemming' : 'Tussenstop';
     li.querySelector('.sfield').addEventListener('click', () => { if (!li.dataset.swiped) showText(i, 'overview'); });
     li.querySelector('.sbtn').addEventListener('click', () => openMapSearch('row', 'overview', i));
-    li.querySelector('.x').addEventListener('click', () => removeRow(i));
+    li.querySelector('.x')?.addEventListener('click', () => removeRow(i));
+    li.querySelector('.sclr')?.addEventListener('click', () => clearRow(i));
     makeDraggable(li, li.querySelector('.grip'), list => {
       const order = [...list.children].map(el => stops[+el.dataset.i]);
       const moved = order.some((s2, k) => s2 !== stops[k]);
@@ -2613,10 +2638,19 @@ function renderStops(fresh = -1) {
   });
 }
 
-// Weghalen. Het vertrekpunt verdwijnt echt: de volgende regel wordt het vertrekpunt, ook als
-// er dan maar één regel over is. Bij de andere regels blijven er twee over (dan wordt hij leeg).
+// Weghalen: elke regel mag weg, zolang er één overblijft. Gaat het vertrekpunt weg, dan wordt
+// de volgende regel het vertrekpunt; gaat de bestemming weg, dan de regel ervoor.
 function removeRow(i) {
-  if (stops.length > 2 || (i === 0 && stops.length > 1)) stops.splice(i, 1); else stops[i] = null;
+  if (stops.length < 2) return;
+  stops.splice(i, 1);
+  savedPick = null;
+  renderStops();
+  computePreview();
+}
+
+// Het x-je in het veld: de locatie leeg, de regel blijft. Zoeken gaat dan weer rond je positie.
+function clearRow(i) {
+  stops[i] = null;
   savedPick = null;
   renderStops();
   computePreview();
@@ -3845,6 +3879,15 @@ loadPins().forEach(pin => {
 homeControls(true);
 document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => setListTab(b.dataset.tab)));
 $('qclear').addEventListener('click', () => {
+  // Niets getypt: dan maakt het x-je de locatie van de regel leeg (het grijze adres in het veld)
+  if (!$('q').value && stops[editRow] && textFrom !== 'start') {
+    stops[editRow] = null;
+    savedPick = null;
+    $('q').placeholder = rowPlaceholder(editRow, textFrom);
+    updateClear();
+    showRecent();
+    return;
+  }
   $('q').value = '';
   $('q-postcode').value = '';
   $('q-city').value = '';
@@ -4126,6 +4169,15 @@ async function parkZonesNear(p, at = new Date()) {
     if (!pt) continue;
     out.push({ lat: pt[1], lon: pt[0], d: g.d, title: g.a.n, zone: { shape: g.shape, a: g.a, special: g.special },
       sub: [g.a.g, g.lab.text].filter(Boolean).join(' · '), name: `${g.a.n}, ${g.a.g}` });
+  }
+  // In Brussel heeft elke gemeente een eigen Groene en Grijze zone, met eigen tarieven en tijden:
+  // komt een naam vaker voor, dan de gemeente in de titel
+  for (const z of out) {
+    const same = out.filter(q => q.zone.a.n === z.zone.a.n);
+    if (new Set(same.map(q => q.zone.a.g)).size > 1 && z.zone.a.g) {
+      z.title = `${z.zone.a.n} ${z.zone.a.g}`;
+      z.sub = z.sub.replace(z.zone.a.g + ' · ', '');
+    }
   }
   return out;
 }
