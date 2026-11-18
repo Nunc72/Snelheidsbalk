@@ -15,7 +15,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
-<link rel="stylesheet" href="style.css?v=91">
+<link rel="stylesheet" href="style.css?v=92">
 </head>
 <body>
 <div id="map"></div>
@@ -42,6 +42,9 @@
 </div>
 
 <div class="toast" id="toast" hidden></div>
+
+<!-- Parkeren: melding bij aankomst of vertrek, boven het onderste kaartje -->
+<div class="ptoast" id="ptoast" hidden></div>
 
 <button class="recenter" id="recenter" hidden aria-label="Centreer op je positie"><i class="ti ti-current-location" aria-hidden="true"></i></button>
 
@@ -128,6 +131,8 @@
           <button type="button" role="menuitemradio" data-kind="standard"><i class="ti ti-map" aria-hidden="true"></i>Standaard</button>
           <button type="button" role="menuitemradio" data-kind="terrain"><i class="ti ti-mountain" aria-hidden="true"></i>3D</button>
           <button type="button" role="menuitemradio" data-kind="satellite"><i class="ti ti-photo" aria-hidden="true"></i>Satelliet</button>
+          <div class="mmsep" id="parksep" hidden></div>
+          <button type="button" role="menuitem" id="parkmenu" hidden><span class="psq">P</span>Parkeervergunning<span class="cnt" id="parkcnt"></span></button>
           <div class="trailleg" id="trailleg" hidden>
             <div class="legh">Wandelroutes <span id="legnote"></span></div>
             <div id="legrows"></div>
@@ -139,7 +144,7 @@
       <div class="pmap" id="pmap">
         <button type="button" class="pmapedit" id="pmapedit" aria-label="Route aanpassen op de kaart"><i class="ti ti-arrows-maximize" aria-hidden="true"></i></button>
       </div>
-      <div class="psum" id="psum"></div>
+      <div class="psumrow"><div class="psum" id="psum"></div><button type="button" class="pchip" id="pchip" hidden></button></div>
       <div class="pbtns">
         <button type="button" class="roundbtn stopbig" id="stop" aria-label="Terug naar de kaart, route stoppen"><i class="ti ti-x" aria-hidden="true"></i></button>
         <button type="button" class="roundbtn addbig" id="qadd" aria-label="Adresregel toevoegen"><i class="ti ti-plus" aria-hidden="true"></i></button>
@@ -167,6 +172,20 @@
   </div>
 </div>
 
+<!-- Parkeervergunning: gebied kiezen op de kaart -->
+<div class="zonepick" id="zonepick" hidden>
+  <div class="msmap" id="zmap"></div>
+  <div class="ztop">Kies je vergunninggebied</div>
+  <div class="zonelbl" id="zonelbl" hidden></div>
+  <svg class="pin" viewBox="0 0 36 48" aria-hidden="true"><path d="M18 46.5C18 46.5 34 28.5 34 17A16 16 0 0 0 2 17C2 28.5 18 46.5 18 46.5Z"/><circle cx="18" cy="17" r="6"/></svg>
+  <button type="button" class="pickme" id="zonehere" aria-label="Naar je positie"><i class="ti ti-current-location" aria-hidden="true"></i></button>
+  <div class="zcard"><div class="z1" id="zone1"></div><div class="z2" id="zone2"></div></div>
+  <div class="mbtns">
+    <button type="button" class="roundbtn addbig" id="zoneback" aria-label="Terug"><i class="ti ti-arrow-left" aria-hidden="true"></i></button>
+    <button type="button" class="roundbtn okbig" id="zoneok" aria-label="Dit gebied toevoegen"><i class="ti ti-check" aria-hidden="true"></i></button>
+  </div>
+</div>
+
 <div class="start" id="start">
   <div class="start-card">
     <h1>VeloVerde</h1>
@@ -177,6 +196,6 @@
 </div>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-<script src="app.js?v=91"></script>
+<script src="app.js?v=92"></script>
 </body>
 </html>

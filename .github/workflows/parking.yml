@@ -1,0 +1,32 @@
+# Elke nacht de parkeertarieven uit het Nationaal Parkeer Register (RDW open data) ophalen en
+# in kleine stukjes op de branch parking-data zetten. De app haalt ze daar op (zie tools/parking.py).
+name: Parkeerdata
+on:
+  schedule:
+    # 03:17 UTC: rustig bij GitHub, en de RDW heeft de wijzigingen van gisteren verwerkt
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: parking
+  cancel-in-progress: false
+jobs:
+  parking:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: tools
+      - run: python3 tools/parking.py out
+      # Steeds één verse versie (zonder geschiedenis), zodat de repository niet volloopt
+      - name: Naar de branch parking-data
+        working-directory: out
+        run: |
+          git init -q -b parking-data
+          git config user.name 'Parkeerdata'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -qm "Parkeerdata $(date -u +%Y-%m-%d)"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" parking-data

@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '91';
+const VERSION = '92';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -1122,6 +1122,7 @@ function onFix(f) {
   updateNav(p);
   updateCamera(p, first ? 0 : 1000);
   maybeFetchLimit(p);
+  parkMoved(f);
 }
 
 function startGps() {
@@ -2667,6 +2668,7 @@ function forgetPreview() {
   previewData = null;
   previewTags.forEach(t => t.remove());
   previewTags = [];
+  hideParkChip();
   if (pmap && pmap.getSource('route')) ['route', 'alts', 'ends'].forEach(s => pmap.getSource(s).setData(EMPTY_FC));
 }
 function drawAltTags() {
@@ -2715,12 +2717,14 @@ function drawPreview() {
     pmap.fitBounds(b, { padding: 36, duration: 0, maxZoom: 16 });
   }
   drawAltTags();
+  drawParkTag();
 }
 
 function previewSummary(note, time, d) {
   const n = filled().length - 2;
   $('psum').textContent = (note ? note + ' · ' : '') + `${fmtDuration(time)} · ${fmtDist(d)} · ${MODE_LABEL[travelMode]}`
     + (n > 0 ? ` · ${n} ${n === 1 ? 'tussenstop' : 'tussenstops'}` : '');
+  updateParkChip();
 }
 
 // Andere route kiezen: tik op het label of op de grijze lijn
@@ -2836,6 +2840,7 @@ async function computePreview(note) {
     previewData = { coords: [], pts: pts.filter(Boolean), routes: null, sel: 0, note };
     drawPreview();
     $('psum').textContent = msg;
+    hideParkChip();
   };
   syncOk();
   if (lookMode()) {
@@ -2913,6 +2918,8 @@ function confirmPreview() {
   state.lastRouteAt = Date.now();
   if (DEMO) demo.along = 0;
   setMode('nav');
+  // Vertrek uit een betaald gebied: parkeeractie gestopt?
+  if (nav.mode === 'auto' && state.fix) parkAsk(state.fix);
   // Echte navigatie: de live kaart volgt meteen je eigen positie, gekanteld en in de rijrichting
   follow();
   if (state.fix) updateNav([state.fix.lon, state.fix.lat]);
@@ -3462,6 +3469,8 @@ $('qmap').addEventListener('click', () => {
 // Een conceptroute stoppen: de kaart blijft op dezelfde plek
 // Rode knop: de route annuleren; vertrekpunt, bestemming en tussenstops zijn weg
 $('stop').addEventListener('click', () => {
+  // Navigatie onderweg gestopt (bijvoorbeeld eerder geparkeerd): betaald parkeren hier?
+  if (state.nav && state.nav.mode === 'auto' && !state.nav.arrivedAt && state.fix) parkArrive(state.fix);
   stopRoute(!!state.concept && !state.nav);
   stops = [];
   savedPick = null;
@@ -3491,7 +3500,8 @@ bottomCards.forEach(c => bottomWatch.observe(c));
 function toggleMapMenu(open) {
   $('mapmenu').hidden = !open;
   $('mapset').setAttribute('aria-expanded', String(open));
-  $('mapmenu').querySelectorAll('button').forEach(b => b.setAttribute('aria-checked', String(b.dataset.kind === mapKind)));
+  $('mapmenu').querySelectorAll('button[data-kind]').forEach(b => b.setAttribute('aria-checked', String(b.dataset.kind === mapKind)));
+  syncParkMenu();
   $('trailleg').hidden = !(open && travelMode === 'pedestrian');
   if (!$('trailleg').hidden) showTrailLegend();
 }
@@ -3844,6 +3854,438 @@ document.querySelectorAll('.modes button').forEach(b => b.addEventListener('clic
   if (!$('mapsearch').hidden) msRecompute();
   else computePreview();
 }));
+
+// ---------- Parkeren: tarieven op straat en je vergunning (alleen Auto) ----------
+// Uit het Nationaal Parkeer Register (RDW open data), elke nacht klaargezet door
+// tools/parking.py op de branch parking-data, in vakjes van 0,05 graad.
+const PARK = 'https://raw.githubusercontent.com/Nunc72/Snelheidsbalk/parking-data/';
+const PARK_GRID = 0.05, PARK_SOON = 120, PARK_AWAY = 150;
+const PARK_DAYS = ['ZONDAG', 'MAANDAG', 'DINSDAG', 'WOENSDAG', 'DONDERDAG', 'VRIJDAG', 'ZATERDAG'];
+const PARK_SHORT = ['zo', 'ma', 'di', 'wo', 'do', 'vr', 'za'];
+const parkMemo = new Map();
+function parkTile(lat, lon) {
+  const path = `p/${Math.floor(lat / PARK_GRID)}_${Math.floor(lon / PARK_GRID)}.json`;
+  const hit = parkMemo.get(path);
+  if (hit && Date.now() - hit.at < 6 * 3600e3) return hit.p;
+  // Geen vakje (geen betaald parkeren, of buitenland): leeg
+  const p = fetch(PARK + path).then(r => (r.ok ? r.json() : r.status === 404 ? null : Promise.reject(new Error('Parkeren ' + r.status))));
+  p.catch(() => parkMemo.delete(path));
+  parkMemo.set(path, { at: Date.now(), p });
+  return p;
+}
+// Binnen een gebied: een oneven aantal ringen om het punt (zo tellen gaten en losse delen mee)
+const inArea = (pt, a) => a.r.reduce((n, r) => n + inRing(pt, r), 0) % 2 === 1;
+
+// Wat er op een plek geldt: het betaalde gebied, de vergunninggebieden en de speciale dagen
+async function parkingAt(p) {
+  const t = await parkTile(p.lat, p.lon).catch(() => null);
+  if (!t) return null;
+  const pt = [p.lon, p.lat];
+  const paid = t.a.find(a => inArea(pt, a)) || null, permit = t.v.filter(v => inArea(pt, v));
+  if (!paid && !permit.length) return null;
+  return { paid, permit, special: t.s, mine: isMine(paid, permit) };
+}
+
+const ymdKey = d => `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+const dayStart = d => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
+const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+const atMin = (day, min) => { const x = new Date(day); x.setMinutes(min); return x; };
+// De betaalde tijdvakken van één dag, in minuten na middernacht. Op een speciale dag (feestdag,
+// koopzondag) de tijdvakken daarvan, als het gebied die heeft.
+function paidSpans(a, special, day) {
+  const sp = special && special[a.m] && special[a.m][ymdKey(day)];
+  const frames = (sp && a.w[sp]) || a.w[PARK_DAYS[day.getDay()]] || [];
+  return frames.map(([s, e, i]) => ({ s, e, f: a.f[i] })).filter(x => x.f && x.f.h > 0);
+}
+// Tot wanneer het aan één stuk betaald is, ook over middernacht heen
+function paidUntil(a, special, day, span) {
+  let d = day, end = span.e;
+  for (let i = 0; i < 4; i++) {
+    if (end >= 1440) { d = addDays(d, 1); end -= 1440; }
+    const more = paidSpans(a, special, d).find(x => x.s === end && x.e > end);
+    if (!more) break;
+    end = more.e;
+  }
+  return atMin(d, end);
+}
+// Wat parkeren kost op een moment: betaald (tarief en tot wanneer), straks betaald
+// (binnen 2 uur), of gratis
+function parkStatus(a, special, at) {
+  const day = dayStart(at), m = at.getHours() * 60 + at.getMinutes();
+  const today = paidSpans(a, special, day);
+  const now = today.find(x => x.s <= m && m < x.e);
+  if (now) return { kind: 'paid', f: now.f, until: paidUntil(a, special, day, now) };
+  const next = [...today.filter(x => x.s > m).map(x => ({ ...x, at: x.s })),
+    ...paidSpans(a, special, addDays(day, 1)).map(x => ({ ...x, at: x.s + 1440 }))].sort((p, q) => p.at - q.at)[0];
+  const from = next ? atMin(day, next.at) : null;
+  if (next && next.at - m <= PARK_SOON) return { kind: 'soon', f: next.f, from };
+  return { kind: 'free', from };
+}
+// Wat het kost om zo lang te parkeren (minuten), met de staffel en het maximum per dag.
+// Bij een tarief per blok (dagkaart) rekenen we niets voor.
+function parkCost(a, special, at, minutes) {
+  let cents = 0;
+  const memo = new Map();
+  for (let k = 0; k < minutes; k++) {
+    const t = new Date(at.getTime() + k * 60000), day = dayStart(t), m = t.getHours() * 60 + t.getMinutes();
+    const key = day.getTime();
+    if (!memo.has(key)) memo.set(key, paidSpans(a, special, day));
+    const span = memo.get(key).find(x => x.s <= m && m < x.e);
+    if (!span) continue;
+    if (span.f.b) return null;
+    const step = (span.f.s || []).filter(([after]) => after <= k).pop();
+    cents += (step ? step[1] : span.f.h) / 60;
+  }
+  return Math.round(a.x ? Math.min(cents, a.x) : cents);
+}
+
+const euro = c => '€\u00a0' + (c / 100).toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// "€ 4,50 (per uur)", of bij een tarief per blok "€ 12,00 per 12 uur"
+function rateText(f, perHour = false) {
+  if (f.b) return `${euro(Math.round(f.h * f.b / 60))} per ${f.b % 60 ? f.b + ' min' : f.b / 60 + ' uur'}`;
+  return euro(f.h) + (perHour ? ' per uur' : '');
+}
+const hhmm = min => { const h = Math.floor(min / 60) % 24, m = min % 60; return String(h).padStart(2, '0') + (m ? ':' + String(m).padStart(2, '0') : ''); };
+// Eén dag in het blad: de tijden (een avond tot 1:00 telt bij die dag) en het tarief
+function dayText(a, special, day) {
+  const spans = paidSpans(a, special, day);
+  const fromYesterday = paidSpans(a, special, addDays(day, -1)).some(x => x.e === 1440);
+  const tomorrow = paidSpans(a, special, addDays(day, 1)).find(x => x.s === 0 && x.e <= 360);
+  const shown = [];
+  for (const x of spans) {
+    if (x.s === 0 && x.e <= 360 && fromYesterday && spans.length > 1) continue;
+    const last = shown[shown.length - 1];
+    if (last && last.e === x.s) last.e = x.e;
+    else shown.push({ s: x.s, e: x.e });
+  }
+  if (!shown.length) return null;
+  const last = shown[shown.length - 1];
+  const times = shown.length === 1 && last.s === 0 && last.e === 1440 ? 'hele dag'
+    : shown.map(x => `${hhmm(x.s)}–${hhmm(x === last && x.e === 1440 && tomorrow ? tomorrow.e : x.e)}`).join(', ');
+  const rates = [...new Set(spans.map(x => x.f.h))].sort((p, q) => p - q);
+  const blk = spans.find(x => x.f.b);
+  const rate = blk ? rateText(blk.f) : rates.length > 1 ? `${euro(rates[0])}–${euro(rates[rates.length - 1]).slice(2)}` : euro(rates[0]);
+  return { times, rate, low: rates[rates.length - 1] < Math.max(...a.f.map(f => f.h)) };
+}
+
+// ---------- Vergunning: alleen op de telefoon, per gebied ----------
+function loadPermits() { try { return JSON.parse(localStorage.getItem('parkPermits')) || []; } catch (e) { return []; } }
+function savePermits(list) { try { localStorage.setItem('parkPermits', JSON.stringify(list)); } catch (e) { /* geen opslag */ } }
+function noPermit() { try { return localStorage.getItem('parkNoPermit') === '1'; } catch (e) { return false; } }
+function setNoPermit(on) { try { if (on) localStorage.setItem('parkNoPermit', '1'); else localStorage.removeItem('parkNoPermit'); } catch (e) { /* geen opslag */ } }
+const areaKey = a => `${a.m}:A:${a.id}`;
+function isMine(paid, permit) {
+  const keys = new Set(loadPermits().map(p => p.k));
+  return permit.some(v => keys.has(v.k)) || !!(paid && keys.has(areaKey(paid)));
+}
+// Het gebied van je vergunning: het vergunninggebied, en anders het betaalde gebied zelf
+function permitOf(info) {
+  const v = info.permit[0];
+  return v ? { k: v.k, n: v.n, g: v.g } : { k: areaKey(info.paid), n: info.paid.n, g: info.paid.g };
+}
+function addPermit(p, from) {
+  savePermits([...loadPermits().filter(x => x.k !== p.k), { ...p, from, at: Date.now() }]);
+  setNoPermit(false);
+}
+function removePermit(k) { savePermits(loadPermits().filter(x => x.k !== k)); }
+
+// ---------- Het label bij de route en het blad met tarieven ----------
+let parkSeq = 0, parkData = null, parkTag = null;
+function parkLabel(info, at) {
+  if (info.mine) return { cls: 'mine', text: 'Vergunning ✓' };
+  if (!info.paid) return { cls: 'grey', text: 'Alleen vergunning' };
+  const st = parkStatus(info.paid, info.special, at);
+  if (st.kind === 'paid') return { cls: '', text: rateText(st.f) };
+  if (st.kind === 'soon') return { cls: '', text: `Vanaf ${fmtClock(st.from)} ${rateText(st.f)}` };
+  return { cls: 'free', text: 'Gratis' };
+}
+function hideParkChip() {
+  parkSeq++;
+  parkData = null;
+  $('pchip').hidden = true;
+  if (parkTag) { parkTag.remove(); parkTag = null; }
+}
+// Wat parkeren op de bestemming kost als je aankomt
+async function updateParkChip() {
+  hideParkChip();
+  const seq = parkSeq, list = filled(), dest = list[list.length - 1];
+  if (travelMode !== 'auto' || !previewNav || list.length < 2 || !dest || dest.here) return;
+  const at = new Date(Date.now() + previewNav.time * 1000);
+  const info = await parkingAt(dest);
+  if (seq !== parkSeq || !info) return;
+  const lab = parkLabel(info, at);
+  const chip = $('pchip');
+  chip.className = 'pchip ' + lab.cls;
+  chip.innerHTML = '<span class="psq">P</span><span class="pct"></span><i class="ti ti-chevron-right" aria-hidden="true"></i>';
+  chip.querySelector('.pct').textContent = lab.text;
+  chip.setAttribute('aria-label', 'Parkeren: ' + lab.text);
+  chip.hidden = false;
+  parkData = { info, at, dest, lab };
+  drawParkTag();
+}
+// Hetzelfde label klein op de kaart, bij de bestemming
+function drawParkTag() {
+  if (parkTag) { parkTag.remove(); parkTag = null; }
+  if (!parkData || !pmap) return;
+  const el = document.createElement('button');
+  el.type = 'button';
+  el.className = 'ptag ' + parkData.lab.cls;
+  el.innerHTML = '<span class="psq">P</span><span></span>';
+  el.lastChild.textContent = parkData.lab.text;
+  el.addEventListener('click', e => { e.stopPropagation(); openParkSheet(); });
+  parkTag = new maplibregl.Marker({ element: el, anchor: 'left', offset: [12, 0] }).setLngLat([parkData.dest.lon, parkData.dest.lat]).addTo(pmap);
+}
+
+function closeParkSheet() { document.querySelectorAll('.pdim, .psheet').forEach(el => el.remove()); }
+function parkSheetShell(title, sub) {
+  closeParkSheet();
+  const dim = document.createElement('div');
+  dim.className = 'pdim';
+  dim.addEventListener('click', closeParkSheet);
+  const sh = document.createElement('div');
+  sh.className = 'psheet';
+  sh.setAttribute('role', 'dialog');
+  sh.innerHTML = '<div class="handle" aria-hidden="true"></div><div class="phead"><span class="psq big">P</span>'
+    + '<div class="ph"><div class="t1"></div><div class="t2"></div></div>'
+    + '<button type="button" class="px" aria-label="Sluiten"><i class="ti ti-x" aria-hidden="true"></i></button></div><div class="pbody"></div>';
+  sh.querySelector('.t1').textContent = title;
+  sh.querySelector('.t2').textContent = sub;
+  sh.querySelector('.px').addEventListener('click', closeParkSheet);
+  // Omlaag vegen sluit het blad
+  let y0 = null;
+  sh.addEventListener('pointerdown', e => { y0 = e.clientY; });
+  sh.addEventListener('pointerup', e => { if (y0 != null && e.clientY - y0 > 60) closeParkSheet(); y0 = null; });
+  document.body.append(dim, sh);
+  return sh.querySelector('.pbody');
+}
+
+// Tik op het label: bij aankomst, en per dag van deze week wanneer het betaald is
+function openParkSheet() {
+  if (!parkData) return;
+  const { info, at, dest } = parkData;
+  const a = info.paid, area = a || info.permit[0];
+  const body = parkSheetShell('Parkeren bij ' + withoutPostcode(dest.name).split(',')[0], [area.g, area.n].filter(Boolean).join(' · '));
+  const now = document.createElement('div');
+  now.className = 'pnow';
+  now.innerHTML = '<div class="l"></div><div class="v"></div><div class="s"></div>';
+  now.querySelector('.l').textContent = `Bij aankomst · ${PARK_SHORT[at.getDay()]} ${fmtClock(at)}`;
+  const v = now.querySelector('.v'), s = now.querySelector('.s');
+  if (info.mine) {
+    v.textContent = 'Vergunning ✓';
+    s.textContent = 'Met je vergunning parkeer je hier gratis.';
+    now.classList.add('mine');
+  } else if (!a) {
+    v.textContent = 'Alleen vergunning';
+    s.textContent = 'Hier mogen alleen bewoners met een vergunning parkeren.';
+    now.classList.add('grey');
+  } else {
+    const st = parkStatus(a, info.special, at);
+    if (st.kind === 'paid') {
+      v.innerHTML = `${rateText(st.f)}${st.f.b ? '' : ' <small>per uur</small>'}`;
+      const cost = parkCost(a, info.special, at, 120);
+      s.textContent = [st.until - at >= 24 * 3600e3 ? 'Altijd betaald' : `Betaald tot ${fmtClock(st.until)}`,
+        cost != null ? `2 uur parkeren: ${euro(cost)}` : ''].filter(Boolean).join(' · ');
+    } else {
+      v.textContent = 'Gratis';
+      now.classList.add('free');
+      s.textContent = st.from ? `Betaald vanaf ${st.kind === 'soon' || dayStart(st.from).getTime() === dayStart(at).getTime() ? '' : PARK_SHORT[st.from.getDay()] + ' '}${fmtClock(st.from)}` : '';
+    }
+  }
+  body.appendChild(now);
+  if (!a) return;
+  // Per dag een balk van 0 tot 24 uur: blauw betaald (lichter: goedkoper), groen gratis
+  const days = document.createElement('div');
+  days.className = 'pdays';
+  const first = dayStart(at), today = dayStart(new Date());
+  for (let i = 0; i < 7; i++) {
+    const day = addDays(first, i), rel = Math.round((day - today) / 864e5);
+    const row = document.createElement('div');
+    row.className = 'pday' + (i === 0 ? ' first' : '');
+    const top = Math.max(...a.f.map(f => f.h));
+    const bars = paidSpans(a, info.special, day).map(x => `<span class="paid${x.f.h < top ? ' low' : ''}" style="left:${x.s / 14.4}%;width:${(x.e - x.s) / 14.4}%"></span>`).join('');
+    const mark = i === 0 ? `<span class="arr" style="left:${(at.getHours() * 60 + at.getMinutes()) / 14.4}%"></span>` : '';
+    const sp = info.special && info.special[a.m] && info.special[a.m][ymdKey(day)];
+    const t = dayText(a, info.special, day);
+    row.innerHTML = `<span class="d"></span><span class="track">${bars}${mark}</span><span class="p"></span>`;
+    row.querySelector('.d').textContent = rel === 0 ? 'Vandaag' : rel === 1 ? 'Morgen' : PARK_SHORT[day.getDay()] + ' ' + day.getDate();
+    if (sp) row.title = sp.toLowerCase();
+    const p = row.querySelector('.p');
+    if (t) {
+      p.innerHTML = `${t.times} <b></b>`;
+      p.querySelector('b').textContent = t.rate;
+    } else {
+      p.textContent = 'Gratis';
+      p.classList.add('free');
+    }
+    days.appendChild(row);
+  }
+  body.appendChild(days);
+  body.insertAdjacentHTML('beforeend', '<div class="pticks"><span>0</span><span>6</span><span>12</span><span>18</span><span>24</span></div>'
+    + '<div class="plegend"><span><i class="sw paid"></i>Betaald</span><span><i class="sw free"></i>Gratis</span><span><i class="sw arr"></i>Aankomst</span></div>'
+    + '<div class="psrc">Bron: Nationaal Parkeer Register (RDW). Parkeergarages staan er nog niet in.</div>');
+}
+
+// ---------- Meldingen: betaald parkeren bij aankomst, en "afgerond?" bij vertrek ----------
+let parkToastAt = null, parkToastTimer = 0;
+function hideParkToast() {
+  clearTimeout(parkToastTimer);
+  $('ptoast').hidden = true;
+  parkToastAt = null;
+  document.documentElement.style.setProperty('--ptoasth', '0px');
+}
+function parkToast({ kind = '', title, sub, at, links = null, undo = null, ttl = 0 }) {
+  const el = $('ptoast');
+  clearTimeout(parkToastTimer);
+  el.className = 'ptoast ' + kind;
+  el.innerHTML = '<span class="psq big">P</span><div class="pt"><div class="tt"></div><div class="ts"></div></div>';
+  const tt = el.querySelector('.tt');
+  title.split('\n').forEach((line, i) => { if (i) tt.appendChild(document.createElement('br')); tt.appendChild(document.createTextNode(line)); });
+  el.querySelector('.ts').textContent = sub;
+  if (links) {
+    const box = document.createElement('div');
+    box.className = 'plinks';
+    box.innerHTML = '<button type="button" class="yes">Ik heb hier een vergunning</button><button type="button" class="no">Ik heb geen vergunning</button>';
+    box.querySelector('.yes').addEventListener('click', () => {
+      const p = permitOf(links);
+      addPermit(p, 'melding');
+      parkToast({ kind: 'done', title: 'Vergunning onthouden', sub: `${[p.g, p.n].filter(Boolean).join(' · ')}. Hier krijg je geen melding meer.`,
+        at, undo: () => { removePermit(p.k); hideParkToast(); }, ttl: 6000 });
+    });
+    box.querySelector('.no').addEventListener('click', () => { setNoPermit(true); hideParkToast(); });
+    el.querySelector('.pt').appendChild(box);
+  }
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  if (undo) {
+    btn.className = 'pundo';
+    btn.textContent = 'Ongedaan';
+    btn.addEventListener('click', undo);
+  } else {
+    btn.className = 'px';
+    btn.setAttribute('aria-label', 'Melding sluiten');
+    btn.innerHTML = '<i class="ti ti-x" aria-hidden="true"></i>';
+    btn.addEventListener('click', hideParkToast);
+  }
+  el.appendChild(btn);
+  el.hidden = false;
+  parkToastAt = at ? { lat: at.lat, lon: at.lon } : null;
+  document.documentElement.style.setProperty('--ptoasth', el.offsetHeight + 12 + 'px');
+  if (ttl) parkToastTimer = setTimeout(hideParkToast, ttl);
+}
+// Weggereden: de melding hoort bij de plek waar je stond
+function parkMoved(f) {
+  if (parkToastAt && !$('ptoast').hidden && dist([f.lon, f.lat], ll(parkToastAt)) > PARK_AWAY) hideParkToast();
+}
+// Aangekomen, of de navigatie gestopt: betaald parkeren hier (nu of binnen 2 uur)?
+async function parkArrive(p) {
+  const info = await parkingAt(p);
+  if (!info || !info.paid || info.mine) return;
+  const now = new Date(), st = parkStatus(info.paid, info.special, now);
+  if (st.kind === 'paid') {
+    parkToast({ title: 'Betaald parkeren\n' + rateText(st.f, true), at: p,
+      sub: st.until - now >= 24 * 3600e3 ? 'De hele dag betaald' : `Tot ${fmtClock(st.until)}, daarna gratis` });
+  } else if (st.kind === 'soon') {
+    parkToast({ title: 'Betaald parkeren\nvanaf ' + fmtClock(st.from), sub: rateText(st.f, true), at: p });
+  }
+}
+// Navigatie gestart in een betaald gebied (op elk tijdstip): parkeeractie gestopt?
+async function parkAsk(p) {
+  const info = await parkingAt(p);
+  if (!info || !info.paid || info.mine) return;
+  const ask = !loadPermits().length && !noPermit();
+  parkToast({ kind: 'ask', title: 'Betaald parkeren afgerond?', sub: 'Je staat in een betaald parkeergebied', at: p, links: ask ? info : null });
+}
+
+// ---------- Vergunning beheren: menu → Parkeervergunning ----------
+function openPermitSheet() {
+  const body = parkSheetShell('Parkeervergunning', 'Hier krijg je geen melding "afgerond?"');
+  const ul = document.createElement('ul');
+  ul.className = 'vlist';
+  for (const p of loadPermits()) {
+    const li = document.createElement('li');
+    li.innerHTML = '<i class="ti ti-map-2 vic" aria-hidden="true"></i><div class="vt"><div class="v1"></div><div class="v2"></div></div>'
+      + '<button type="button" class="vdel" aria-label="Weghalen"><i class="ti ti-trash" aria-hidden="true"></i></button>';
+    li.querySelector('.v1').textContent = [p.g, p.n].filter(Boolean).join(' · ');
+    li.querySelector('.v2').textContent = `${p.from === 'kaart' ? 'Gekozen op de kaart' : 'Toegevoegd vanuit de melding'}, ${new Date(p.at).toLocaleDateString('nl-NL', { day: 'numeric', month: 'short' })}`;
+    li.querySelector('.vdel').addEventListener('click', () => { removePermit(p.k); openPermitSheet(); syncParkMenu(); });
+    ul.appendChild(li);
+  }
+  if (noPermit()) {
+    const li = document.createElement('li');
+    li.innerHTML = '<i class="ti ti-circle-off vic" aria-hidden="true"></i><div class="vt"><div class="v1">Geen vergunning</div><div class="v2">De melding vraagt er niet meer naar</div></div>'
+      + '<button type="button" class="vagain">Weer vragen</button>';
+    li.querySelector('.vagain').addEventListener('click', () => { setNoPermit(false); openPermitSheet(); });
+    ul.appendChild(li);
+  }
+  const add = document.createElement('li');
+  add.className = 'vadd';
+  add.setAttribute('role', 'button');
+  add.innerHTML = '<i class="ti ti-plus" aria-hidden="true"></i>Gebied toevoegen op de kaart';
+  add.addEventListener('click', openZonePick);
+  ul.appendChild(add);
+  body.appendChild(ul);
+  body.insertAdjacentHTML('beforeend', '<div class="vexpl">Een gebied is een parkeerzone van de gemeente, uit het Nationaal Parkeer Register. '
+    + 'Je adres of kenteken wordt niet bewaard, en alles blijft op je telefoon. Rijd je naar je eigen gebied, dan staat er '
+    + '<b class="mine">P Vergunning ✓</b> bij de route.</div>');
+}
+function syncParkMenu() {
+  const n = loadPermits().length;
+  $('parkmenu').hidden = $('parksep').hidden = travelMode !== 'auto';
+  $('parkcnt').textContent = n ? String(n) : '';
+}
+$('parkmenu').addEventListener('click', e => { e.stopPropagation(); toggleMapMenu(false); openPermitSheet(); });
+$('pchip').addEventListener('click', openParkSheet);
+
+// Gebied kiezen op de kaart: de pin staat vast in het midden, het vlak eronder kleurt blauw
+let zmap = null, zoneHit = null, zoneSeq = 0;
+async function openZonePick() {
+  closeParkSheet();
+  $('zonepick').hidden = false;
+  const at = state.fix ? [state.fix.lon, state.fix.lat] : map.getCenter().toArray();
+  if (!zmap) {
+    const style = await currentStyle(true);
+    zmap = new maplibregl.Map({ container: 'zmap', style, center: at, zoom: 14, attributionControl: false, ...SMALL_MAP });
+    zmap.on('style.load', () => {
+      zmap.addSource('zones', { type: 'geojson', data: EMPTY_FC });
+      zmap.addLayer({ id: 'zones-fill', type: 'fill', source: 'zones', paint: { 'fill-color': '#1F6FE0', 'fill-opacity': ['case', ['get', 'hit'], 0.28, 0.05] } });
+      zmap.addLayer({ id: 'zones-line', type: 'line', source: 'zones', paint: { 'line-color': '#1F6FE0', 'line-width': ['case', ['get', 'hit'], 3, 1.2], 'line-opacity': ['case', ['get', 'hit'], 1, 0.5] } });
+      zoneUpdate();
+    });
+    zmap.on('moveend', zoneUpdate);
+  } else {
+    zmap.resize();
+    zmap.jumpTo({ center: at, zoom: 14 });
+  }
+}
+async function zoneUpdate() {
+  if (!zmap || !zmap.getSource('zones')) return;
+  const seq = ++zoneSeq, c = zmap.getCenter(), pt = [c.lng, c.lat];
+  const t = await parkTile(c.lat, c.lng).catch(() => null);
+  if (seq !== zoneSeq) return;
+  // Vergunninggebieden; heeft de gemeente die niet, dan de betaalde gebieden
+  const zones = t ? (t.v.length ? t.v : t.a) : [];
+  zoneHit = zones.find(z => inArea(pt, z)) || null;
+  const near = zones.filter(z => z.r.some(r => r.some(p => Math.abs(p[0] - c.lng) < 0.03 && Math.abs(p[1] - c.lat) < 0.02)));
+  zmap.getSource('zones').setData({ type: 'FeatureCollection', features: near.map(z => ({ type: 'Feature', properties: { hit: z === zoneHit },
+    geometry: { type: 'MultiPolygon', coordinates: z.r.map(r => [r]) } })) });
+  const paid = t && t.a.find(a => inArea(pt, a));
+  $('zonelbl').hidden = !zoneHit;
+  $('zonelbl').textContent = zoneHit ? zoneHit.n : '';
+  $('zone1').textContent = zoneHit ? [zoneHit.g, zoneHit.n].filter(Boolean).join(' · ') : 'Hier is geen parkeergebied';
+  const today = paid && dayText(paid, t.s, dayStart(new Date()));
+  $('zone2').textContent = zoneHit ? (today ? `Vandaag betaald ${today.times} · ${today.rate} per uur` : 'Vandaag gratis') : 'Schuif de kaart naar je straat';
+  $('zoneok').disabled = !zoneHit;
+}
+$('zoneback').addEventListener('click', () => { $('zonepick').hidden = true; openPermitSheet(); });
+$('zoneok').addEventListener('click', () => {
+  if (!zoneHit) return;
+  const z = zoneHit;
+  addPermit(z.k ? { k: z.k, n: z.n, g: z.g } : { k: areaKey(z), n: z.n, g: z.g }, 'kaart');
+  $('zonepick').hidden = true;
+  syncParkMenu();
+  openPermitSheet();
+});
+$('zonehere').addEventListener('click', () => { if (state.fix && zmap) zmap.easeTo({ center: [state.fix.lon, state.fix.lat] }); });
 
 // ---------- NDW: laadpalen (vrij of bezet) en afsluitingen ----------
 // Open data van NDW, elke 5 minuten klaargezet door tools/ndw.py (GitHub Action) op de
@@ -4665,8 +5107,10 @@ function updateNav(p) {
     $('instr-icon').className = 'ti ti-flag';
     $('instr-title').textContent = 'Je bent er';
     setInstrSub(state.dest ? state.dest.name : '');
-    if (!n.arrivedAt) n.arrivedAt = Date.now();
-    else if (Date.now() - n.arrivedAt > 15000) stopRoute();
+    if (!n.arrivedAt) {
+      n.arrivedAt = Date.now();
+      if (n.mode === 'auto') parkArrive(state.fix || state.dest);
+    } else if (Date.now() - n.arrivedAt > 15000) stopRoute();
     return;
   }
 

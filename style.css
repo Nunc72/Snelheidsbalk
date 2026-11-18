@@ -451,6 +451,106 @@ body.driving .mapctl { opacity: 0; pointer-events: none; }
 .start-card .small { font-size: 13px; color: #8a8a8a; margin: 14px 0 0; }
 #startbtn { width: 100%; background: #008000; color: #fff; font-size: 19px; font-weight: 600; padding: 15px; border-radius: 14px; }
 
+/* ---------- Parkeren ---------- */
+.psq { width: 20px; height: 20px; flex: none; border-radius: 4px; background: #1F6FE0; color: #fff; font: 800 14px/1 Arial, Helvetica, sans-serif;
+  display: inline-flex; align-items: center; justify-content: center; }
+.psq.big { width: 32px; height: 32px; border-radius: 7px; font-size: 21px; }
+.psumrow { display: flex; align-items: center; justify-content: center; gap: 10px; min-width: 0; }
+.psumrow .psum { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pchip { flex: none; display: inline-flex; align-items: center; gap: 5px; padding: 4px 4px 4px 5px; border-radius: 10px; background: #E8F0FD; color: #1F6FE0;
+  font-size: 15px; font-weight: 600; white-space: nowrap; }
+.pchip .ti { font-size: 16px; margin-left: -2px; }
+.pchip.free, .pchip.mine { background: #E6F4EA; color: #1E7B3A; }
+.pchip.free .psq, .pchip.mine .psq, .ptag.free .psq, .ptag.mine .psq { background: #1E7B3A; }
+.pchip.grey { background: #F1F0EC; color: #6b6b6b; }
+.pchip.grey .psq, .ptag.grey .psq { background: #A9B4C2; }
+.ptag { display: flex; align-items: center; gap: 3px; padding: 2px 6px 2px 2px; border-radius: 7px; background: #fff; color: #1F6FE0;
+  font-size: 12px; font-weight: 700; box-shadow: 0 1px 4px rgba(0,0,0,.25); white-space: nowrap; }
+.ptag.free, .ptag.mine { color: #1E7B3A; }
+.ptag.grey { color: #6b6b6b; }
+.ptag .psq { width: 17px; height: 17px; font-size: 12px; border-radius: 3px; }
+/* Menu: Parkeervergunning onder de kaartsoorten */
+.mmsep { height: 1px; background: #ECECEF; margin: 5px 4px; }
+#parkmenu .psq { width: 21px; height: 21px; font-size: 14px; }
+#parkmenu .cnt { margin-left: auto; padding-left: 14px; font-size: 14px; color: #8a8a8a; }
+/* Blad van onderen: tarieven of je vergunningen */
+.pdim { position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.32); }
+.psheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 41; max-height: 88vh; overflow-y: auto; background: #fff; color: #1c1c1e;
+  border-radius: 20px 20px 0 0; padding: 8px 16px calc(env(safe-area-inset-bottom) + 16px); box-shadow: 0 -4px 20px rgba(0,0,0,.15); }
+.psheet .handle { width: 38px; height: 5px; border-radius: 3px; background: #D6D6D6; margin: 0 auto 10px; }
+.phead { display: flex; gap: 12px; align-items: center; }
+.phead .ph { min-width: 0; }
+.phead .t1 { font-size: 18px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.phead .t2 { font-size: 13.5px; color: #6b6b6b; margin-top: 1px; }
+.px { margin-left: auto; width: 32px; height: 32px; flex: none; border-radius: 50%; background: #F1F0EC; color: #6b6b6b; display: flex; align-items: center; justify-content: center; }
+.px .ti { font-size: 18px; }
+.pnow { margin: 14px 0 12px; padding: 11px 13px; border-radius: 14px; background: #E8F0FD; }
+.pnow .l { font-size: 13px; color: #1F6FE0; font-weight: 600; }
+.pnow .v { font-size: 25px; font-weight: 700; margin-top: 1px; }
+.pnow .v small { font-size: 16px; font-weight: 500; color: #3a3a3c; }
+.pnow .s { font-size: 13.5px; color: #3a3a3c; margin-top: 2px; }
+.pnow.free, .pnow.mine { background: #E6F4EA; }
+.pnow.free .l, .pnow.mine .l, .pnow.free .v, .pnow.mine .v { color: #1E7B3A; }
+.pnow.grey { background: #F1F0EC; }
+.pnow.grey .l { color: #6b6b6b; }
+.pdays { display: flex; flex-direction: column; gap: 9px; }
+.pday { display: flex; align-items: center; gap: 9px; font-size: 14px; }
+.pday .d { width: 64px; flex: none; color: #3a3a3c; }
+.pday.first .d { font-weight: 700; color: #1c1c1e; }
+.pday .track { position: relative; flex: 1; height: 11px; border-radius: 6px; background: #E6F4EA; }
+.pday .paid { position: absolute; top: 0; bottom: 0; border-radius: 6px; background: #1F6FE0; }
+.pday .paid.low { background: #7FAAF0; }
+.pday .arr { position: absolute; top: -4px; width: 3px; height: 19px; margin-left: -1.5px; border-radius: 2px; background: #E5484D; box-shadow: 0 0 0 1.5px #fff; }
+.pday .p { width: 118px; flex: none; text-align: right; color: #3a3a3c; font-size: 13px; }
+.pday .p b { color: #1c1c1e; white-space: nowrap; }
+.pday .p.free { color: #1E7B3A; font-weight: 600; }
+.pticks { display: flex; justify-content: space-between; margin: 3px 127px 0 73px; font-size: 11px; color: #8a8a8a; }
+.plegend { display: flex; gap: 14px; margin-top: 12px; font-size: 12px; color: #6b6b6b; align-items: center; }
+.plegend .sw { display: inline-block; width: 15px; height: 9px; border-radius: 5px; margin-right: 5px; vertical-align: 0; }
+.plegend .sw.paid { background: #1F6FE0; }
+.plegend .sw.free { background: #E6F4EA; }
+.plegend .sw.arr { background: #E5484D; width: 3px; }
+.psrc { font-size: 11.5px; color: #8a8a8a; margin-top: 12px; }
+/* Melding boven het onderste kaartje; de richtknop schuift mee omhoog */
+.ptoast { position: absolute; left: 16px; right: 16px; z-index: 7; bottom: calc(env(safe-area-inset-bottom) + 24px + var(--bottomh, 108px));
+  background: #fff; color: #1c1c1e; border-radius: 18px; padding: 12px 10px 12px 13px; display: flex; gap: 12px; align-items: center;
+  box-shadow: 0 3px 16px rgba(0,0,0,.22); }
+.ptoast .pt { min-width: 0; }
+.ptoast .tt { font-size: 17px; font-weight: 700; line-height: 1.25; }
+.ptoast .ts { font-size: 14px; color: #6b6b6b; margin-top: 2px; }
+.ptoast.ask .psq { background: #F5A524; }
+.ptoast.done .psq { background: #1E7B3A; }
+.ptoast .px { align-self: center; }
+.pundo { margin-left: auto; flex: none; font-size: 15px; font-weight: 600; color: #1F6FE0; padding: 8px 4px; }
+.plinks { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; margin-top: 6px; }
+.plinks button { font-size: 15px; font-weight: 600; color: #1F6FE0; padding: 4px 0; text-align: left; }
+.plinks .no { color: #6b6b6b; }
+.recenter { bottom: calc(env(safe-area-inset-bottom) + 24px + var(--bottomh, 108px) + var(--ptoasth, 0px)); }
+/* Je vergunningen */
+.vlist { list-style: none; margin: 14px 0 0; padding: 0; }
+.vlist li { display: flex; gap: 12px; align-items: center; padding: 12px 2px; border-top: 1px solid #f0f0f0; font-size: 16px; }
+.vlist li:last-child { border-bottom: 1px solid #f0f0f0; }
+.vlist .vic { font-size: 22px; color: #1E7B3A; flex: none; }
+.vlist .vt { min-width: 0; flex: 1; }
+.vlist .v2 { font-size: 13px; color: #6b6b6b; margin-top: 1px; }
+.vlist .vdel { flex: none; color: #E5484D; font-size: 22px; padding: 4px; }
+.vlist .vagain { flex: none; color: #1F6FE0; font-weight: 600; font-size: 15px; }
+.vlist .vadd { color: #1F6FE0; font-weight: 600; cursor: pointer; }
+.vlist .vadd .ti { font-size: 22px; }
+.vexpl { font-size: 13.5px; color: #555; line-height: 1.45; margin-top: 14px; }
+.vexpl .mine { color: #1E7B3A; }
+/* Gebied kiezen op de kaart */
+.zonepick { position: fixed; inset: 0; z-index: 45; background: #EDEBE6; }
+.zonepick .ztop { position: absolute; left: 0; right: 0; top: 0; z-index: 3; background: #fff; text-align: center; font-size: 17px; font-weight: 600;
+  padding: calc(env(safe-area-inset-top) + 14px) 16px 14px; box-shadow: 0 1px 6px rgba(0,0,0,.12); }
+.zonepick .pickme { top: calc(env(safe-area-inset-top) + 64px); z-index: 3; }
+.zonelbl { position: absolute; left: 50%; top: calc(50% - 82px); transform: translateX(-50%); z-index: 3; background: #1F6FE0; color: #fff;
+  font-size: 14px; font-weight: 700; padding: 4px 10px; border-radius: 8px; white-space: nowrap; box-shadow: 0 1px 5px rgba(0,0,0,.25); }
+.zcard { position: absolute; left: 16px; right: 16px; bottom: calc(env(safe-area-inset-bottom) + 100px); z-index: 3; background: #fff; border-radius: 16px;
+  padding: 12px 14px; box-shadow: 0 2px 14px rgba(0,0,0,.18); }
+.zcard .z1 { font-size: 17px; font-weight: 700; }
+.zcard .z2 { font-size: 14px; color: #6b6b6b; margin-top: 2px; }
+
 /* Dark mode: volgt de instelling van de iPhone */
 @media (prefers-color-scheme: dark) {
   body { background: #23262B; color: #f2f2f7; }
@@ -535,4 +635,22 @@ body.driving .mapctl { opacity: 0; pointer-events: none; }
   .start-card { background: #1c1c1e; }
   .start-card p { color: #c7c7cc; }
   .start-card .small { color: #8e8e93; }
+  .psheet, .ptoast, .zcard, .zonepick .ztop { background: #1c1c1e; color: #f2f2f7; }
+  .px, .pchip.grey { background: #2c2c2e; color: #a1a1a6; }
+  .pchip { background: #1E2F4D; color: #5EA0FF; }
+  .pchip.free, .pchip.mine { background: #173322; color: #4CC46F; }
+  .ptag { background: #2c2c2e; color: #5EA0FF; }
+  .ptag.free, .ptag.mine { color: #4CC46F; }
+  .pnow { background: #1E2F4D; }
+  .pnow.free, .pnow.mine { background: #173322; }
+  .pnow.free .l, .pnow.mine .l, .pnow.free .v, .pnow.mine .v { color: #4CC46F; }
+  .pnow.grey { background: #2c2c2e; }
+  .pnow .v small, .pnow .s, .pday .d, .pday .p { color: #c7c7cc; }
+  .pday.first .d, .pday .p b { color: #f2f2f7; }
+  .pday .track, .plegend .sw.free { background: #173322; }
+  .pday .arr { box-shadow: 0 0 0 1.5px #1c1c1e; }
+  .ptoast .ts, .vlist .v2, .phead .t2, .vexpl { color: #a1a1a6; }
+  .vlist li, .vlist li:last-child { border-color: #2c2c2e; }
+  .mmsep { background: #3a3a3c; }
+  .zonepick { background: #23262B; }
 }
