@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '94';
+const VERSION = '95';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -3893,7 +3893,7 @@ async function parkingAt(p) {
   const t = await parkTile(p.lat, p.lon).catch(() => null);
   if (!t) return null;
   const pt = [p.lon, p.lat];
-  const paid = t.a.find(a => inArea(pt, a)) || null, permit = t.v.filter(v => inArea(pt, v)).sort(bySize);
+  const paid = t.a.filter(a => inArea(pt, a)).sort(bySize)[0] || null, permit = t.v.filter(v => inArea(pt, v)).sort(bySize);
   if (!paid && !permit.length) return null;
   return { paid, permit, special: t.s, mine: isMine(paid, permit) };
 }
@@ -3957,10 +3957,22 @@ const euro = (c, cur = 'EUR') => (CURRENCY[cur] || cur) + '\u00a0' + (c / 100).t
 // "€ 4,50 (per uur)", of bij een tarief per blok "€ 12,00 per 12 uur"
 function rateText(f, perHour = false) {
   if (f.b) return `${euro(Math.round(f.h * f.b / 60), f.c)} per ${f.b % 60 ? f.b + ' min' : f.b / 60 + ' uur'}`;
-  return euro(f.h, f.c) + (perHour ? ' per uur' : '');
+  return euro(hourly(f), f.c) + (perHour ? ' per uur' : '');
 }
-// Maximale parkeerduur (Parijs 6 uur, Barcelona 2 uur), alleen als die er is en niet langer dan een dag
-const maxText = (a, unit = 'u') => (a && a.mx && a.mx <= 1440 ? `max\u00a0${a.mx % 60 ? a.mx + '\u00a0min' : a.mx / 60 + '\u00a0' + unit}` : '');
+// Prijs van het eerste uur: meestal het uurtarief, in Brussel is het eerste halfuur goedkoper
+const hourly = f => f.l ?? f.h;
+// Maximale parkeerduur van een tarief (Parijs 6 uur, Brussel rood 2 uur), als die niet langer is dan een dag
+const maxText = (f, unit = 'u') => {
+  if (!f || !f.mx || f.mx > 1440) return '';
+  const h = Math.floor(f.mx / 60), m = f.mx % 60;
+  return 'max\u00a0' + (!h ? m + '\u00a0min' : h + '\u00a0' + unit + (m ? '\u00a0' + m : ''));
+};
+// Wat het tarief kost van minuut "from" tot "to" na aankomst, met de stappen meegerekend
+function fareSpan(f, from, to) {
+  let c = 0;
+  for (let k = from; k < to; k++) { const st = (f.s || []).filter(([after]) => after <= k).pop(); c += (st ? st[1] : f.h) / 60; }
+  return Math.round(c);
+}
 const hhmm = min => { const h = Math.floor(min / 60) % 24, m = min % 60; return String(h).padStart(2, '0') + (m ? ':' + String(m).padStart(2, '0') : ''); };
 // Eén dag in het blad: de tijden (een avond tot 1:00 telt bij die dag) en het tarief
 function dayText(a, special, day) {
@@ -3978,11 +3990,11 @@ function dayText(a, special, day) {
   const last = shown[shown.length - 1];
   const times = shown.length === 1 && last.s === 0 && last.e === 1440 ? 'hele dag'
     : shown.map(x => `${hhmm(x.s)}–${hhmm(x === last && x.e === 1440 && tomorrow ? tomorrow.e : x.e)}`).join(', ');
-  const rates = [...new Set(spans.map(x => x.f.h))].sort((p, q) => p - q);
+  const rates = [...new Set(spans.map(x => hourly(x.f)))].sort((p, q) => p - q);
   const blk = spans.find(x => x.f.b);
   const cur = a.c || 'EUR', top = euro(rates[rates.length - 1], cur);
   const rate = blk ? rateText(blk.f) : rates.length > 1 ? `${euro(rates[0], cur)}–${top.slice(top.indexOf('\u00a0') + 1)}` : euro(rates[0], cur);
-  return { times, rate, low: rates[rates.length - 1] < Math.max(...a.f.map(f => f.h)) };
+  return { times, rate, low: rates[rates.length - 1] < Math.max(...a.f.map(hourly)) };
 }
 
 // ---------- Vergunning: alleen op de telefoon, per gebied ----------
@@ -4015,7 +4027,7 @@ function parkLabel(info, at) {
   if (info.mine) return { cls: 'mine', text: 'Vergunning ✓' };
   if (!info.paid) return { cls: 'grey', text: 'Alleen vergunning' };
   const st = parkStatus(info.paid, info.special, at);
-  const mx = maxText(info.paid);
+  const mx = st.f && maxText(st.f);
   if (st.kind === 'paid') return { cls: '', text: [rateText(st.f), mx].filter(Boolean).join(' · ') };
   if (st.kind === 'soon') return { cls: '', text: `Vanaf ${fmtClock(st.from)} ${rateText(st.f)}` };
   return { cls: 'free', text: 'Gratis' };
@@ -4106,7 +4118,7 @@ function openParkSheet() {
       v.innerHTML = `${rateText(st.f)}${st.f.b ? '' : ' <small>per uur</small>'}`;
       const cost = parkCost(a, info.special, at, 120);
       s.textContent = [st.until - at >= 24 * 3600e3 ? 'Altijd betaald' : `Betaald tot ${fmtClock(st.until)}`,
-        cost != null ? `2 uur: ${euro(cost, a.c)}` : '', maxText(a, 'uur')].filter(Boolean).join(' · ');
+        cost != null ? `2 uur: ${euro(cost, a.c)}` : '', maxText(st.f, 'uur')].filter(Boolean).join(' · ');
     } else {
       v.textContent = 'Gratis';
       now.classList.add('free');
@@ -4115,11 +4127,13 @@ function openParkSheet() {
   }
   body.appendChild(now);
   if (!a) return;
-  // Een tarief dat per uur oploopt (Parijs): een trapje met de prijs van elk uur
-  const rising = a.f.find(f => f.s && !f.b);
+  // Een tarief dat oploopt (Parijs, Straatsburg): een trapje met wat elk uur kost. Het tarief op je
+  // aankomsttijd, en anders het eerste dat oploopt.
+  const stNow = parkStatus(a, info.special, at);
+  const rising = stNow.f && stNow.f.s && !stNow.f.b ? stNow.f : a.f.find(f => f.s && !f.b);
   if (rising) {
-    const n = Math.min(8, Math.ceil((a.mx || 360) / 60));
-    const per = [...Array(n)].map((_, i) => { const st = rising.s.filter(([after]) => after <= i * 60).pop(); return st ? st[1] : rising.h; });
+    const n = Math.min(8, Math.floor((rising.mx || 360) / 60));
+    const per = [...Array(n)].map((_, i) => fareSpan(rising, i * 60, Math.min((i + 1) * 60, rising.mx || 1e9)));
     const top = Math.max(...per);
     body.insertAdjacentHTML('beforeend', '<div class="pstairt">Prijs per uur, oplopend</div><div class="pstair">'
       + per.map(c => `<div style="height:${Math.round(c / top * 100)}%">${(c / 100).toLocaleString('nl-NL', { maximumFractionDigits: 2 })}</div>`).join('')
@@ -4133,8 +4147,8 @@ function openParkSheet() {
     const day = addDays(first, i), rel = Math.round((day - today) / 864e5);
     const row = document.createElement('div');
     row.className = 'pday' + (i === 0 ? ' first' : '');
-    const top = Math.max(...a.f.map(f => f.h));
-    const bars = paidSpans(a, info.special, day).map(x => `<span class="paid${x.f.h < top ? ' low' : ''}" style="left:${x.s / 14.4}%;width:${(x.e - x.s) / 14.4}%"></span>`).join('');
+    const top = Math.max(...a.f.map(hourly));
+    const bars = paidSpans(a, info.special, day).map(x => `<span class="paid${hourly(x.f) < top ? ' low' : ''}" style="left:${x.s / 14.4}%;width:${(x.e - x.s) / 14.4}%"></span>`).join('');
     const mark = i === 0 ? `<span class="arr" style="left:${(at.getHours() * 60 + at.getMinutes()) / 14.4}%"></span>` : '';
     const sp = info.special && info.special[a.m] && info.special[a.m][ymdKey(day)];
     const t = dayText(a, info.special, day);
@@ -4215,7 +4229,7 @@ async function parkArrive(p) {
   const now = new Date(), st = parkStatus(info.paid, info.special, now);
   if (st.kind === 'paid') {
     parkToast({ title: 'Betaald parkeren\n' + rateText(st.f, true), at: p,
-      sub: [st.until - now >= 24 * 3600e3 ? 'De hele dag betaald' : `Tot ${fmtClock(st.until)}, daarna gratis`, maxText(info.paid, 'uur')].filter(Boolean).join(' · ') });
+      sub: [st.until - now >= 24 * 3600e3 ? 'De hele dag betaald' : `Tot ${fmtClock(st.until)}, daarna gratis`, maxText(st.f, 'uur')].filter(Boolean).join(' · ') });
   } else if (st.kind === 'soon') {
     parkToast({ title: 'Betaald parkeren\nvanaf ' + fmtClock(st.from), sub: rateText(st.f, true), at: p });
   }
