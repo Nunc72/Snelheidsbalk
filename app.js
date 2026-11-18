@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '93';
+const VERSION = '94';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -3856,8 +3856,8 @@ document.querySelectorAll('.modes button').forEach(b => b.addEventListener('clic
 }));
 
 // ---------- Parkeren: tarieven op straat en je vergunning (alleen Auto) ----------
-// Uit het Nationaal Parkeer Register (RDW open data), elke nacht klaargezet door
-// tools/parking.py op de branch parking-data, in vakjes van 0,05 graad.
+// Uit het Nationaal Parkeer Register (RDW open data) en de open data van steden in het buitenland,
+// elke nacht klaargezet door tools/parking.py op de branch parking-data, in vakjes van 0,05 graad.
 const PARK = 'https://raw.githubusercontent.com/Nunc72/Snelheidsbalk/parking-data/';
 const PARK_GRID = 0.05, PARK_SOON = 120, PARK_AWAY = 150;
 const PARK_DAYS = ['ZONDAG', 'MAANDAG', 'DINSDAG', 'WOENSDAG', 'DONDERDAG', 'VRIJDAG', 'ZATERDAG'];
@@ -3868,7 +3868,9 @@ function parkTile(lat, lon) {
   const hit = parkMemo.get(path);
   if (hit && Date.now() - hit.at < 6 * 3600e3) return hit.p;
   // Geen vakje (geen betaald parkeren, of buitenland): leeg
-  const p = fetch(PARK + path).then(r => (r.ok ? r.json() : r.status === 404 ? null : Promise.reject(new Error('Parkeren ' + r.status))));
+  const p = fetch(PARK + path).then(r => (r.ok ? r.json() : r.status === 404 ? null : Promise.reject(new Error('Parkeren ' + r.status))))
+    // Elk tarief kent zijn munt (buitenland: CHF, £), zodat het overal goed op het scherm komt
+    .then(t => { if (t) for (const a of t.a) for (const f of a.f) f.c = a.c || 'EUR'; return t; });
   p.catch(() => parkMemo.delete(path));
   parkMemo.set(path, { at: Date.now(), p });
   return p;
@@ -3949,12 +3951,16 @@ function parkCost(a, special, at, minutes) {
   return Math.round(a.x ? Math.min(cents, a.x) : cents);
 }
 
-const euro = c => '€\u00a0' + (c / 100).toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// Bedrag in de munt ter plekke, niet omgerekend: "€ 4,50", "CHF 3,00", "£ 1,65"
+const CURRENCY = { EUR: '€', GBP: '£' };
+const euro = (c, cur = 'EUR') => (CURRENCY[cur] || cur) + '\u00a0' + (c / 100).toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 // "€ 4,50 (per uur)", of bij een tarief per blok "€ 12,00 per 12 uur"
 function rateText(f, perHour = false) {
-  if (f.b) return `${euro(Math.round(f.h * f.b / 60))} per ${f.b % 60 ? f.b + ' min' : f.b / 60 + ' uur'}`;
-  return euro(f.h) + (perHour ? ' per uur' : '');
+  if (f.b) return `${euro(Math.round(f.h * f.b / 60), f.c)} per ${f.b % 60 ? f.b + ' min' : f.b / 60 + ' uur'}`;
+  return euro(f.h, f.c) + (perHour ? ' per uur' : '');
 }
+// Maximale parkeerduur (Parijs 6 uur, Barcelona 2 uur), alleen als die er is en niet langer dan een dag
+const maxText = (a, unit = 'u') => (a && a.mx && a.mx <= 1440 ? `max\u00a0${a.mx % 60 ? a.mx + '\u00a0min' : a.mx / 60 + '\u00a0' + unit}` : '');
 const hhmm = min => { const h = Math.floor(min / 60) % 24, m = min % 60; return String(h).padStart(2, '0') + (m ? ':' + String(m).padStart(2, '0') : ''); };
 // Eén dag in het blad: de tijden (een avond tot 1:00 telt bij die dag) en het tarief
 function dayText(a, special, day) {
@@ -3974,7 +3980,8 @@ function dayText(a, special, day) {
     : shown.map(x => `${hhmm(x.s)}–${hhmm(x === last && x.e === 1440 && tomorrow ? tomorrow.e : x.e)}`).join(', ');
   const rates = [...new Set(spans.map(x => x.f.h))].sort((p, q) => p - q);
   const blk = spans.find(x => x.f.b);
-  const rate = blk ? rateText(blk.f) : rates.length > 1 ? `${euro(rates[0])}–${euro(rates[rates.length - 1]).slice(2)}` : euro(rates[0]);
+  const cur = a.c || 'EUR', top = euro(rates[rates.length - 1], cur);
+  const rate = blk ? rateText(blk.f) : rates.length > 1 ? `${euro(rates[0], cur)}–${top.slice(top.indexOf('\u00a0') + 1)}` : euro(rates[0], cur);
   return { times, rate, low: rates[rates.length - 1] < Math.max(...a.f.map(f => f.h)) };
 }
 
@@ -4008,7 +4015,8 @@ function parkLabel(info, at) {
   if (info.mine) return { cls: 'mine', text: 'Vergunning ✓' };
   if (!info.paid) return { cls: 'grey', text: 'Alleen vergunning' };
   const st = parkStatus(info.paid, info.special, at);
-  if (st.kind === 'paid') return { cls: '', text: rateText(st.f) };
+  const mx = maxText(info.paid);
+  if (st.kind === 'paid') return { cls: '', text: [rateText(st.f), mx].filter(Boolean).join(' · ') };
   if (st.kind === 'soon') return { cls: '', text: `Vanaf ${fmtClock(st.from)} ${rateText(st.f)}` };
   return { cls: 'free', text: 'Gratis' };
 }
@@ -4085,7 +4093,8 @@ function openParkSheet() {
   const v = now.querySelector('.v'), s = now.querySelector('.s');
   if (info.mine) {
     v.textContent = 'Vergunning ✓';
-    s.textContent = 'Met je vergunning parkeer je hier gratis.';
+    const own = info.permit.find(x => loadPermits().some(p => p.k === x.k));
+    s.textContent = (own && own.t) || 'Met je vergunning parkeer je hier gratis.';
     now.classList.add('mine');
   } else if (!a) {
     v.textContent = 'Alleen vergunning';
@@ -4097,7 +4106,7 @@ function openParkSheet() {
       v.innerHTML = `${rateText(st.f)}${st.f.b ? '' : ' <small>per uur</small>'}`;
       const cost = parkCost(a, info.special, at, 120);
       s.textContent = [st.until - at >= 24 * 3600e3 ? 'Altijd betaald' : `Betaald tot ${fmtClock(st.until)}`,
-        cost != null ? `2 uur parkeren: ${euro(cost)}` : ''].filter(Boolean).join(' · ');
+        cost != null ? `2 uur: ${euro(cost, a.c)}` : '', maxText(a, 'uur')].filter(Boolean).join(' · ');
     } else {
       v.textContent = 'Gratis';
       now.classList.add('free');
@@ -4106,6 +4115,16 @@ function openParkSheet() {
   }
   body.appendChild(now);
   if (!a) return;
+  // Een tarief dat per uur oploopt (Parijs): een trapje met de prijs van elk uur
+  const rising = a.f.find(f => f.s && !f.b);
+  if (rising) {
+    const n = Math.min(8, Math.ceil((a.mx || 360) / 60));
+    const per = [...Array(n)].map((_, i) => { const st = rising.s.filter(([after]) => after <= i * 60).pop(); return st ? st[1] : rising.h; });
+    const top = Math.max(...per);
+    body.insertAdjacentHTML('beforeend', '<div class="pstairt">Prijs per uur, oplopend</div><div class="pstair">'
+      + per.map(c => `<div style="height:${Math.round(c / top * 100)}%">${(c / 100).toLocaleString('nl-NL', { maximumFractionDigits: 2 })}</div>`).join('')
+      + '</div><div class="pstairl">' + per.map((_, i) => `<span>${i ? i + 1 + 'e' : '1e uur'}</span>`).join('') + '</div>');
+  }
   // Per dag een balk van 0 tot 24 uur: blauw betaald (lichter: goedkoper), groen gratis
   const days = document.createElement('div');
   days.className = 'pdays';
@@ -4135,7 +4154,7 @@ function openParkSheet() {
   body.appendChild(days);
   body.insertAdjacentHTML('beforeend', '<div class="pticks"><span>0</span><span>6</span><span>12</span><span>18</span><span>24</span></div>'
     + '<div class="plegend"><span><i class="sw paid"></i>Betaald</span><span><i class="sw free"></i>Gratis</span><span><i class="sw arr"></i>Aankomst</span></div>'
-    + '<div class="psrc">Bron: Nationaal Parkeer Register (RDW). Parkeergarages staan er nog niet in.</div>');
+    + `<div class="psrc">Bron: ${a.src ? a.src + '. Alleen wat de stad publiceert.' : 'Nationaal Parkeer Register (RDW).'} Parkeergarages staan er nog niet in.</div>`);
 }
 
 // ---------- Meldingen: betaald parkeren bij aankomst, en "afgerond?" bij vertrek ----------
@@ -4196,7 +4215,7 @@ async function parkArrive(p) {
   const now = new Date(), st = parkStatus(info.paid, info.special, now);
   if (st.kind === 'paid') {
     parkToast({ title: 'Betaald parkeren\n' + rateText(st.f, true), at: p,
-      sub: st.until - now >= 24 * 3600e3 ? 'De hele dag betaald' : `Tot ${fmtClock(st.until)}, daarna gratis` });
+      sub: [st.until - now >= 24 * 3600e3 ? 'De hele dag betaald' : `Tot ${fmtClock(st.until)}, daarna gratis`, maxText(info.paid, 'uur')].filter(Boolean).join(' · ') });
   } else if (st.kind === 'soon') {
     parkToast({ title: 'Betaald parkeren\nvanaf ' + fmtClock(st.from), sub: rateText(st.f, true), at: p });
   }

@@ -511,6 +511,12 @@ body.driving .mapctl { opacity: 0; pointer-events: none; }
 .plegend .sw.free { background: #E6F4EA; }
 .plegend .sw.arr { background: #E5484D; width: 3px; }
 .psrc { font-size: 11.5px; color: #8a8a8a; margin-top: 12px; }
+/* Tarief dat per uur oploopt (Parijs) */
+.pstairt { font-size: 12px; font-weight: 600; color: #3a3a3c; margin: 2px 0 6px; }
+.pstair { display: flex; gap: 3px; align-items: flex-end; height: 46px; }
+.pstair div { flex: 1; min-height: 16px; background: #1F6FE0; color: #fff; border-radius: 3px 3px 0 0; font-size: 10px; font-weight: 700; text-align: center; padding-top: 2px; }
+.pstairl { display: flex; gap: 3px; font-size: 10px; color: #8a8a8a; margin: 2px 0 12px; }
+.pstairl span { flex: 1; text-align: center; }
 /* Melding boven het onderste kaartje; de richtknop schuift mee omhoog */
 .ptoast { position: absolute; left: 16px; right: 16px; z-index: 7; bottom: calc(env(safe-area-inset-bottom) + 24px + var(--bottomh, 108px));
   background: #fff; color: #1c1c1e; border-radius: 18px; padding: 12px 10px 12px 13px; display: flex; gap: 12px; align-items: center;
@@ -642,6 +648,7 @@ body.driving .mapctl { opacity: 0; pointer-events: none; }
   .ptag { background: #2c2c2e; color: #5EA0FF; }
   .ptag.free, .ptag.mine { color: #4CC46F; }
   .pnow { background: #1E2F4D; }
+  .pstairt { color: #d1d1d6; }
   .pnow.free, .pnow.mine { background: #173322; }
   .pnow.free .l, .pnow.mine .l, .pnow.free .v, .pnow.mine .v { color: #4CC46F; }
   .pnow.grey { background: #2c2c2e; }

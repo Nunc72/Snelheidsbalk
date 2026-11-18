@@ -8,6 +8,8 @@ elkaar geknoopt worden; de app krijgt per vak van 0,05 graad alleen wat daar lig
   p/<rij>_<kolom>.json  {"a": betaalde gebieden, "v": vergunninggebieden, "s": speciale dagen}
   meta.json             wanneer dit is gemaakt
 
+Het buitenland komt erbij uit tools/parking_abroad.py, in dezelfde vorm.
+
 Een betaald gebied: {"m": beheerder, "id", "n": naam, "g": gemeente, "r": ringen,
   "w": {dag: [[van, tot, tarief], ...]}, "f": [tarieven], "x": max per dag (centen)}
   dag = MAANDAG … ZONDAG of de naam van een speciale dag (FEESTDAG); van/tot in minuten.
@@ -27,6 +29,8 @@ import time
 import urllib.request
 from collections import defaultdict
 from datetime import date, timedelta
+
+import parking_abroad
 
 BASE = 'https://opendata.rdw.nl/api/views/{}/rows.csv?accessType=DOWNLOAD'
 SETS = {'geo': 'nsk3-v9n7', 'area': 'adw6-9hsg', 'name': 'mz4f-59fw', 'areg': 'qtex-qwd8', 'reg': 'yefi-qfiq',
@@ -144,6 +148,17 @@ def fare_of(parts):
     return f
 
 
+def place(tiles, items, rs, m, special):
+    x1, y1, x2, y2 = bbox(rs)
+    for row in range(math.floor(y1 / GRID), math.floor(y2 / GRID) + 1):
+        for col in range(math.floor(x1 / GRID), math.floor(x2 / GRID) + 1):
+            t = tiles[(row, col)]
+            for kind, item in items:
+                t[kind].append(item)
+            if m in special:
+                t['s'][m] = special[m]
+
+
 def main(out, folder=None):
     D = {k: fetch(k, folder) for k in SETS}
     city = {}
@@ -241,14 +256,13 @@ def main(out, folder=None):
             items.append(('v', {'m': int(m), 'id': aid, 'k': f'{m}:R:{reg_id}' if shared else f'{m}:A:{aid}',
                                 'n': pname, 'g': city.get(m, ''), 'r': rs}))
             n_permit += 1
-        x1, y1, x2, y2 = bbox(rs)
-        for row in range(math.floor(y1 / GRID), math.floor(y2 / GRID) + 1):
-            for col in range(math.floor(x1 / GRID), math.floor(x2 / GRID) + 1):
-                t = tiles[(row, col)]
-                for kind, item in items:
-                    t[kind].append(item)
-                if m in special:
-                    t['s'][m] = special[m]
+        place(tiles, items, rs, m, special)
+
+    # Buitenland: per stad wat de open data geeft (tools/parking_abroad.py)
+    abroad, abroad_special = parking_abroad.collect(TODAY, simplify)
+    special.update(abroad_special)
+    for kind, item in abroad:
+        place(tiles, [(kind, item)], item['r'], item['m'], special)
     for (row, col), t in tiles.items():
         path = f'{out}/p/{row}_{col}.json'
         os.makedirs(os.path.dirname(path), exist_ok=True)
