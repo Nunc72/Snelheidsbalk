@@ -8,7 +8,9 @@ Extra velden naast die van tools/parking.py:
   "sg": straatdelen [lon1, lat1, lon2, lat2] in plaats van ringen; tools/parking.py schrijft ze per vak
   klein weg (zie daar) en de app maakt er zelf de vlakjes van.
   In een tarief: "mx": maximale parkeerduur in minuten, "l": prijs van het eerste uur als die anders is
-  dan "h" (Brussel: het eerste halfuur is goedkoper).
+  dan "h" (Brussel: het eerste halfuur is goedkoper), "t": tekst in plaats van het bedrag ("2 u gratis",
+  "€ 3,00–4,00"), "nc": niet doorrekenen, "zn": alleen de naam van de zone, geen bedrag ("Hochtarifzone"),
+  "lv": 3 als we alleen weten dat er betaald wordt.
 Een stad die niet bereikbaar is valt die nacht weg; de rest gaat door.
 """
 import csv
@@ -325,7 +327,182 @@ def barcelona(today, simplify):
     return items, {m: barcelona_holidays(today, 21)}
 
 
-CITIES = [('Parijs', paris), ('Brussel', brussels), ('Straatsburg', strasbourg), ('Barcelona', barcelona)]
+def euro_cents(text):
+    m = re.search(r'(\d+)(?:[,.](\d{1,2}))?', text or '')
+    return int(m.group(1)) * 100 + int((m.group(2) or '0').ljust(2, '0')) if m else None
+
+
+def week_from(text, names, default_days=None):
+    """'Mo-Fr 9-20 Uhr / Sa 9-18 Uhr' → {dag: [[van, tot, 0]]}; dagnamen in 'names' (ma … zo)."""
+    alt = '|'.join(names)
+    out, days = {}, default_days or []
+    for tok in re.finditer(rf'\b({alt})\b(?:\s*-\s*({alt})\b)?|(\d{{1,2}})(?:[:.](\d\d))?\s*-\s*(\d{{1,2}})(?:[:.](\d\d))?', text, re.I):
+        if tok.group(1):
+            d0 = [n.lower() for n in names].index(tok.group(1).lower())
+            d1 = [n.lower() for n in names].index(tok.group(2).lower()) if tok.group(2) else d0
+            days = [WEEK[d] for d in range(d0, d1 + 1)]
+        else:
+            span = [int(tok.group(3)) * 60 + int(tok.group(4) or 0), int(tok.group(5)) * 60 + int(tok.group(6) or 0), 0]
+            for d in days:
+                if span not in out.setdefault(d, []):
+                    out[d].append(span)
+    return out
+
+
+# ---------- Berlijn ----------
+# Geoportal Berlin (dl-de/by-2.0): 104 parkeerzones met het uurtarief ("3,00 Euro", soms "3,00 bzw.
+# 4,00 Euro") en de tijden ("Mo-Fr 9-20 Uhr / Sa 9-18 Uhr"). Afwijkingen per straat staan er niet in.
+BERLIN = ('https://gdi.berlin.de/services/wfs/parkraumbewirtschaftung?service=WFS&version=2.0.0&request=GetFeature'
+          '&typeNames=parkraumbewirtschaftung:parkzonen&outputFormat=application/json&srsName=EPSG:4326')
+DE_DAYS = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So']
+
+
+def berlin(today, simplify):
+    m = 'DE-BERLIN'
+    items = []
+    for feat in get_json(BERLIN)['features']:
+        p = feat['properties']
+        amounts = [euro_cents(x) for x in re.findall(r'\d+,\d\d', p.get('gebuehr') or '')]
+        week = week_from(re.split(r'Advent', p.get('zeiten') or '')[0], DE_DAYS)
+        if not amounts or not week:
+            continue
+        f = {'h': min(amounts)}
+        if len(set(amounts)) > 1:
+            f.update({'t': '€\u00a0' + '–'.join(f'{a / 100:.2f}'.replace('.', ',') for a in sorted(set(amounts))), 'nc': 1})
+        items.append(('a', {'m': m, 'id': str(p['parkzone']), 'n': f"Parkzone {p['parkzone']}", 'g': 'Berlin ' + str(p.get('bezirk') or ''),
+                            'r': geo_rings(feat['geometry'], simplify), 'w': week, 'f': [f], 'c': 'EUR', 'src': 'Geoportal Berlin (open data)'}))
+    return items, {}
+
+
+# ---------- Antwerpen ----------
+# Stad Antwerpen (open data): tariefzones per kleur met starttarief, volgende uren, uren en maximale
+# duur. De dagen staan er meestal niet bij; dan ma–za (de regel van de stad). Blauwe zone (schijf) valt
+# weg; de vergunningzone (het centrum) wordt "Alleen vergunning".
+ANTWERP = ('https://geodata.antwerpen.be/arcgissql/rest/services/P_Publiek/parkeertariefzones/MapServer/2/query'
+           '?where=1%3D1&outFields=*&outSR=4326&f=geojson')
+NL_DAYS = ['ma', 'di', 'wo', 'do', 'vr', 'za', 'zo']
+
+
+def antwerp_fare(p):
+    start, extra = p.get('Starttarief') or '', p.get('Extra_SNA') or p.get('Extra_tarief') or ''
+    mx_text = p.get('Maximum_parkeerduur') or ''
+    mx = None if 'evenement' in mx_text else re.match(r'\s*(\d+)\s*(uur|minuten)', mx_text)
+    mx = (int(mx.group(1)) * (60 if mx.group(2) == 'uur' else 1)) if mx else None
+    if 'gratis' in start.lower():
+        free = re.search(r'(\d+)\s*uur', start)
+        f = {'h': 0, 's': [[int(free.group(1)) * 60, euro_cents(extra)]], 't': f'{free.group(1)}\u00a0u gratis'} if free and euro_cents(extra) else None
+    elif 'van toepassing' in extra.lower() and euro_cents(start) and mx and mx < 60:
+        f = {'h': round(euro_cents(start) * 60 / mx), 'b': mx}
+    elif euro_cents(start):
+        later = re.findall(r'(\d)e uur:\s*\+\s*€\s*([\d,]+)', extra)
+        if later:
+            f = {'h': euro_cents(start), 's': [[(int(n) - 1) * 60, euro_cents(c)] for n, c in later]}
+        else:
+            nxt = euro_cents(extra)
+            f = {'h': euro_cents(start), **({'s': [[60, nxt]]} if nxt and nxt != euro_cents(start) else {})}
+    else:
+        return None
+    if f and mx:
+        f['mx'] = mx
+    return f
+
+
+def antwerp(today, simplify):
+    m = 'BE-ANTWERPEN'
+    items = []
+    for feat in get_json(ANTWERP)['features']:
+        p = feat['properties']
+        if (p.get('Status') or '') != 'actief' or not feat.get('geometry'):
+            continue
+        if (p.get('TARIEFKLEUR') or '').lower() == 'vergunning':
+            gid = str(p.get('GISID'))
+            items.append(('v', {'m': m, 'id': gid, 'k': f'{m}:A:{gid}', 'n': p.get('NAAM') or 'Vergunningzone', 'g': 'Antwerpen',
+                                'r': geo_rings(feat['geometry'], simplify)}))
+            continue
+        f = antwerp_fare(p)
+        week = week_from(p.get('Uurregeling') or '', NL_DAYS, default_days=WEEK[:6])
+        if not f or not week:
+            continue
+        items.append(('a', {'m': m, 'id': str(p.get('GISID')), 'n': p.get('NAAM') or 'Parkeerzone ' + str(p.get('TARIEFKLEUR')), 'g': 'Antwerpen',
+                            'r': geo_rings(feat['geometry'], simplify), 'w': week, 'f': [f], 'c': 'EUR', 'src': 'Stad Antwerpen (open data)'}))
+    return items, {}
+
+
+# ---------- Zürich ----------
+# Stadt Zürich (CC0): alleen de hoogtariefzone (Innenstadt en Oerlikon) met de tijden; bedragen staan
+# er niet in. Daar tonen we "Hochtarifzone".
+ZURICH = ('https://www.ogd.stadt-zuerich.ch/wfs/geoportal/Gebietseinteilung_Parkierungsgebuehren?service=WFS&version=1.1.0'
+          '&request=GetFeature&typename=tarifzonen&outputFormat=GeoJSON&srsName=EPSG:4326')
+DE_LONG = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag']
+
+
+def zurich(today, simplify):
+    m = 'CH-ZUERICH'
+    items = []
+    for i, feat in enumerate(get_json(ZURICH)['features']):
+        p = feat['properties']
+        week = week_from(p.get('bedienungszeiten') or '', DE_LONG)
+        if not week:
+            continue
+        items.append(('a', {'m': m, 'id': f'Z{i}', 'n': p.get('zone_bezeichnung') or p['tarifzone'], 'g': 'Zürich', 'r': geo_rings(feat['geometry'], simplify),
+                            'w': week, 'f': [{'h': 0, 'zn': p['tarifzone']}], 'c': 'CHF', 'src': 'Stadt Zürich (open data)'}))
+    return items, {}
+
+
+# ---------- München ----------
+# Landeshauptstadt München (dl-de/by-2.0): Parklizenzgebiete. Alleen dat er betaald wordt (bewoners
+# met Parkausweis niet); geen tarief en geen tijden.
+MUNICH = ('https://geoportal.muenchen.de/geoserver/mor_wfs/ows?service=WFS&version=1.0.0&request=GetFeature'
+          '&typeName=mor_wfs:ruhver_prm_gebiete_poly&outputFormat=application/json&srsName=EPSG:4326')
+
+
+def munich(today, simplify):
+    m = 'DE-MUENCHEN'
+    items = []
+    for feat in get_json(MUNICH)['features']:
+        p = feat['properties']
+        if p.get('status') != 'in Betrieb':
+            continue
+        rs, nm = geo_rings(feat['geometry'], simplify), str(p.get('name') or '')
+        items.append(('a', {'m': m, 'id': nm, 'n': nm, 'g': 'München', 'r': rs, 'w': {d: [[0, 1440, 0]] for d in WEEK},
+                            'f': [{'h': 0, 'zn': 'Betaald', 'lv': 3}], 'src': 'Landeshauptstadt München (open data)'}))
+        if 'Lizenz' in str(p.get('massnahme')):
+            items.append(('v', {'m': m, 'id': nm, 'k': f'{m}:A:{nm}', 'n': 'Lizenzgebiet ' + nm, 'g': 'München', 'r': rs,
+                                't': 'Met je Bewohnerparkausweis parkeer je hier gratis.'}))
+    return items, {}
+
+
+# ---------- Sheffield ----------
+# Sheffield City Council (OGL): twee zones in het centrum met het tarief als tekst
+# ("Mon-Sat (08:00-20:30) £3.25 per hour <br /> … Sun (08:00-20:30) - £2 per hour").
+SHEFFIELD = 'https://opendata.arcgis.com/datasets/79d3dad6138a4eafbbbed26f15b338f0_3.geojson'
+EN_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+
+
+def sheffield(today, simplify):
+    m = 'GB-SHEFFIELD'
+    items = []
+    for i, feat in enumerate(get_json(SHEFFIELD)['features']):
+        p = feat['properties']
+        week, fares = {}, []
+        for part in re.split(r'<br\s*/?>', p.get('tariff') or ''):
+            if 'evening' in part.lower():
+                continue
+            price = re.search(r'£\s*([\d.]+)\s*per hour', part)
+            w = week_from(part, EN_DAYS)
+            if not price or not w:
+                continue
+            fares.append({'h': round(float(price.group(1)) * 100)})
+            for d, spans in w.items():
+                week.setdefault(d, []).extend([[s, e, len(fares) - 1] for s, e, _ in spans])
+        if fares:
+            items.append(('a', {'m': m, 'id': f'S{i}', 'n': p.get('zone') or 'Zone', 'g': 'Sheffield', 'r': geo_rings(feat['geometry'], simplify),
+                                'w': week, 'f': fares, 'c': 'GBP', 'src': 'Sheffield City Council (open data)'}))
+    return items, {}
+
+
+CITIES = [('Parijs', paris), ('Brussel', brussels), ('Straatsburg', strasbourg), ('Barcelona', barcelona), ('Berlijn', berlin),
+          ('Antwerpen', antwerp), ('Zürich', zurich), ('München', munich), ('Sheffield', sheffield)]
 
 
 def collect(today, simplify):

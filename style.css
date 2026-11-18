@@ -526,6 +526,17 @@ body.driving .mapctl { opacity: 0; pointer-events: none; }
 .ptoast .ts { font-size: 14px; color: #6b6b6b; margin-top: 2px; }
 .ptoast.ask .psq { background: #F5A524; }
 .ptoast.done .psq { background: #1E7B3A; }
+/* Buitenland zonder bedrag: paars = alleen de zone (Zürich), grijs = alleen "betaald" (München) */
+.pchip.zone { background: #F1EBFA; color: #6B3FB0; }
+.pchip.zone .psq, .ptag.zone .psq, .ptoast.zone .psq { background: #8E5BD0; }
+.ptag.zone { color: #6B3FB0; }
+.pchip.plain { background: #F1F0EC; color: #3a3a3c; }
+.pchip.plain .psq, .ptag.plain .psq, .ptoast.plain .psq { background: #6b6b6b; }
+.ptag.plain { color: #3a3a3c; }
+.psq.zone { background: #8E5BD0; }
+.psq.plain { background: #6b6b6b; }
+.pnow.zone { background: #F1EBFA; }
+.pnow.zone .l { color: #6B3FB0; }
 .ptoast .px { align-self: center; }
 .pundo { margin-left: auto; flex: none; font-size: 15px; font-weight: 600; color: #1F6FE0; padding: 8px 4px; }
 .plinks { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; margin-top: 6px; }
@@ -645,6 +656,9 @@ body.driving .mapctl { opacity: 0; pointer-events: none; }
   .px, .pchip.grey { background: #2c2c2e; color: #a1a1a6; }
   .pchip { background: #1E2F4D; color: #5EA0FF; }
   .pchip.free, .pchip.mine { background: #173322; color: #4CC46F; }
+  .pchip.zone, .pnow.zone { background: #2A2140; color: #C3A6F0; }
+  .pnow.zone .l, .ptag.zone { color: #C3A6F0; }
+  .pchip.plain { background: #2C2C2E; color: #d1d1d6; }
   .ptag { background: #2c2c2e; color: #5EA0FF; }
   .ptag.free, .ptag.mine { color: #4CC46F; }
   .pnow { background: #1E2F4D; }

@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '97';
+const VERSION = '98';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -3932,7 +3932,8 @@ const atMin = (day, min) => { const x = new Date(day); x.setMinutes(min); return
 function paidSpans(a, special, day) {
   const sp = special && special[a.m] && special[a.m][ymdKey(day)];
   const frames = (sp && a.w[sp]) || a.w[PARK_DAYS[day.getDay()]] || [];
-  return frames.map(([s, e, i]) => ({ s, e, f: a.f[i] })).filter(x => x.f && x.f.h > 0);
+  // Betaald: een bedrag, een bedrag na de gratis uren (Antwerpen), of alleen de naam van een zone (Zürich)
+  return frames.map(([s, e, i]) => ({ s, e, f: a.f[i] })).filter(x => x.f && (x.f.h > 0 || x.f.zn || (x.f.s || []).some(st => st[1] > 0)));
 }
 // Tot wanneer het aan één stuk betaald is, ook over middernacht heen
 function paidUntil(a, special, day, span) {
@@ -3969,7 +3970,7 @@ function parkCost(a, special, at, minutes) {
     if (!memo.has(key)) memo.set(key, paidSpans(a, special, day));
     const span = memo.get(key).find(x => x.s <= m && m < x.e);
     if (!span) continue;
-    if (span.f.b) return null;
+    if (span.f.b || span.f.zn || span.f.nc) return null;
     const step = (span.f.s || []).filter(([after]) => after <= k).pop();
     cents += (step ? step[1] : span.f.h) / 60;
   }
@@ -3980,7 +3981,9 @@ function parkCost(a, special, at, minutes) {
 const CURRENCY = { EUR: '€', GBP: '£' };
 const euro = (c, cur = 'EUR') => (CURRENCY[cur] || cur) + '\u00a0' + (c / 100).toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 // "€ 4,50 (per uur)", of bij een tarief per blok "€ 12,00 per 12 uur"
+// Zonder bedrag: de naam van de zone ("Hochtarifzone", "Betaald") of een tekst ("2 u gratis")
 function rateText(f, perHour = false) {
+  if (f.zn || f.t) return f.zn || f.t;
   if (f.b) return `${euro(Math.round(f.h * f.b / 60), f.c)} per ${f.b % 60 ? f.b + ' min' : f.b / 60 + ' uur'}`;
   return euro(hourly(f), f.c) + (perHour ? ' per uur' : '');
 }
@@ -4016,7 +4019,9 @@ function dayText(a, special, day) {
   const times = shown.length === 1 && last.s === 0 && last.e === 1440 ? 'hele dag'
     : shown.map(x => `${hhmm(x.s)}–${hhmm(x === last && x.e === 1440 && tomorrow ? tomorrow.e : x.e)}`).join(', ');
   const rates = [...new Set(spans.map(x => hourly(x.f)))].sort((p, q) => p - q);
-  const blk = spans.find(x => x.f.b);
+  const blk = spans.find(x => x.f.b || x.f.t);
+  // Alleen een zone (Zürich): de tijden zijn genoeg, de naam staat al bovenaan
+  if (spans.some(x => x.f.zn)) return { times, rate: '', low: false };
   const cur = a.c || 'EUR', top = euro(rates[rates.length - 1], cur);
   const rate = blk ? rateText(blk.f) : rates.length > 1 ? `${euro(rates[0], cur)}–${top.slice(top.indexOf('\u00a0') + 1)}` : euro(rates[0], cur);
   return { times, rate, low: rates[rates.length - 1] < Math.max(...a.f.map(hourly)) };
@@ -4161,8 +4166,10 @@ function parkLabel(info, at) {
   if (!info.paid) return { cls: 'grey', text: 'Alleen vergunning' };
   const st = parkStatus(info.paid, info.special, at);
   const mx = st.f && maxText(st.f);
-  if (st.kind === 'paid') return { cls: '', text: [rateText(st.f), mx].filter(Boolean).join(' · ') };
-  if (st.kind === 'soon') return { cls: '', text: `Vanaf ${fmtClock(st.from)} ${rateText(st.f)}` };
+  // Paars: we weten de zone, niet het bedrag; grijs: alleen dat er betaald wordt
+  const cls = st.f && st.f.zn ? (st.f.lv === 3 ? 'plain' : 'zone') : '';
+  if (st.kind === 'paid') return { cls, text: [rateText(st.f), mx].filter(Boolean).join(' · ') };
+  if (st.kind === 'soon') return { cls, text: `Vanaf ${fmtClock(st.from)} ${rateText(st.f)}` };
   return { cls: 'free', text: 'Gratis' };
 }
 function hideParkChip() {
@@ -4247,8 +4254,14 @@ function openParkSheet() {
     now.classList.add('grey');
   } else {
     const st = parkStatus(a, info.special, at);
-    if (st.kind === 'paid') {
-      v.innerHTML = `${rateText(st.f)}${st.f.b ? '' : ' <small>per uur</small>'}`;
+    if (st.kind === 'paid' && st.f.zn) {
+      v.textContent = rateText(st.f);
+      s.textContent = 'Het tarief staat niet in de data: zie de automaat of de borden.';
+      now.classList.add(st.f.lv === 3 ? 'grey' : 'zone');
+      body.parentElement.querySelector('.phead .psq').classList.add(st.f.lv === 3 ? 'plain' : 'zone');
+    } else if (st.kind === 'paid') {
+      v.innerHTML = st.f.t ? '' : `${rateText(st.f)}${st.f.b ? '' : ' <small>per uur</small>'}`;
+      if (st.f.t) v.textContent = rateText(st.f);
       const cost = parkCost(a, info.special, at, 120);
       s.textContent = [st.until - at >= 24 * 3600e3 ? 'Altijd betaald' : `Betaald tot ${fmtClock(st.until)}`,
         cost != null ? `2 uur: ${euro(cost, a.c)}` : '', maxText(st.f, 'uur')].filter(Boolean).join(' · ');
@@ -4259,7 +4272,8 @@ function openParkSheet() {
     }
   }
   body.appendChild(now);
-  if (!a) return;
+  // Zonder tijden (München: alleen dat er betaald wordt) ook geen balken per dag
+  if (!a || a.f.every(f => f.lv === 3)) return;
   // Een tarief dat oploopt (Parijs, Straatsburg): een trapje met wat elk uur kost. Het tarief op je
   // aankomsttijd, en anders het eerste dat oploopt.
   const stNow = parkStatus(a, info.special, at);
@@ -4361,8 +4375,9 @@ async function parkArrive(p) {
   if (!info || !info.paid || info.mine) return;
   const now = new Date(), st = parkStatus(info.paid, info.special, now);
   if (st.kind === 'paid') {
-    parkToast({ title: 'Betaald parkeren\n' + rateText(st.f, true), at: p,
-      sub: [st.until - now >= 24 * 3600e3 ? 'De hele dag betaald' : `Tot ${fmtClock(st.until)}, daarna gratis`, maxText(st.f, 'uur')].filter(Boolean).join(' · ') });
+    parkToast({ kind: st.f.zn ? (st.f.lv === 3 ? 'plain' : 'zone') : '', title: 'Betaald parkeren\n' + rateText(st.f, true), at: p,
+      sub: st.f.zn ? 'Tarief: zie de automaat'
+        : [st.until - now >= 24 * 3600e3 ? 'De hele dag betaald' : `Tot ${fmtClock(st.until)}, daarna gratis`, maxText(st.f, 'uur')].filter(Boolean).join(' · ') });
   } else if (st.kind === 'soon') {
     parkToast({ title: 'Betaald parkeren\nvanaf ' + fmtClock(st.from), sub: rateText(st.f, true), at: p });
   }
