@@ -16,7 +16,9 @@ import gzip
 import io
 import json
 import math
+import os
 import re
+import sys
 import urllib.request
 from datetime import date, timedelta
 
@@ -226,9 +228,34 @@ BCN_DAYS = ['Dl', 'Dt', 'Dc', 'Dj', 'Dv', 'Ds', 'Dg']
 BCN_TYPES = {'AZL': ('a', 'Àrea blava'), 'VM': ('a', 'Àrea verda'), 'VR': ('v', 'Àrea verda (residents)')}
 
 
+# Het portaal weigert verzoeken van GitHub (403). Daarom staat er een kopie in tools/data/barcelona,
+# te vernieuwen vanaf een eigen computer met: python3 tools/parking_abroad.py barcelona
+# De stad werkt de data eens per kwartaal bij. Lukt het live wel, dan gaat dat voor.
+BCN_NAMES = ['trams-aparcament-superficie', 'tarifes-aparcament-superficie', 'horaris-aparcaments-superficie']
+BCN_COPY = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'barcelona')
+
+
+def bcn_live(name):
+    return get_text(get_json(BCN.format(name))['result']['resources'][0]['url'])
+
+
 def bcn_csv(name):
-    res = get_json(BCN.format(name))['result']['resources'][0]['url']
-    return list(csv.DictReader(io.StringIO(get_text(res))))
+    try:
+        text = bcn_live(name)
+    except Exception as e:
+        with open(os.path.join(BCN_COPY, name + '.csv'), encoding='utf-8') as f:
+            text = f.read()
+        print(f'Barcelona {name}: kopie uit de repository ({e})')
+    return list(csv.DictReader(io.StringIO(text)))
+
+
+def refresh_barcelona():
+    os.makedirs(BCN_COPY, exist_ok=True)
+    for name in BCN_NAMES:
+        text = bcn_live(name)
+        with open(os.path.join(BCN_COPY, name + '.csv'), 'w', encoding='utf-8') as f:
+            f.write(text)
+        print(f'{name}: {text.count(chr(10))} regels')
 
 
 def bcn_hours(text):
@@ -303,3 +330,7 @@ def collect(today, simplify):
         special.update(sp)
         print(f'{name}: {sum(k == "a" for k, _ in got)} betaald, {sum(k == "v" for k, _ in got)} vergunning')
     return items, special
+
+
+if __name__ == '__main__' and sys.argv[1:] == ['barcelona']:
+    refresh_barcelona()

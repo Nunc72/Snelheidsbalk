@@ -1,0 +1,106 @@
+ID_HORARI,CODI_HORARI,DESCRIPCIO,DESC_CURTA,INCLUS_FESTIUS,PARQUING_SOLS_DINS_HORARI
+1,"H1","de Dl a Ds de 09:00 a 14:00 i de 16:00  a 20:00","de Dl a Ds 9-14 i 16-20",0,0
+2,"H2","de Dl a Dv de 09:00 a 14:00 i de 16:00  a 20:00","de Dl a Dv 9-14 i 16-20",0,0
+3,"H3","de Dl a Dv de 09:00 a 14:00 i de 16:00  a 20:00, Ds de 09:00 a 14:00","de Dl a Dv 9-14 i 16-20 Ds 9-14",0,0
+6,"H6","de Dl a Dv de 09:00 a 14:00","de Dl a Dv 9-14",0,0
+7,"H7","de Dl a Dv de 09:30 a 14:00 i de 16:30  a 20:00","de Dl a Dv 9:30-14 i 16:30-20",0,0
+11,"H8","FUTBOL: de Dl a Dv de 09:00 a 14:00 i de 16:00  a 20:00 (excepte festes Fútbol).","de Dl a Dv 9-14 i 16-20 excepte futbol",0,0
+12,"H4","de Dl a Ds de 08:00 a 20:00","de Dl a Ds 8-20",0,0
+13,"H5","de Dl a Dv de 08:00 a 20:00","de Dl a Dv 8-20",0,0
+17,"B4","de Dl a Ds de 08:00 a 20:00","de Dl a Ds 8-20",0,0
+18,"H9","de Dl a Dg de 09:00 a 14:00 i de 16:00  a 20:00 - inclòs festius","de Dl a Dg 9-14 i 16-20 inclòs festius",1,0
+19,"H10","de Dl a Ds de 09:30 a 18:00","de Dl a Ds 9:30-18",0,0
+20,"H11","de Dl a Ds de 09:00 a 14:00. Dv de 16:00  a 20:00","de Dl a Ds 9-14 i Dv 16-20",0,0
+22,"H12","de Dl a Ds de 09:30 a 18:00. Diumenges i festius de 09:30 a 15:00","de Dl a Ds 9:30-18 i Dg i Fest 9:30-15",1,0
+24,"H13","de Dl a Ds de 08:00 a 20:00. Diumenges i festius de 08:00 a 15:00","de Dl a Ds 8-20 Dg i Fest 8-15",1,0
+25,"H14","de Dl a Dg de 10:00 a 17:00 inclòs festius.","de Dl a Dg 10-17 inclòs festius",1,0
+26,"Z2","de Dl a Dv de 08:00 a 20:00","de Dl a Dv 8-20",0,0
+27,"Z4","de Dl a Ds de 08:00 a 11:00 i de 15:00  a 17:00","de Dl a Ds 8-11 i 15-17",0,1
+28,"Z1","de Dl a Ds de 08:00 a 20:00","de Dl a Ds 8-20",0,0
+29,"Z3","de Dl a Dv de 08:00 a 20:00, Ds de 08:00 a 14:00","de Dl a Dv 8-20 Ds 8-14",0,0
+30,"Z5","de Dl a Dv de 08:00 a 11:00 i de 15:00  a 17:00","de Dl a Dv 8-11 i 15-17",0,1
+31,"Z6","de Dl a Ds de 07:00 a 20:00","de Dl a Ds 7-20",0,0
+32,"Z7","de Dl a Dv de 07:00 a 20:00","de Dl a Dv 7-20",0,0
+33,"Z8","de Dl a Dv de 07:00 a 20:00, Ds de 07:00 a 14:00","de Dl a Dv 7-20 Ds 7-14",0,0
+34,"Z9","de Dl a Dv de 07:00 a 20:00, Ds de 07:00 a 15:00","de Dl a Dv 7-20 Ds 7-15",0,0
+35,"Z10","de Dl a Ds de 06:00 a 20:00","de Dl a Ds 6-20",0,0
+36,"Z11","de Dl a Dv de 06:00 a 20:00","de Dl a Dv 6-20",0,0
+37,"Z12","de Dl a Dv de 06:00 a 20:00, Ds 06:00 a 14:00","de Dl a Dv 6-20 Ds 6-14",0,0
+38,"Z13","de Dl a Dv de 06:00 a 20:00, Ds 06:00 a 15:00","de Dl a Dv 6-20 Ds 6-15",0,0
+39,"Z14","de Dl a Dv de 05:00 a 20:00, Ds 05:00 a 14:00","de Dl a Dv 5-20 Ds 5-14",0,0
+40,"Z15","de Dl a Dv de 05:00 a 20:00, Ds 05:00 a 15:00","de Dl a Dv 5-20 Ds 5-15",0,0
+41,"Z16","de Dl a Ds de 08:00 a 11:00 i de 16:00  a 18:00","de Dl a Ds 8-11 i 16-18",0,1
+42,"Z17","de Dl a Ds de 08:00 a 11:00 i de 15:00  a 18:00","de Dl a Ds 8-11 i 15-18",0,1
+43,"Z18","de Dl a Ds de 08:00 a 14:00 i de 16:00  a 19:00","de Dl a Ds 8-14 i 16-19",0,1
+44,"Z19","de Dl a Ds de 08:00 a 14:00 i de 16:00  a 20:00","de Dl a Ds 8-14 i 16-20",0,1
+45,"Z20","de Dl a Ds de 06:00 a 14:00","de Dl a Ds 6-14",0,0
+46,"Z21","de Dl a Ds de 06:00 a 24:00","de Dl a Ds 6-24",0,0
+47,"Z22","de Dl a Ds de 08:00 a 14:00","de Dl a Ds 8-14",0,0
+48,"Z23","de Dl a Ds de 08:00 a 14:00 i de 16:00 a 19:00","de Dl a Ds 8-14 i 16-19",0,1
+49,"Z24","de Dl a Ds de 08:00 a 17:00","de Dl a Ds 8-17",0,0
+50,"Z25","de Dl a Dv de 08:00 a 14:00","de Dl a Dv 8-14",0,0
+51,"Z26","de Dl a Dv de 08:00 a 14:00 i de 16:00 a 20:00","de Dl a Dv 8-14 i 16-20",0,1
+52,"Z27","de Dl a Dv de 08:00 a 14:00 i de 17:00 a 19:00","de Dl a Dv 8-14 i 17-19",0,1
+53,"Z28","de Dl a Dv de 08:00 a 19:00","de Dl a Dv 8-19",0,0
+54,"Z29","de Dl a Dv de 09:00 a 13:00, Ds de 08:30 a 10:00","de Dl a Dv 9-13 Ds 8:30-10",0,0
+56,"Z30","de Dl a Dv de 08:30 a 20:00","de Dl a Dv 8:30-20",0,0
+57,"Z31","de Dl a Dv de 05:00 a 22:00, Ds de 05:00 a 15:00","de Dl a Dv 5-22 Ds 5-15",0,0
+58,"Z32","de Dl a Ds de 08:00 a 10:30 i de 16:00 a 17:30","de Dl a Ds 8-10:30 Ds 16-17:30",0,0
+59,"Z33","de Dl a Ds de 00:00 a 24:00","de Dl a Ds 0-24",0,0
+60,"Z34","de Dl a Ds de 08:00 a 20:00","de Dl a Ds 8-20",0,1
+61,"Z35","de Dl a Ds de 05:00 a 22:00","de Dl a Ds 5-22",0,0
+62,"Z36","de Dl a Dv de 08:00 a 18:00","de Dl a Dv 8-18",0,1
+63,"Z37","de Dl a Dv de 08:00 a 20:00, excepte Dv de 08:30 a 14:00","de Dl a Dv 8-20, menys Dv de 8:30-14",0,0
+64,"Z38","de Dl a Dv de 08:00 a 20:00, Ds de 10:00 a 14:00","de Dl a Dv 8-20 Ds 10-14",0,0
+66,"Y1","de Dl a Dg de 08:00 a 20:00 - inclòs festius","de Dl a Dg 8-20 inclòs festius",1,0
+67,"Y2","de Dl a Dg de 08:00 a 21:00 - inclòs festius","de Dl a Dg 8-21 inclòs festius",1,0
+68,"Y3","de Dl a Dg de 08:00 a 19:00 - inclòs festius","de Dl a Dg 8-19 inclòs festius",1,0
+69,"Y4","de Dl a Dg de 09:00 a 21:00 - inclòs festius","de Dl a Dg 9-21 inclòs festius",1,0
+70,"Y5","de Dl a Dg de 00:00 a 24:00 - inclòs festius","de Dl a Dg 0-24 inclòs festius",1,0
+72,"H15","de Dl a Dg de 08:00 a 20:00 - inclòs festius","de Dl a Dg 8-20",1,0
+73,"Z39","de Dl a Dv de 08:00 a 11:00 i de 15:00 a 17:00, Ds de 08:00 a 11:00","de Dl a Dv 8-11 i 15-17 Ds 8-11",0,1
+74,"Z40","de Dl a Ds  de 08:00 a 11:00","de Dl a Ds 8-11",0,1
+75,"Z41","de Dl a Dv  de 07:00 a 11:00 i de 14:30 a 17:30, Ds de 07:00 a 11:00","de Dl a Dv 7-11 i 14:30-17:30 Ds 7-11",0,1
+76,"H5E","de Dl a Dv de 08:00 a 20:00. Exclusiu resident 08:00 a 20:00","de Dl a Dv 8-20, excl. res. 8-20",0,0
+77,"H1D","de Dl a Dg de 08:00 a 22:00","de Dl a Dg 8-22",1,0
+78,"Z42","de Dl a Dv  de 09:30 a 11:00","de Dl a Dv 9:30-11",0,1
+80,"Z43","de Dl a Dv  de 08:00 a 20:00","de Dl a Dv 8-20",0,1
+81,"H21","de Dl a Ds  de 09:00 a 20:00","de Dl a Ds 9-20",0,0
+82,"H22","de Dl a Dv  de 09:00 a 20:00","de Dl a Dv 9-20",0,0
+83,"H23","de Dl a Dv de 09:00 a 20:00, Ds de 09:00 a 14:00","de Dl a Dv 9-20 Ds 9-14",0,0
+84,"H28","FUTBOL: de Dl a Dv de 09:00 a 20:00 (excepte festes Fútbol).","de Dl a Dv 9-20 excepte futbol",0,0
+85,"H29","de Dl a Dg de 09:00 a 20:00 - inclòs festius","de Dl a Dg 9-20 inclòs festius",1,0
+86,"Z44","de Dl a Dg  de 00:00 a 24:00, inclòs festius","de Dl a Dg 0-24 inclòs festius",1,0
+87,"H30","de Dl a Dv  de 14:00 a 20:00","de Dl a Dv 14-20",0,0
+88,"H19","de Dl a Dg  de 08:00 a 19:00, inclòs festius","de Dl a Dg 8-19 inclòs festius",1,0
+89,"Z45","de Dl a Ds  de 07:00 a 14:00","de Dl a Ds 07-14",0,0
+90,"Z46","de Dl a Dv  de 09:00 a 13:00","de Dl a Dv 09-13",0,1
+91,"Z47","de Dl a Dv  de 09:30 a 16:00","de Dl a Dv 09:30-16",0,1
+92,"Z48","de Dl a Dv  de 09:30 a 16:30","de Dl a Dv 09:30-16:30",0,1
+93,"H5M","de Dl a Dv  de 13:00 a 20:00 Exclusiu resident fora  horari DUM","de Dl a Dv 13-20, excl. res. fora h DUM",0,0
+94,"Z49","de Dl a Ds  de 09:00 a 13:00","de Dl a Ds 9-13",0,1
+95,"H5X","de Dl a Dv  de 08:00 a 20:00 exclusiu resident de 0 a 24","de Dl a Dv 8-20 excl. res. de 0 a 24",0,0
+96,"H5D","exclusiu resident fora horari DUM","excl. res. fora h. DUM",0,0
+97,"H16","de Dl a Dg de 08:00 a 15:00 - inclòs festius","de Dl a Dg 8-15",1,0
+101,"Z50","de Dl a Dv  de 09:30 a 20:00","de Dl a Dv 09:30-20:00",0,1
+102,"Z51","de Dl a Dv  de 17:00 a 20:00, Ds 08:00 a 14:00","de Dl a Dv 17:00-20:00 Ds 08-14",0,1
+103,"Z52","de Dl a Ds  de 09:30 a 12:30","de Dl a Ds 09:30-12:30",0,1
+104,"H5F","de Dl a Dv de 08:00 a 09:30 i de 12:30 a 20:00 excl. resident fora h DUM, 0-24","de Dl a Dv excl. res. fora h DUM, 0-24",0,0
+105,"Z53","de Dl a Ds  de 10:00 a 17:00","de Dl a Ds 10:00-17:00",1,0
+107,"Z54","de Dl a Dv  de 10:00 a 15:000","de Dl a Dv 10-15",0,1
+108,"Z55","de Dl a Dv  de 10:00 a 16:000","de Dl a Dv 10-16",0,1
+109,"Z56","de Dl a Dv  de 10:00 a 17:000","de Dl a Dv 10-17",0,1
+110,"Z57","de Dl a Ds  de 07:00 a 11:00 i de 14:00 a 16:30","de Dl a Ds 7-11 i 14-16:30",0,1
+111,"Z58","de Dl a Ds de 09:00 a 12:00","de Dl a Ds 9-12",0,1
+112,"Z59","de Dl a Dv  de 08:00 a 12:00 i de 14:00 a 16:00","de Dl a Dv 8-12 i 14-16",0,1
+113,"Z60","de Dl a Dv de 08:00 a 20:00, Ds de 08:00 a 16:00","de Dl a Dv 8-20 Ds 8-16",0,1
+114,"Z61","de Dl a Ds de 08:00 a 12:00 i de 14:00 a 16:00","de Dl a Ds 8-12 i de 14-16",0,1
+115,"Z62","de Dl a Ds de 08:00 a 12:00 i de 14:00 a 16:00","de Dl a Ds 8-12 i de 14-16",0,0
+116,"H5G","de Dl a Dv de 12:00 a 14:00 i de 16:00 a 20:00 excl. resident fora h DUM, 0-24","de Dl a Dv excl. res. fora h DUM, 0-24",0,0
+117,"Z63","de Dl a Dv de 07:00 a 21:00, Ds de 08:00 a 14:00","de Dl a Dv 7-21 Ds 8-14",0,0
+118,"Z64","de Dl a Dv de 10:00 a 15:00 i de 18:00 a 20:00","de Dl a Dv 10-15 i de 18-20",0,0
+119,"Z65","de Dl a Dv de 07:00 a 15:00, Ds de 07:00 a 11:00","de Dl a Dv 7-15 Ds 7-11",0,1
+120,"Z66","de Dl a Dv de 18:00 a 20:00","de Dl a Dv 18-20",0,0
+9999,"FUT","de Dl a Dv  de 09:30 a 13:00","de Dl a Dv  de 09:30 a 13:00",0,0
+99999888,"H99","de Dl a Dv  de 14:00 a 20:00","de Dl a Dv  de 14-20",0,1
+99999999,"Z99","de Dl a Dv  de 08:00 a 14:00","de Dl a Dv  de 8-14",0,1
