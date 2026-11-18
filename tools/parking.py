@@ -148,6 +148,15 @@ def fare_of(parts):
     return f
 
 
+def edge(sg, dr, dc, margin=110):
+    """Ligt een straatdeel (in 1/100.000 graad) binnen ~90 m van het buurvak (dr, dc)?"""
+    size = round(GRID * 1e5)
+    xs, ys = (sg[0], sg[0] + sg[2]), (sg[1], sg[1] + sg[3])
+    ok_x = dc == 0 or (dc < 0 and min(xs) < margin) or (dc > 0 and max(xs) > size - margin)
+    ok_y = dr == 0 or (dr < 0 and min(ys) < margin) or (dr > 0 and max(ys) > size - margin)
+    return ok_x and ok_y
+
+
 def place(tiles, items, rs, m, special):
     x1, y1, x2, y2 = bbox(rs)
     for row in range(math.floor(y1 / GRID), math.floor(y2 / GRID) + 1):
@@ -262,7 +271,24 @@ def main(out, folder=None):
     abroad, abroad_special = parking_abroad.collect(TODAY, simplify)
     special.update(abroad_special)
     for kind, item in abroad:
-        place(tiles, [(kind, item)], item['r'], item['m'], special)
+        if not item.get('u'):
+            place(tiles, [(kind, item)], item['r'], item['m'], special)
+            continue
+        # Straatdelen (Barcelona): elk vak krijgt alleen de delen die erin beginnen, als gehele
+        # getallen in 1/100.000 graad vanaf de hoek van het vak, en het tweede punt als verschil
+        per = defaultdict(list)
+        for lon1, lat1, lon2, lat2 in item['sg']:
+            row, col = math.floor(lat1 / GRID), math.floor(lon1 / GRID)
+            x, y = round((lon1 - col * GRID) * 1e5), round((lat1 - row * GRID) * 1e5)
+            per[(row, col)].append([x, y, round((lon2 - col * GRID) * 1e5) - x, round((lat2 - row * GRID) * 1e5) - y])
+        for (row, col), segs in per.items():
+            for r2 in (row - 1, row, row + 1):  # een adres net over de rand van het vak
+                for c2 in (col - 1, col, col + 1):
+                    near = segs if (r2, c2) == (row, col) else [sg for sg in segs if edge(sg, r2 - row, c2 - col)]
+                    if near:
+                        tiles[(r2, c2)][kind].append({**{k: v for k, v in item.items() if k != 'sg'}, 'sg': near, 'o': [col * GRID, row * GRID]})
+                        if item['m'] in special:
+                            tiles[(r2, c2)]['s'][item['m']] = special[item['m']]
     for (row, col), t in tiles.items():
         path = f'{out}/p/{row}_{col}.json'
         os.makedirs(os.path.dirname(path), exist_ok=True)

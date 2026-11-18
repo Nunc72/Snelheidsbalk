@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '95';
+const VERSION = '96';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -3870,13 +3870,29 @@ function parkTile(lat, lon) {
   // Geen vakje (geen betaald parkeren, of buitenland): leeg
   const p = fetch(PARK + path).then(r => (r.ok ? r.json() : r.status === 404 ? null : Promise.reject(new Error('Parkeren ' + r.status))))
     // Elk tarief kent zijn munt (buitenland: CHF, £), zodat het overal goed op het scherm komt
-    .then(t => { if (t) for (const a of t.a) for (const f of a.f) f.c = a.c || 'EUR'; return t; });
+    .then(t => {
+      if (!t) return t;
+      for (const a of t.a) for (const f of a.f) f.c = a.c || 'EUR';
+      for (const a of [...t.a, ...t.v]) if (a.sg) a.r = a.sg.map(sg => streetStrip(a.o, sg));
+      return t;
+    });
   p.catch(() => parkMemo.delete(path));
   parkMemo.set(path, { at: Date.now(), p });
   return p;
 }
-// Binnen een gebied: een oneven aantal ringen om het punt (zo tellen gaten en losse delen mee)
-const inArea = (pt, a) => a.r.reduce((n, r) => n + inRing(pt, r), 0) % 2 === 1;
+// Een straatdeel (Barcelona) als vlak: 75 m opzij en 20 m voorbij de uiteinden. De stad geeft alleen de stukken
+// stoep waar je mag parkeren, geen zones; zo valt ook een adres midden in een huizenblok (113 m) erin.
+// Het deel komt binnen als [x, y, dx, dy] in 1/100.000 graad vanaf o.
+function streetStrip(o, [x, y, dx, dy], side = 75, end = 20) {
+  const lon = o[0] + x / 1e5, lat = o[1] + y / 1e5;
+  const ky = 1 / 111320, kx = ky / Math.cos(lat * Math.PI / 180);
+  const mx = dx / 1e5 / kx, my = dy / 1e5 / ky, L = Math.hypot(mx, my) || 1, ux = mx / L, uy = my / L;
+  const a = [-ux * end, -uy * end], b = [mx + ux * end, my + uy * end], n = [-uy * side, ux * side];
+  return [[a, 1], [b, 1], [b, -1], [a, -1]].map(([p, sgn]) => [lon + (p[0] + sgn * n[0]) * kx, lat + (p[1] + sgn * n[1]) * ky]);
+}
+// Binnen een gebied: een oneven aantal ringen om het punt (zo tellen gaten en losse delen mee).
+// Bij losse stukjes die mogen overlappen (Barcelona: een vlak per straatdeel) is één genoeg.
+const inArea = (pt, a) => (a.u ? a.r.some(r => inRing(pt, r)) : a.r.reduce((n, r) => n + inRing(pt, r), 0) % 2 === 1);
 
 // Wat er op een plek geldt: het betaalde gebied, de vergunninggebieden en de speciale dagen
 // Gebieden overlappen soms (een straat die bij twee buurten hoort): het kleinste eerst

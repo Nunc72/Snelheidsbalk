@@ -3,19 +3,31 @@
 We tonen alleen wat de open data van de stad geeft; er wordt niets bij gezocht. Per stad levert
 een omzetter (soort, gebied) op, met soort 'a' (betaald) of 'v' (vergunning), plus speciale dagen.
 Extra velden naast die van tools/parking.py:
-  "c": munt (EUR, CHF, GBP), "src": bron voor in het blad, "t" (vergunning): wat de vergunning hier betekent.
+  "c": munt (EUR, CHF, GBP), "src": bron voor in het blad, "t" (vergunning): wat de vergunning hier betekent,
+  "u": de ringen zijn losse stukjes die mogen overlappen (binnen = in één ervan, niet oneven),
+  "sg": straatdelen [lon1, lat1, lon2, lat2] in plaats van ringen; tools/parking.py schrijft ze per vak
+  klein weg (zie daar) en de app maakt er zelf de vlakjes van.
   In een tarief: "mx": maximale parkeerduur in minuten, "l": prijs van het eerste uur als die anders is
   dan "h" (Brussel: het eerste halfuur is goedkoper).
 Een stad die niet bereikbaar is valt die nacht weg; de rest gaat door.
 """
+import csv
 import gzip
+import io
 import json
+import math
 import re
 import urllib.request
 from datetime import date, timedelta
 
 UA = {'User-Agent': 'VeloVerde (github.com/Nunc72/Snelheidsbalk)'}
 WEEK = ['MAANDAG', 'DINSDAG', 'WOENSDAG', 'DONDERDAG', 'VRIJDAG', 'ZATERDAG', 'ZONDAG']
+
+
+def get_text(url):
+    with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=120) as res:
+        raw = res.read()
+    return (gzip.decompress(raw) if raw[:2] == b'\x1f\x8b' else raw).decode('utf-8-sig')
 
 
 def get_json(url):
@@ -73,6 +85,19 @@ def cumulative_fare(points, extra=None, mx=None):
     if mx:
         f['mx'] = mx
     return f
+
+
+def barcelona_holidays(today, days):
+    """Feestdagen in Barcelona (Spanje, Catalonië en de stad zelf)."""
+    out = {}
+    for y in {today.year, (today + timedelta(days=days)).year}:
+        e = easter(y)
+        for d in [date(y, 1, 1), date(y, 1, 6), e - timedelta(2), e + timedelta(1), date(y, 5, 1), e + timedelta(50), date(y, 6, 24),
+                  date(y, 8, 15), date(y, 9, 11), date(y, 9, 24), date(y, 10, 12), date(y, 11, 1), date(y, 12, 6), date(y, 12, 8),
+                  date(y, 12, 25), date(y, 12, 26)]:
+            if today <= d <= today + timedelta(days=days):
+                out[d.strftime('%Y%m%d')] = 'FESTIU'
+    return out
 
 
 # ---------- Parijs ----------
@@ -190,7 +215,79 @@ def strasbourg(today, simplify):
     return items, {m: french_holidays(today, 21)}
 
 
-CITIES = [('Parijs', paris), ('Brussel', brussels), ('Straatsburg', strasbourg)]
+# ---------- Barcelona ----------
+# Open Data BCN (CC BY 4.0), elk kwartaal bijgewerkt: 17.000 straatdelen (begin- en eindpunt) met
+# soort, tarief en tijden. Àrea blava (AZL) en Àrea verda (VM) zijn betaald; Àrea verda alleen voor
+# bewoners (VR) is "Alleen vergunning". Laden/lossen en bussen slaan we over. De app maakt van elk
+# straatdeel een vlak tot 75 m opzij, zodat ook een adres midden in een huizenblok erin valt.
+# Per vak van 0,05 graad en per soort/tarief/tijden één gebied.
+BCN = 'https://opendata-ajuntament.barcelona.cat/data/api/3/action/package_show?id={}'
+BCN_DAYS = ['Dl', 'Dt', 'Dc', 'Dj', 'Dv', 'Ds', 'Dg']
+BCN_TYPES = {'AZL': ('a', 'Àrea blava'), 'VM': ('a', 'Àrea verda'), 'VR': ('v', 'Àrea verda (residents)')}
+
+
+def bcn_csv(name):
+    res = get_json(BCN.format(name))['result']['resources'][0]['url']
+    return list(csv.DictReader(io.StringIO(get_text(res))))
+
+
+def bcn_hours(text):
+    """'de Dl a Dv de 09:00 a 20:00, Ds de 09:00 a 14:00' → {dag: [[van, tot]]}. Wat na
+    'exclusiu'/'excl.' komt gaat over bewoners en telt niet."""
+    text = re.split(r'excl', text, flags=re.I)[0]
+    out, days = {}, []
+    for tok in re.finditer(r'(D[ltcjvsg])(?:\s+a\s+(D[ltcjvsg]))?|(\d{1,2}):(\d{2})\s*a\s*(\d{1,2}):(\d{2})', text):
+        if tok.group(1):
+            d0 = BCN_DAYS.index(tok.group(1))
+            d1 = BCN_DAYS.index(tok.group(2)) if tok.group(2) else d0
+            days = [WEEK[d] for d in range(d0, d1 + 1)]
+        else:
+            span = [int(tok.group(3)) * 60 + int(tok.group(4)), int(tok.group(5)) * 60 + int(tok.group(6))]
+            for d in days:
+                out.setdefault(d, []).append(span)
+    return out
+
+
+def barcelona(today, simplify):
+    m = 'ES-BARCELONA'
+    fares = {r['ID_TARIFA']: r for r in bcn_csv('tarifes-aparcament-superficie')}
+    hours = {r['ID_HORARI']: r for r in bcn_csv('horaris-aparcaments-superficie')}
+    groups = {}
+    for r in bcn_csv('trams-aparcament-superficie'):
+        kind = BCN_TYPES.get(r['TIPUS_TRAM'])
+        h = hours.get(r['ID_HORARIO'])
+        if not kind or not h:
+            continue
+        try:
+            lat1, lon1, lat2, lon2 = (float(r[k]) for k in ('LATITUD_I', 'LONGITUD_I', 'LATITUD_F', 'LONGITUD_F'))
+        except ValueError:
+            continue
+        tile = (math.floor((lat1 + lat2) / 2 / 0.05), math.floor((lon1 + lon2) / 2 / 0.05))
+        key = (tile, r['TIPUS_TRAM'], r['ID_TARIFA'], r['ID_HORARIO'])
+        groups.setdefault(key, []).append([lon1, lat1, lon2, lat2])
+    items = []
+    for (tile, typ, fare_id, hour_id), segs in groups.items():
+        kind, name = BCN_TYPES[typ]
+        gid = f'{typ}-{fare_id}-{hour_id}-{tile[0]}_{tile[1]}'
+        if kind == 'v':
+            items.append(('v', {'m': m, 'id': gid, 'k': f'{m}:A:{gid}', 'n': name, 'g': 'Barcelona', 'sg': segs, 'u': 1}))
+            continue
+        fr = fares.get(fare_id)
+        if not fr or float(fr['IMPORT_FRACCIO'] or 0) <= 0 or fr['TIPUS_FRACCIO'] != '1':
+            continue
+        h = hours[hour_id]
+        week = {d: [[s, e, 0] for s, e in v] for d, v in bcn_hours(h['DESCRIPCIO']).items()}
+        if not week:
+            continue
+        if h['INCLUS_FESTIUS'] != '1':
+            week['FESTIU'] = []
+        f = {'h': round(float(fr['IMPORT_FRACCIO']) * 100), 'mx': int(fr['TEMPS_MAXIM']) * 60}
+        items.append(('a', {'m': m, 'id': gid, 'n': name, 'g': 'Barcelona', 'sg': segs, 'u': 1, 'w': week, 'f': [f], 'c': 'EUR',
+                            'src': 'Ajuntament de Barcelona (Open Data BCN)'}))
+    return items, {m: barcelona_holidays(today, 21)}
+
+
+CITIES = [('Parijs', paris), ('Brussel', brussels), ('Straatsburg', strasbourg), ('Barcelona', barcelona)]
 
 
 def collect(today, simplify):
