@@ -679,3 +679,6 @@ body.driving .mapctl { opacity: 0; pointer-events: none; }
   .mmsep { background: #3a3a3c; }
   .zonepick { background: #23262B; }
 }
+/* Alleen de P (geen bedrag bekend): geen lege ruimte erachter */
+.pchip .pct:empty, .ptag span:last-child:empty { display: none; }
+.ptag:has(span:last-child:empty) { padding-right: 2px; }

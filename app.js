@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '101';
+const VERSION = '102';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -4148,7 +4148,7 @@ async function parkZonesNear(p, at = new Date()) {
     const n = areaNearest(p, a);
     if (n.d > ZONE_NEAR) continue;
     const lab = parkLabel({ paid: a, permit: [], special: t.s, mine: false }, at);
-    const key = [a.g, a.n, lab.text].join('|');
+    const key = [a.g, a.n, lab.say].join('|');
     const g = groups.get(key) || { a, special: t.s, lab, d: Infinity, shape: [] };
     if (n.d < g.d) Object.assign(g, { a, special: t.s, d: n.d });
     g.shape.push(...zoneShape(a));
@@ -4168,7 +4168,7 @@ async function parkZonesNear(p, at = new Date()) {
     const pt = g.a.sg ? areaNearest(p, g.a).pt : insidePoint(p, g.a, areas);
     if (!pt) continue;
     out.push({ lat: pt[1], lon: pt[0], d: g.d, title: g.a.n, zone: { shape: g.shape, a: g.a, special: g.special },
-      sub: [g.a.g, g.lab.text].filter(Boolean).join(' · '), name: `${g.a.n}, ${g.a.g}` });
+      sub: [g.a.g, g.lab.say].filter(Boolean).join(' · '), name: `${g.a.n}, ${g.a.g}` });
   }
   // In Brussel heeft elke gemeente een eigen Groene en Grijze zone, met eigen tarieven en tijden:
   // komt een naam vaker voor, dan de gemeente in de titel
@@ -4262,17 +4262,20 @@ function removePermit(k) { savePermits(loadPermits().filter(x => x.k !== k)); }
 
 // ---------- Het label bij de route en het blad met tarieven ----------
 let parkSeq = 0, parkData = null, parkTag = null;
+// Het P-label: alleen de kleur, met het bedrag als we dat weten. De rest (maximale duur, vanaf
+// hoe laat, de naam van de zone) staat in het blad. 'say' is de tekst voor voorlezen en de lijst.
 function parkLabel(info, at) {
-  if (info.mine) return { cls: 'mine', text: 'Vergunning ✓' };
-  if (!info.paid) return { cls: 'grey', text: 'Alleen vergunning' };
+  if (info.mine) return { cls: 'mine', text: '', say: 'Vergunning' };
+  if (!info.paid) return { cls: 'grey', text: '', say: 'Alleen vergunning' };
   const st = parkStatus(info.paid, info.special, at);
-  const mx = st.f && maxText(st.f);
   // Paars: we weten de zone, niet het bedrag; grijs: alleen dat er betaald wordt
   const cls = st.f && st.f.zn ? (st.f.lv === 3 ? 'plain' : 'zone') : '';
-  // Betaald nu, of binnen twee uur na aankomst: het bedrag van het eerste betaalde uur (het blad
-  // noemt vanaf hoe laat)
-  if (st.kind === 'paid' || st.kind === 'soon') return { cls, text: [rateText(st.f), mx].filter(Boolean).join(' · ') };
-  return { cls: 'free', text: 'Gratis' };
+  // Betaald nu, of binnen twee uur na aankomst: het bedrag van het eerste betaalde uur
+  if (st.kind === 'paid' || st.kind === 'soon') {
+    const text = st.f.zn || st.f.t ? '' : rateText(st.f);
+    return { cls, text, say: text || rateText(st.f) };
+  }
+  return { cls: 'free', text: 'Gratis', say: 'Gratis' };
 }
 function hideParkChip() {
   parkSeq++;
@@ -4293,7 +4296,7 @@ async function updateParkChip() {
   chip.className = 'pchip ' + lab.cls;
   chip.innerHTML = '<span class="psq">P</span><span class="pct"></span><i class="ti ti-chevron-right" aria-hidden="true"></i>';
   chip.querySelector('.pct').textContent = lab.text;
-  chip.setAttribute('aria-label', 'Parkeren: ' + lab.text);
+  chip.setAttribute('aria-label', 'Parkeren: ' + lab.say);
   chip.hidden = false;
   parkData = { info, at, dest, lab };
   drawParkTag();
