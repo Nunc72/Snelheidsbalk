@@ -103,6 +103,9 @@ body.nobar .instr:not([hidden]) ~ .toast { top: calc(env(safe-area-inset-top) + 
 .wheremap { flex: none; width: 52px; border-radius: 12px; background: #F1F0EC; color: #1F6FE0; display: flex; align-items: center; justify-content: center; }
 .wheremap .ti { font-size: 24px; }
 .meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; font-size: 11px; color: #8a8a8a; }
+/* Versie rechts op de regel van GPS, de bronnen eronder */
+#ver { margin-left: auto; }
+.meta .credits { flex-basis: 100%; }
 #demo-badge { color: #fff; background: #E5484D; border-radius: 4px; padding: 0 5px; font-weight: 600; }
 
 .destlbl {

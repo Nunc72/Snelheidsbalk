@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '104';
+const VERSION = '105';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
