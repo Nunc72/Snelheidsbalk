@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '105';
+const VERSION = '106';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -2215,9 +2215,10 @@ function openSearch() {
 // Zoek plaats: de kaart vliegt naar de gevonden plek, met Hier vandaan en Hier naartoe.
 // Huidige locatie: vanaf je eigen positie, Waar naartoe? staat klaar.
 function pickStart(d) {
+  nearFrom = null;
   closeSearch();
   peek(false);
-  if (d.here) { setHomeStart(null); follow(); return; }
+  if (d.here) { clearLook(); setHomeStart(null); follow(); return; }
   const p = cleanPlace(d);
   saveRecent(place(p));
   stopRoute(true);
@@ -3500,6 +3501,8 @@ $('qback').addEventListener('click', () => {
   if (textFrom === 'overview') { $('q').blur(); showPane('overview'); renderStops(); return; }
   setTravelMode(modeAtOpen);
   closeSearch();
+  if (textFrom === 'start' && nearFrom) showFound(nearFrom);
+  nearFrom = null;
 });
 $('qmap').addEventListener('click', () => {
   $('q').blur();
@@ -3710,6 +3713,32 @@ $('foundto').addEventListener('click', () => {
   openSheet();
   stops = [HERE, p];
   showOverview();
+});
+// Nabij: In de buurt rond deze plek; wat je kiest vervangt de plek (via het vertrekpunt-kiezen)
+let nearFrom = null;  // de plek waar Nabij vandaan kwam: terug zonder kiezen = weer die plek
+$('foundnear').addEventListener('click', () => {
+  const p = found;
+  openSheet();
+  forgetPreview();
+  stops = [p];
+  nearFrom = p;
+  showText(0, 'start');
+  // Meteen In de buurt, zonder de bewaarde tab te veranderen
+  listTab = 'near';
+  document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === 'near')));
+  field().blur();
+  showRecent();
+});
+// Start: meteen navigeren, vanaf je eigen positie. Lukt de route niet, dan blijft het overzicht staan.
+$('foundgo').addEventListener('click', async () => {
+  const p = found;
+  clearLook();
+  openSheet();
+  stops = [HERE, p];
+  showPane('overview');
+  renderStops();
+  await computePreview();
+  if (previewNav && !$('search').hidden) confirmPreview();
 });
 $('foundx').addEventListener('click', clearLook);
 

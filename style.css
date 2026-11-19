@@ -103,8 +103,7 @@ body.nobar .instr:not([hidden]) ~ .toast { top: calc(env(safe-area-inset-top) + 
 .wheremap { flex: none; width: 52px; border-radius: 12px; background: #F1F0EC; color: #1F6FE0; display: flex; align-items: center; justify-content: center; }
 .wheremap .ti { font-size: 24px; }
 .meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; font-size: 11px; color: #8a8a8a; }
-/* Versie rechts op de regel van GPS, de bronnen eronder */
-#ver { margin-left: auto; }
+/* De bronnen op de eerste regel, GPS en versie eronder */
 .meta .credits { flex-basis: 100%; }
 #demo-badge { color: #fff; background: #E5484D; border-radius: 4px; padding: 0 5px; font-weight: 600; }
 
@@ -372,12 +371,15 @@ body.driving .mapctl { opacity: 0; pointer-events: none; }
 #foundx { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; color: #8a8a8a; }
 .found .fromrow > .ti { color: #E5484D; }
 /* Gevonden plek: links blauw Hier vandaan, rechts groen Hier naartoe */
-.foundbtns { display: flex; gap: 10px; }
-.fbtn { flex: 1; display: flex; align-items: center; justify-content: center; gap: 7px; padding: 13px 10px; border-radius: 12px;
-  color: #fff; font-size: 17px; font-weight: 600; }
-.fbtn .ti { font-size: 21px; }
+.foundbtns { display: flex; gap: 8px; }
+/* Vier knoppen: icoon boven de tekst, dan passen ze ook op een iPhone SE */
+.fbtn { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  padding: 8px 2px; border-radius: 12px; color: #fff; font-size: 14px; font-weight: 600; }
+.fbtn .ti { font-size: 22px; }
+.nearb { background: #F1F0EC; color: #1c1c1e; }
 .fromb { background: #1F6FE0; }
-.tob { background: #008000; }
+.tob { background: #E3F1E3; color: #007000; }
+.gob { background: #008000; }
 .startmark { width: 18px; height: 18px; border-radius: 50%; background: #2E9E4F; border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.35); }
 
 /* Menu na lang drukken (en bij een eigen pin) */
@@ -585,6 +587,8 @@ body.driving .mapctl { opacity: 0; pointer-events: none; }
   .bottom { box-shadow: 0 2px 14px rgba(0,0,0,.5); }
   .where { background: #2c2c2e; color: #a1a1a6; }
   .wheremap, .addbig, .sfield { background: #2c2c2e; color: #f2f2f7; }
+  .nearb { background: #2c2c2e; color: #f2f2f7; }
+  .tob { background: #12321A; color: #4CC764; }
   .wheremap, .sbtn, .where.to { color: #5EA0FF; }
   .sfield.here { color: #5EA0FF; }
   .sfield.empty { color: #8e8e93; }
