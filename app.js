@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '100';
+const VERSION = '101';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -4135,7 +4135,7 @@ function insidePoint(p, a, areas) {
 // Wat een uur parkeren nu kost (0 = gratis), of null als het bedrag onbekend is
 function zoneRate(a, special, at) {
   const st = parkStatus(a, special, at);
-  if (st.kind !== 'paid') return 0;
+  if (st.kind === 'free') return 0;
   return st.f.zn || st.f.nc ? null : fareSpan(st.f, 0, 60);
 }
 // De zone het dichtst bij, en verder alleen zones die even duur zijn (hooguit 2) of goedkoper; is er
@@ -4210,11 +4210,13 @@ async function showParkNear(seq) {
   const at = cur || next || (editRow > 0 && prev) || nearCentre();
   const where = cur || next ? stopLabel(cur || next) : prev && editRow > 0 && !prev.here ? stopLabel(prev) : 'je positie';
   const zs = nearSection('Op straat', 'bij ' + where), gs = nearSection('Garages', 'bij ' + where);
+  // Tarieven op je aankomsttijd, net als op het overzicht (zonder route: nu)
+  const when = new Date(Date.now() + (previewNav && travelMode === 'auto' ? previewNav.time * 1000 : 0));
   ul.append(zs.head, zs.note, gs.head, gs.note);
   const fail = (sec, e) => { if (seq === searchSeq) sec.note.textContent = 'Zoeken lukt nu niet: ' + e.message; };
   await Promise.all([
-    parkZonesNear(at).then(l => { if (seq === searchSeq) zs.fill(l, 'parking', null, true); }, e => fail(zs, e)),
-    parkGaragesNear(at).then(l => { if (seq === searchSeq) gs.fill(l, 'parking', null, true); }, e => fail(gs, e)),
+    parkZonesNear(at, when).then(l => { if (seq === searchSeq) zs.fill(l, 'parking', null, true); }, e => fail(zs, e)),
+    parkGaragesNear(at, when).then(l => { if (seq === searchSeq) gs.fill(l, 'parking', null, true); }, e => fail(gs, e)),
   ]);
 }
 
@@ -4267,8 +4269,9 @@ function parkLabel(info, at) {
   const mx = st.f && maxText(st.f);
   // Paars: we weten de zone, niet het bedrag; grijs: alleen dat er betaald wordt
   const cls = st.f && st.f.zn ? (st.f.lv === 3 ? 'plain' : 'zone') : '';
-  if (st.kind === 'paid') return { cls, text: [rateText(st.f), mx].filter(Boolean).join(' · ') };
-  if (st.kind === 'soon') return { cls, text: `Vanaf ${fmtClock(st.from)} ${rateText(st.f)}` };
+  // Betaald nu, of binnen twee uur na aankomst: het bedrag van het eerste betaalde uur (het blad
+  // noemt vanaf hoe laat)
+  if (st.kind === 'paid' || st.kind === 'soon') return { cls, text: [rateText(st.f), mx].filter(Boolean).join(' · ') };
   return { cls: 'free', text: 'Gratis' };
 }
 function hideParkChip() {
