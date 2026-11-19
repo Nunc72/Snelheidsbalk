@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '102';
+const VERSION = '103';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -4262,8 +4262,8 @@ function removePermit(k) { savePermits(loadPermits().filter(x => x.k !== k)); }
 
 // ---------- Het label bij de route en het blad met tarieven ----------
 let parkSeq = 0, parkData = null, parkTag = null;
-// Het P-label: alleen de kleur, met het bedrag als we dat weten. De rest (maximale duur, vanaf
-// hoe laat, de naam van de zone) staat in het blad. 'say' is de tekst voor voorlezen en de lijst.
+// Het P-label: alleen de P in de kleur van wat er geldt; bedrag, tijden en zone staan in het blad.
+// 'say' is de tekst voor voorlezen en voor de lijst In de buurt (die heeft geen gekleurde P).
 function parkLabel(info, at) {
   if (info.mine) return { cls: 'mine', text: '', say: 'Vergunning' };
   if (!info.paid) return { cls: 'grey', text: '', say: 'Alleen vergunning' };
@@ -4271,11 +4271,8 @@ function parkLabel(info, at) {
   // Paars: we weten de zone, niet het bedrag; grijs: alleen dat er betaald wordt
   const cls = st.f && st.f.zn ? (st.f.lv === 3 ? 'plain' : 'zone') : '';
   // Betaald nu, of binnen twee uur na aankomst: het bedrag van het eerste betaalde uur
-  if (st.kind === 'paid' || st.kind === 'soon') {
-    const text = st.f.zn || st.f.t ? '' : rateText(st.f);
-    return { cls, text, say: text || rateText(st.f) };
-  }
-  return { cls: 'free', text: 'Gratis', say: 'Gratis' };
+  if (st.kind === 'paid' || st.kind === 'soon') return { cls, text: '', say: rateText(st.f) };
+  return { cls: 'free', text: '', say: 'Gratis' };
 }
 function hideParkChip() {
   parkSeq++;
