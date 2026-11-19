@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '103';
+const VERSION = '104';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -4002,24 +4002,6 @@ function parkStatus(a, special, at) {
   if (next && next.at - m <= PARK_SOON) return { kind: 'soon', f: next.f, from };
   return { kind: 'free', from };
 }
-// Wat het kost om zo lang te parkeren (minuten), met de staffel en het maximum per dag.
-// Bij een tarief per blok (dagkaart) rekenen we niets voor.
-function parkCost(a, special, at, minutes) {
-  let cents = 0;
-  const memo = new Map();
-  for (let k = 0; k < minutes; k++) {
-    const t = new Date(at.getTime() + k * 60000), day = dayStart(t), m = t.getHours() * 60 + t.getMinutes();
-    const key = day.getTime();
-    if (!memo.has(key)) memo.set(key, paidSpans(a, special, day));
-    const span = memo.get(key).find(x => x.s <= m && m < x.e);
-    if (!span) continue;
-    if (span.f.b || span.f.zn || span.f.nc) return null;
-    const step = (span.f.s || []).filter(([after]) => after <= k).pop();
-    cents += (step ? step[1] : span.f.h) / 60;
-  }
-  return Math.round(a.x ? Math.min(cents, a.x) : cents);
-}
-
 // Bedrag in de munt ter plekke, niet omgerekend: "€ 4,50", "CHF 3,00", "£ 1,65"
 const CURRENCY = { EUR: '€', GBP: '£' };
 const euro = (c, cur = 'EUR') => (CURRENCY[cur] || cur) + '\u00a0' + (c / 100).toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -4364,9 +4346,8 @@ function openParkSheet() {
     } else if (st.kind === 'paid') {
       v.innerHTML = st.f.t ? '' : `${rateText(st.f)}${st.f.b ? '' : ' <small>per uur</small>'}`;
       if (st.f.t) v.textContent = rateText(st.f);
-      const cost = parkCost(a, info.special, at, 120);
       s.textContent = [st.until - at >= 24 * 3600e3 ? 'Altijd betaald' : `Betaald tot ${fmtClock(st.until)}`,
-        cost != null ? `2 uur: ${euro(cost, a.c)}` : '', maxText(st.f, 'uur')].filter(Boolean).join(' · ');
+        maxText(st.f, 'uur')].filter(Boolean).join(' · ');
     } else {
       v.textContent = 'Gratis';
       now.classList.add('free');
@@ -4417,7 +4398,7 @@ function openParkSheet() {
   body.appendChild(days);
   body.insertAdjacentHTML('beforeend', '<div class="pticks"><span>0</span><span>6</span><span>12</span><span>18</span><span>24</span></div>'
     + '<div class="plegend"><span><i class="sw paid"></i>Betaald</span><span><i class="sw free"></i>Gratis</span><span><i class="sw arr"></i>Aankomst</span></div>'
-    + `<div class="psrc">Bron: ${a.src ? a.src + '. Alleen wat de stad publiceert.' : 'Nationaal Parkeer Register (RDW).'} Parkeergarages staan er nog niet in.</div>`);
+    + `<div class="psrc">Bron: ${a.src ? a.src + '. Alleen wat de stad publiceert.' : 'Nationaal Parkeer Register (RDW).'}</div>`);
 }
 
 // ---------- Meldingen: betaald parkeren bij aankomst, en "afgerond?" bij vertrek ----------
