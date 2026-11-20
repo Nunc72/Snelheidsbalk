@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '116';
+const VERSION = '117';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -5326,7 +5326,6 @@ function slideLeg(dir) {
   legTourId++;
   document.body.classList.add(dir > 0 ? 'legslide' : 'legback');
   legSlide = setTimeout(endSlide, 480);
-  if (!v && state.nav) { follow(); return; }
   stopFollowing();
   // Vooruit naar v: uitzoomen met de vorige stop onderin en v bovenin. Terug naar v (achteruit lopen):
   // uitzoomen met v onderin en de stop waar je stond bovenin. Dan inzoomen op v.
@@ -5455,20 +5454,28 @@ async function legTour(n, v, lo, hi) {
   const bear = segBearing(n, hi);
   const h = map.getContainer().clientHeight, top = $('bottom-nav').getBoundingClientRect().top;
   const pad = { top: 90, bottom: Math.max(50, h - top + 40), left: 50, right: 50 };
-  const cam = fitRotated(pts, bear, pad, STOP_ZOOM - 0.5);
-  if (cam) {
+  const fit = fitRotated(pts, bear, pad, STOP_ZOOM - 0.5);
+  if (fit) {
     // Uitzoomen: langer naarmate het stuk langer is
     const out = Math.min(2800, 1300 + km * 10);
-    await zoomOutKeeping(here, { ...cam, bearing: bear }, out, id);
+    await zoomOutKeeping(here, { ...fit, bearing: bear }, out, id);
     // Even laten staan zodat je het stuk ziet en de kaartdelen kunnen laden
     await Promise.all([tilesLoaded(long ? 3000 : 1200), new Promise(r => setTimeout(r, 700))]);
     if (id !== legTourId) { restore(); return; }
   }
-  // Duikvlucht naar het punt; het vertrekpunt komt laag in beeld te staan, net als bij het begin
-  map.flyTo({ center: p, zoom: STOP_ZOOM, bearing: stopBearing(n, v), pitch: camPitch(), offset: v || state.nav ? [0, 0] : lowOffset(),
-    curve: 1.3, duration: Math.min(4500, 2000 + km * 18), essential: true });
+  // Duikvlucht naar het punt; het vertrekpunt komt laag in beeld te staan, net als bij het begin.
+  // Navigeer je, dan landt het eerste kaartje precies in het beeld van het meevolgen (op jou).
+  const home = !v && state.nav;
+  const cam = home
+    ? { center: p, zoom: state.zoom, bearing: camBearing(), pitch: camPitch(), padding: camPadding() }
+    : { center: p, zoom: STOP_ZOOM, bearing: stopBearing(n, v), pitch: camPitch(), offset: v ? [0, 0] : lowOffset() };
+  // Grote draaiingen krijgen meer tijd
+  const turn = Math.abs(((cam.bearing - map.getBearing() + 540) % 360) - 180);
+  map.flyTo({ ...cam, curve: 1.3, duration: Math.min(5000, 2000 + km * 18 + turn * 10), essential: true });
   await mapSettled(long ? 4500 : 2500);
   restore();
+  // Daarna volgt de kaart je weer
+  if (home && id === legTourId && legView === null) follow();
 }
 
 // Vinger op het kaartje: het schuift mee; ver genoeg en het volgende of vorige kaartje komt
