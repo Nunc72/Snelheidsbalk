@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '113';
+const VERSION = '114';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -5180,9 +5180,9 @@ function showConcept(c) {
   $('remain-time').textContent = fmtDuration(c.nav.time);
   $('remain-dist').textContent = fmtDist(c.nav.total);
   setMode('concept');
-  // Met tussenstops: een kaartje per etappe, net als tijdens het navigeren
-  if (c.nav.legs.length > 1) { shownLeg = -1; renderLegs(c.nav, c.nav.legs[0].time, c.nav.time, c.nav.total); }
-  else $('destlbl').textContent = `Vanaf ${shortName(c.stops[0])} · naar ${withoutPostcode(state.dest.name)}`;
+  // Een kaartje voor het vertrek en een per stop, net als tijdens het navigeren (ook zonder tussenstops)
+  shownLeg = -1;
+  renderLegs(c.nav, c.nav.legs[0].time, c.nav.time, c.nav.total);
   renderBar();
 }
 
@@ -5216,8 +5216,8 @@ function setMode(mode) {
 // schuift het volgende erin en gaat het oude naar links. Lichtgrijs: de tijd van de etappe.
 let shownLeg = -1, legSlide = null;
 function legTitle(n, k) {
-  const s = n.legStops[k];
-  return (k < n.legs.length - 1 ? 'Tussenstop · ' : n.legs.length > 1 ? 'Bestemming · ' : '') + withoutPostcode(s.name);
+  const s = (n.legStops && n.legStops[k]) || state.dest || { name: '' };
+  return (k < n.legs.length - 1 ? 'Tussenstop · ' : 'Bestemming · ') + withoutPostcode(s.name);
 }
 function fillCard(card, n, k, legSec, totalSec, totalM, title) {
   // Naam afkappen, de tijd tot de stop blijft altijd zichtbaar
@@ -5261,7 +5261,7 @@ function fillView(card, n, v) {
 
 function renderCards() {
   const n = legNav();
-  if (!n || n.legs.length < 2 || !n.cur) return;
+  if (!n || !n.legs.length || !n.cur) return;
   const v = legView || 0, next = $('bottom-next'), prev = $('bottom-prev');
   fillView($('bottom-nav'), n, v);
   next.hidden = v >= viewCount(n);
@@ -5289,7 +5289,6 @@ function renderLegs(n, legSec, totalSec, totalM) {
   }
   if (legSlide) return;
   shownLeg = k;
-  if (n.legs.length < 2) { fillCard($('bottom-nav'), n, k, legSec, totalSec, totalM); next.hidden = true; $('bottom-prev').hidden = true; return; }
   renderCards();
 }
 
@@ -5424,7 +5423,7 @@ async function legTour(n, j) {
   let x0 = null, y0 = 0, dragging = false;
   card.addEventListener('pointerdown', e => {
     const n = legNav();
-    if (!n || n.legs.length < 2 || legSlide) return;
+    if (!n || !n.legs.length || legSlide) return;
     x0 = e.clientX; y0 = e.clientY; dragging = false;
   });
   card.addEventListener('pointermove', e => {
