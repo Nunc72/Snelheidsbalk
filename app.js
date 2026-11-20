@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '108';
+const VERSION = '109';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -3040,9 +3040,9 @@ async function openMapSearch(kind, back, row = 0, pois = null) {
   else if (target) msmap.jumpTo({ center: ll(target), zoom: 15.5 });
   else if (all.length) {
     const b = all.reduce((bb, c) => bb.extend(c), new maplibregl.LngLatBounds(all[0], all[0]));
-    // Met tarieven naast de nummers rechts meer ruimte
-    const right = pois && pois.list.some(p => p.rate) ? 95 : 40;
-    msmap.fitBounds(b, { padding: { top: pois ? 130 : 90, bottom: 190, left: 40, right }, duration: 0, maxZoom: 16 });
+    // Tarieflabels zijn breder dan een nummer
+    const side = pois && pois.list.some(p => p.rate) ? 60 : 40;
+    msmap.fitBounds(b, { padding: { top: pois ? 130 : 90, bottom: 190, left: side, right: side }, duration: 0, maxZoom: 16 });
   } else {
     const c = map.getCenter();
     msmap.jumpTo({ center: c, zoom: 15 });
@@ -3140,8 +3140,10 @@ function addMsLayers(m) {
     paint: { 'line-color': dark ? '#5A6270' : '#A9B4C2', 'line-width': 6 } });
   // Parkeerzones uit In de buurt → Park: de vlakken onder de nummers
   m.addSource('mszone', { type: 'geojson', data: EMPTY_FC });
-  m.addLayer({ id: 'mszone-fill', type: 'fill', source: 'mszone', paint: { 'fill-color': dark ? '#3D8BFF' : '#1F6FE0', 'fill-opacity': 0.14 } });
-  m.addLayer({ id: 'mszone-line', type: 'line', source: 'mszone', paint: { 'line-color': dark ? '#3D8BFF' : '#1F6FE0', 'line-width': 1.6, 'line-opacity': 0.8 } });
+  // De zone onder de pin licht op
+  const hl = (on, off) => ['case', ['boolean', ['feature-state', 'hl'], false], on, off];
+  m.addLayer({ id: 'mszone-fill', type: 'fill', source: 'mszone', paint: { 'fill-color': dark ? '#3D8BFF' : '#1F6FE0', 'fill-opacity': hl(0.36, 0.12) } });
+  m.addLayer({ id: 'mszone-line', type: 'line', source: 'mszone', paint: { 'line-color': dark ? '#3D8BFF' : '#1F6FE0', 'line-width': hl(3, 1.4), 'line-opacity': hl(1, 0.7) } });
   m.addSource('msroute', { type: 'geojson', data: EMPTY_FC });
   m.addLayer({ id: 'ms-casing', type: 'line', source: 'msroute',
     layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': dark ? DARK_BG : '#ffffff', 'line-width': 10 } });
@@ -3167,9 +3169,12 @@ function msDraw() {
   else if (ms.kind === 'row') solid = previewData && previewData.coords.length ? [lineFeature(previewData.coords)] : [];
   else solid = ms.legs.map((l, i) => (l && !oldLegs.has(i) ? lineFeature(l) : null)).filter(Boolean);
   msmap.getSource('msroute').setData({ type: 'FeatureCollection', features: solid });
-  const zones = ms.pois ? ms.pois.list.filter(p => p.zone && p.zone.shape.length) : [];
-  msmap.getSource('mszone').setData({ type: 'FeatureCollection', features: zones.map(p => ({ type: 'Feature', properties: {},
+  // id = plek in de lijst, zodat de zone onder de pin kan oplichten
+  msmap.removeFeatureState({ source: 'mszone' });
+  const zones = ms.pois ? ms.pois.list.map((p, i) => [p, i]).filter(([p]) => p.zone && p.zone.shape.length) : [];
+  msmap.getSource('mszone').setData({ type: 'FeatureCollection', features: zones.map(([p, i]) => ({ type: 'Feature', id: i, properties: {},
     geometry: { type: 'MultiPolygon', coordinates: p.zone.shape.map(r => [[...r, r[0]]]) } })) });
+  ms.hl = null;
   msmap.getSource('old').setData({ type: 'FeatureCollection',
     features: [...oldLegs].filter(i => ms.legs[i]).map(i => lineFeature(ms.legs[i])) });
   const fc = stopPoints(ms.pts);
@@ -3194,6 +3199,10 @@ function msHover() {
       if (d < 24 && (!best || d < best.d)) best = { type: 'poi', i, d };
     });
     if (best) return best;
+    // Pin binnen een parkeerzone: die zone is gekozen (de best passende als ze overlappen)
+    const at = msmap.getCenter().toArray();
+    const i = ms.pois.list.findIndex(p => p.zone && p.zone.shape.some(r => inRing(at, r)));
+    if (i >= 0) return { type: 'poi', i, d: 0 };
   }
   if (ms.kind === 'row' || ms.action) return { type: 'free' };
   // Net een punt neergezet: pas wijzigen als je er weggeweest bent en terugkomt
@@ -3268,6 +3277,7 @@ const ACT_TEXT = { insert: ['ti-plus', 'Punt'], move: ['ti-arrows-move', 'Verpla
 function msUi(force) {
   const a = ms.action, h = ms.hover;
   const key = [ms.kind, a && a.type, h.type, h.i, ms.pts.length, ms.adding, ms.front].join('|');
+  msZoneHl(h.type === 'poi' ? h.i : null);
   if (key === ms.ui && !force) return;
   ms.ui = key;
   $('mbtns').classList.toggle('dim', !!a);
@@ -3415,6 +3425,13 @@ async function computeLeg(i) {
   } catch (e) { /* de rechte hulplijn blijft staan */ }
 }
 
+function msZoneHl(i) {
+  if (ms.hl === i || !msmap || !msmap.getSource('mszone')) return;
+  if (ms.hl != null) msmap.setFeatureState({ source: 'mszone', id: ms.hl }, { hl: false });
+  ms.hl = ms.pois && ms.pois.list[i] && ms.pois.list[i].zone ? i : null;
+  if (ms.hl != null) msmap.setFeatureState({ source: 'mszone', id: ms.hl }, { hl: true });
+}
+
 // Genummerde plekken (1 = minste omweg); tikken schuift de kaart erheen, ✓ kiest
 function msMarkers() {
   (ms.markers || []).forEach(m => m.remove());
@@ -3423,21 +3440,14 @@ function msMarkers() {
   ms.markers = ms.pois.list.map((p, i) => {
     const el = document.createElement('button');
     el.type = 'button';
-    el.className = 'poimark';
-    el.textContent = i + 1;
-    // Parkeerzones: het tarief naast het nummer
-    if (p.rate) {
-      const r = document.createElement('span');
-      r.className = 'poirate';
-      r.textContent = p.rate;
-      el.appendChild(r);
-    }
-    el.setAttribute('aria-label', p.title);
+    // Parkeerzones: alleen het tarief, andere plekken een nummer
+    el.className = p.rate ? 'poimark poizone' : 'poimark';
+    el.textContent = p.rate || i + 1;
     el.addEventListener('click', e => { e.stopPropagation(); msmap.easeTo({ center: ll(p) }); });
     const m = new maplibregl.Marker({ element: el }).setLngLat(ll(p)).addTo(msmap);
     // De beste bovenop als ze overlappen
     el.style.zIndex = 20 - i;
-    el.setAttribute('aria-label', (i + 1) + ': ' + p.title);
+    el.setAttribute('aria-label', p.rate ? p.title + ', ' + p.rate : (i + 1) + ': ' + p.title);
     return m;
   });
   ms.ui = '';

@@ -251,9 +251,8 @@ body.legback #bottom-next { transform: translateX(calc(200% + 12px)); }
 .poimark { width: 28px; height: 28px; border-radius: 50%; background: #fff; color: #1c1c1e; border: 2.5px solid #1c1c1e;
   font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; padding: 0; box-shadow: 0 1px 4px rgba(0,0,0,.3); }
 .poimark.on { z-index: 30 !important; background: #1F6FE0; border-color: #fff; color: #fff; }
-/* Tarief naast het nummer van een parkeerzone */
-.poirate { position: absolute; left: 100%; top: 50%; transform: translateY(-50%); margin-left: 3px; padding: 1px 5px; border-radius: 6px;
-  background: #fff; color: #1F6FE0; font-size: 12px; font-weight: 700; white-space: nowrap; box-shadow: 0 1px 3px rgba(0,0,0,.25); pointer-events: none; }
+/* Parkeerzone: alleen het tarief, als pilletje */
+.poimark.poizone { width: auto; height: 26px; border-radius: 13px; padding: 0 8px; font-size: 12.5px; white-space: nowrap; }
 .mbtns { position: absolute; left: 20px; right: 20px; bottom: calc(env(safe-area-inset-bottom) + 20px); z-index: 3;
   display: flex; justify-content: space-between; align-items: center; pointer-events: none; }
 .mbtns .roundbtn { pointer-events: auto; box-shadow: 0 2px 10px rgba(0,0,0,.2); }
@@ -593,7 +592,6 @@ body.driving .mapctl { opacity: 0; pointer-events: none; }
   .wheremap, .addbig, .sfield { background: #2c2c2e; color: #f2f2f7; }
   .stopbig.backbig { background: #2c2c2e; color: #f2f2f7; }
   .nearb { background: #2c2c2e; color: #f2f2f7; }
-  .poirate { background: #1c1c1e; color: #5EA0FF; }
   .tob { background: #12321A; color: #4CC764; }
   .wheremap, .sbtn, .where.to { color: #5EA0FF; }
   .sfield.here { color: #5EA0FF; }
