@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '117';
+const VERSION = '118';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -5412,14 +5412,6 @@ function zoomOutKeeping(anchor, cam, ms, id) {
     step();
   });
 }
-// Wacht tot de kaartdelen geladen zijn (maximaal ms)
-const tilesLoaded = ms => new Promise(res => {
-  if (map.areTilesLoaded()) { res(); return; }
-  const t = setTimeout(done, ms);
-  function done() { clearTimeout(t); map.off('idle', done); res(); }
-  map.once('idle', done);
-});
-
 // De punten van de kaartjes: 0 = vertrek (of waar je nu bent), daarna de stops
 function tourPoint(n, v) {
   if (v > 0) return n.shape[n.legs[n.legIdx + v - 1].endIdx];
@@ -5459,8 +5451,7 @@ async function legTour(n, v, lo, hi) {
     // Uitzoomen: langer naarmate het stuk langer is
     const out = Math.min(2800, 1300 + km * 10);
     await zoomOutKeeping(here, { ...fit, bearing: bear }, out, id);
-    // Even laten staan zodat je het stuk ziet en de kaartdelen kunnen laden
-    await Promise.all([tilesLoaded(long ? 3000 : 1200), new Promise(r => setTimeout(r, 700))]);
+    // Meteen door naar de duikvlucht, zonder te blijven hangen
     if (id !== legTourId) { restore(); return; }
   }
   // Duikvlucht naar het punt; het vertrekpunt komt laag in beeld te staan, net als bij het begin.
