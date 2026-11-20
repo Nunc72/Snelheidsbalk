@@ -6,16 +6,16 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
-<meta name="apple-mobile-web-app-title" content="VeloVerde">
+<meta name="apple-mobile-web-app-title" content="Verlocidad">
 <meta name="theme-color" content="#48484A">
 <meta name="color-scheme" content="light dark">
-<title>VeloVerde</title>
+<title>Verlocidad</title>
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" href="icon-192.png">
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
-<link rel="stylesheet" href="style.css?v=111">
+<link rel="stylesheet" href="style.css?v=112">
 </head>
 <body>
 <div id="map"></div>
@@ -135,6 +135,8 @@
           <button type="button" role="menuitemradio" data-kind="satellite"><i class="ti ti-photo" aria-hidden="true"></i>Satelliet</button>
           <div class="mmsep" id="parksep" hidden></div>
           <button type="button" role="menuitem" id="parkmenu" hidden><span class="psq">P</span>Parkeervergunning<span class="cnt" id="parkcnt"></span></button>
+          <div class="mmsep"></div>
+          <button type="button" role="menuitem" id="backupmenu"><i class="ti ti-cloud-upload" aria-hidden="true"></i>Back-up</button>
           <div class="trailleg" id="trailleg" hidden>
             <div class="legh">Wandelroutes <span id="legnote"></span></div>
             <div id="legrows"></div>
@@ -190,14 +192,15 @@
 
 <div class="start" id="start">
   <div class="start-card">
-    <h1>VeloVerde</h1>
+    <h1>Verlocidad</h1>
     <p>Zet je telefoon in een houder en laat een bijrijder de app bedienen.</p>
     <button id="startbtn">Start</button>
+    <button type="button" id="startrestore" hidden><i class="ti ti-clipboard" aria-hidden="true"></i>Herstel-link plakken</button>
     <p class="small">De app vraagt om je locatie en houdt het scherm aan zolang hij open staat.</p>
   </div>
 </div>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-<script src="app.js?v=111"></script>
+<script src="app.js?v=112"></script>
 </body>
 </html>

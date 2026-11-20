@@ -1,0 +1,8 @@
+name = "verlocidad-backup"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "verlocidad-backup"
+database_id = "5d08e15d-32b9-493a-8fc2-59a804730489"

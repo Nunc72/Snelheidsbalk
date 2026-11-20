@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '111';
+const VERSION = '112';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -4382,7 +4382,7 @@ function drawParkTag() {
 }
 
 function closeParkSheet() { document.querySelectorAll('.pdim, .psheet').forEach(el => el.remove()); }
-function parkSheetShell(title, sub) {
+function parkSheetShell(title, sub, icon = '<span class="psq big">P</span>') {
   closeParkSheet();
   const dim = document.createElement('div');
   dim.className = 'pdim';
@@ -4390,7 +4390,7 @@ function parkSheetShell(title, sub) {
   const sh = document.createElement('div');
   sh.className = 'psheet';
   sh.setAttribute('role', 'dialog');
-  sh.innerHTML = '<div class="handle" aria-hidden="true"></div><div class="phead"><span class="psq big">P</span>'
+  sh.innerHTML = '<div class="handle" aria-hidden="true"></div><div class="phead">' + icon
     + '<div class="ph"><div class="t1"></div><div class="t2"></div></div>'
     + '<button type="button" class="px" aria-label="Sluiten"><i class="ti ti-x" aria-hidden="true"></i></button></div><div class="pbody"></div>';
   sh.querySelector('.t1').textContent = title;
@@ -5556,3 +5556,154 @@ renderBar();
 
 // De app zelf ook zonder bereik kunnen openen (zie sw.js)
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+
+// ---------- Back-up: je gegevens bewaard buiten de telefoon ----------
+// Eén geheime code per gebruiker; de link met die code (#herstel=…) haalt alles terug na opnieuw
+// installeren of op een ander toestel. Uit de code volgen het adres van de back-up, de schrijfsleutel
+// en de sleutel waarmee alles op de telefoon versleuteld wordt: de server ziet alleen onleesbare tekst.
+const BACKUP_URL = 'https://verlocidad-backup.verlocidad.workers.dev';
+const BACKUP_KEYS = ['bookmarks1', 'favorites', 'listTab', 'mapKind', 'nearCat', 'parkNoPermit', 'parkPermits', 'pins',
+  'recent', 'routes', 'savedRoutes', 'trailOff2', 'travelMode', 'walks'];
+const store = {
+  get: k => { try { return localStorage.getItem(k); } catch (e) { return null; } },
+  set: (k, v) => { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* geen opslag */ } },
+};
+const b64u = bytes => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const unb64u = s => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+const shaBytes = async s => new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)));
+const hex = b => [...b].map(x => x.toString(16).padStart(2, '0')).join('');
+
+async function backupKeys(secret) {
+  const key = await crypto.subtle.importKey('raw', await shaBytes('vv-k:' + secret), 'AES-GCM', false, ['encrypt', 'decrypt']);
+  return { id: hex(await shaBytes('vv-id:' + secret)).slice(0, 32), w: hex(await shaBytes('vv-w:' + secret)), key };
+}
+function backupSecret(make) {
+  let s = store.get('backupKey');
+  if (!s && make) { s = b64u(crypto.getRandomValues(new Uint8Array(16))); store.set('backupKey', s); }
+  return s;
+}
+const backupLink = s => location.origin + location.pathname + '#herstel=' + s;
+const secretFrom = text => { const m = /herstel=([A-Za-z0-9_-]{20,})/.exec(text || ''); return m && m[1]; };
+// Wat er nu bewaard is; leeg = niets om te bewaren
+function backupSnapshot() {
+  const data = {};
+  for (const k of BACKUP_KEYS) { const v = store.get(k); if (v != null) data[k] = v; }
+  return data;
+}
+const hasData = d => ['recent', 'favorites', 'pins', 'routes', 'savedRoutes', 'walks', 'parkPermits']
+  .some(k => d[k] && d[k] !== '[]' && d[k] !== '{}');
+
+async function backupPush(keepalive = false) {
+  const secret = backupSecret(false);
+  const data = backupSnapshot();
+  const snap = JSON.stringify(data);
+  if (!secret && !hasData(data)) return;
+  if (secret && store.get('backupSent') === hex(await shaBytes(snap))) return;
+  const s = secret || backupSecret(true);
+  const { id, w, key } = await backupKeys(s);
+  const t = Date.now();
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const enc = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(JSON.stringify({ v: 1, t, data }))));
+  const body = b64u(new Uint8Array([...iv, ...enc]));
+  try {
+    const r = await fetch(`${BACKUP_URL}/b/${id}`, { method: 'PUT', headers: { 'X-Write': w, 'Content-Type': 'text/plain' }, body, keepalive });
+    if (!r.ok) return;
+    store.set('backupSent', hex(await shaBytes(snap)));
+    store.set('backupT', String(t));
+  } catch (e) { /* geen netwerk: de volgende keer */ }
+}
+
+// Haalt de back-up op; null = (nog) geen back-up, throws bij netwerkfout of verkeerde sleutel
+async function backupPull(secret) {
+  const { id, key } = await backupKeys(secret);
+  const r = await fetch(`${BACKUP_URL}/b/${id}`, { cache: 'no-store' });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error('back-up niet bereikbaar');
+  const raw = unb64u(await r.text());
+  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: raw.slice(0, 12) }, key, raw.slice(12));
+  return JSON.parse(new TextDecoder().decode(plain));
+}
+async function backupApply(secret, pack) {
+  for (const k of BACKUP_KEYS) store.set(k, pack ? pack.data[k] : store.get(k));
+  store.set('backupKey', secret);
+  store.set('backupSent', hex(await shaBytes(JSON.stringify(backupSnapshot()))));
+  store.set('backupT', String(pack ? pack.t : 0));
+}
+
+// Een herstel-link gebruiken: gegevens van de link ophalen en de app opnieuw laden
+async function backupRestore(text) {
+  const secret = secretFrom(text);
+  if (!secret) { toast('Dat is geen herstel-link.'); return; }
+  if (secret === backupSecret(false)) { toast('Deze link hoort al bij dit toestel.'); return; }
+  let pack;
+  try { pack = await backupPull(secret); } catch (e) { toast('Herstellen lukt nu niet. Controleer je internet en probeer het opnieuw.'); return; }
+  if (hasData(backupSnapshot()) && !confirm('De gegevens van de link vervangen wat er nu op dit toestel staat. Doorgaan?')) return;
+  await backupApply(secret, pack);
+  location.replace(location.origin + location.pathname);
+}
+async function pasteRestore() {
+  let text = '';
+  try { text = await navigator.clipboard.readText(); } catch (e) { /* plakken niet toegestaan */ }
+  if (!secretFrom(text)) text = prompt('Plak hier je herstel-link') || '';
+  if (text) backupRestore(text);
+}
+
+function openBackupSheet() {
+  const secret = backupSecret(true);
+  const body = parkSheetShell('Back-up', 'Je gegevens terug na opnieuw installeren', '<i class="ti ti-cloud-upload bkic" aria-hidden="true"></i>');
+  body.insertAdjacentHTML('beforeend', `<div class="bkstat"></div>
+    <div class="bklink"></div>
+    <div class="bkbtns"><button type="button" class="bkshare"><i class="ti ti-share" aria-hidden="true"></i>Deel link</button>
+    <button type="button" class="bkcopy"><i class="ti ti-copy" aria-hidden="true"></i>Kopieer</button></div>
+    <div class="vexpl">Bewaar deze link: mail hem naar jezelf of zet hem in WhatsApp. Na opnieuw installeren, of op een ander toestel,
+    open je de app en tik je op <b>Herstel-link plakken</b>. Toestellen met dezelfde link delen hun gegevens.
+    Wie de link heeft, kan je gegevens zien, ook je thuisadres en vergunning. Deel hem dus alleen met jezelf.</div>
+    <ul class="vlist"><li class="vadd" role="button"><i class="ti ti-clipboard" aria-hidden="true"></i>Herstel-link plakken</li></ul>`);
+  const stat = () => {
+    const t = +store.get('backupT');
+    body.querySelector('.bkstat').textContent = t
+      ? 'Laatste back-up: ' + new Date(t).toLocaleString('nl-NL', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+      : 'Nog geen back-up: die komt zodra je iets zoekt of bewaart.';
+  };
+  stat();
+  const link = backupLink(secret);
+  body.querySelector('.bklink').textContent = link;
+  body.querySelector('.bkshare').addEventListener('click', () => {
+    if (navigator.share) navigator.share({ title: 'Verlocidad herstel-link', url: link }).catch(() => {});
+    else body.querySelector('.bkcopy').click();
+  });
+  body.querySelector('.bkcopy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(link); toast('Link gekopieerd'); } catch (e) { toast('Kopiëren lukt niet; houd de link ingedrukt.'); }
+  });
+  body.querySelector('.vadd').addEventListener('click', () => { closeParkSheet(); pasteRestore(); });
+  backupPush().then(stat);
+}
+$('backupmenu').addEventListener('click', e => { e.stopPropagation(); toggleMapMenu(false); openBackupSheet(); });
+$('startrestore').addEventListener('click', pasteRestore);
+
+{
+  // Geopend via een herstel-link (in Safari of op Android): meteen terugzetten
+  const linked = secretFrom(location.hash);
+  if (linked) {
+    history.replaceState(null, '', location.pathname + location.search);
+    backupRestore(location.hash || '#herstel=' + linked);
+  }
+  // Nieuw toestel zonder gegevens: op het startscherm de knop om een herstel-link te plakken
+  $('startrestore').hidden = !!backupSecret(false) || hasData(backupSnapshot());
+  // Bij het openen: heeft een ander toestel met dezelfde link iets nieuwers bewaard en is hier
+  // niets veranderd, dan dat overnemen (opnieuw laden zolang je nog op het startscherm staat)
+  const secret = !linked && backupSecret(false);
+  if (secret) {
+    (async () => {
+      const pack = await backupPull(secret).catch(() => null);
+      const mine = hex(await shaBytes(JSON.stringify(backupSnapshot())));
+      if (pack && pack.t > +store.get('backupT') && mine === store.get('backupSent') && !state.started) {
+        await backupApply(secret, pack);
+        location.reload();
+      }
+    })();
+  }
+  // Bewaren: elke halve minuut als er iets veranderd is, en als je de app wegklikt
+  setInterval(() => backupPush(), 30000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') backupPush(true); });
+}
