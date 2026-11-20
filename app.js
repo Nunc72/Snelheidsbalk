@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '114';
+const VERSION = '115';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -5309,7 +5309,7 @@ function endSlide() {
 function conceptView() {
   const shape = state.concept.nav.shape, a = shape[0];
   const h = map.getContainer().clientHeight;
-  map.easeTo({ center: a, bearing: startBearing(shape), zoom: 15.5, pitch: camPitch(),
+  map.easeTo({ center: a, bearing: viewBearing(shape, 0), zoom: STOP_ZOOM, pitch: camPitch(),
     padding: { top: Math.round(h * 0.4), bottom: 0, left: 0, right: 0 }, duration: farJump(a) ? 0 : 800 });
 }
 
@@ -5325,19 +5325,17 @@ function slideLeg(dir) {
   legTourId++;
   document.body.classList.add(dir > 0 ? 'legslide' : 'legback');
   legSlide = setTimeout(endSlide, 480);
-  if (!v) {
-    if (state.nav) follow();
-    else conceptView();
-    return;
-  }
+  if (!v && state.nav) { follow(); return; }
   stopFollowing();
-  legTour(n, n.legIdx + v - 1);
+  // Vooruit: de etappe van de vorige stop naar de nieuwe. Terug (achteruit lopen): de etappe van
+  // de nieuwe stop naar die waar je stond. Terug op het vertrekpunt: de eerste etappe.
+  const j = n.legIdx + v - 1;
+  const end = k => (k < 0 ? 0 : n.legs[k].endIdx);
+  const live = state.nav && state.fix ? [state.fix.lon, state.fix.lat] : null;
+  if (dir > 0) legTour(end(j), end(j - 1), end(j), j === n.legIdx ? live : null);
+  else legTour(end(j), end(j), end(j + 1), null, v ? null : { top: Math.round(map.getContainer().clientHeight * 0.4), bottom: 0, left: 0, right: 0 });
 }
 
-// Eerst uitzoomen tot de hele etappe in beeld is (in dezelfde kompasrichting, plat), dan met een
-// duikvlucht naar de stop waar hij eindigt, met een vloeiende draai naar de rijrichting waarin je
-// er aankomt. Lange etappes krijgen meer tijd, en het 3D-reliëf staat tijdens de vlucht even uit
-// zodat de kaart niet schokt. Opnieuw swipen of zelf de kaart pakken breekt het af.
 const STOP_ZOOM = 14.5;
 let legTourId = 0;
 map.on('dragstart', () => { legTourId++; });
@@ -5386,32 +5384,84 @@ function fitRotated(pts, bearing, pad, maxZoom) {
   return { center: c, zoom };
 }
 
-async function legTour(n, j) {
+// Uitzoomen naar cam terwijl punt `anchor` in beeld blijft: het schuift in een rechte lijn over het
+// scherm naar zijn eindplek, in plaats van eerst weg te schieten (zoals bij easeTo met een ver midden).
+function zoomOutKeeping(anchor, cam, bear, ms, id) {
+  return new Promise(res => {
+    const MC = maplibregl.MercatorCoordinate;
+    const el = map.getContainer(), W = el.clientWidth, H = el.clientHeight;
+    const A = MC.fromLngLat(anchor), C1 = MC.fromLngLat(cam.center);
+    const a = rad(bear), cs = Math.cos(a), sn = Math.sin(a);
+    const z0 = map.getZoom(), z1 = cam.zoom, p0 = map.getPitch();
+    const q = map.project(anchor);
+    const o0 = [q.x - W / 2, q.y - H / 2];
+    const w1 = 512 * 2 ** z1;
+    const o1 = [((A.x - C1.x) * cs + (A.y - C1.y) * sn) * w1, (-(A.x - C1.x) * sn + (A.y - C1.y) * cs) * w1];
+    map.setPadding({ top: 0, bottom: 0, left: 0, right: 0 });
+    const t0 = performance.now();
+    const step = () => {
+      if (id !== legTourId) { res(); return; }
+      const t = Math.min(1, (performance.now() - t0) / ms), e = t * (2 - t);
+      const z = z0 + (z1 - z0) * e, w = 512 * 2 ** z;
+      const ox = o0[0] + (o1[0] - o0[0]) * e, oy = o0[1] + (o1[1] - o0[1]) * e;
+      // Midden = punt min zijn schermafstand (terug gedraaid naar de kaart)
+      const c = new MC(A.x - (ox * cs - oy * sn) / w, A.y - (ox * sn + oy * cs) / w);
+      map.jumpTo({ center: c.toLngLat(), zoom: z, bearing: bear, pitch: p0 * (1 - e) });
+      if (t < 1) requestAnimationFrame(step); else res();
+    };
+    requestAnimationFrame(step);
+  });
+}
+// Wacht tot de kaartdelen geladen zijn (maximaal ms)
+const tilesLoaded = ms => new Promise(res => {
+  if (map.areTilesLoaded()) { res(); return; }
+  const t = setTimeout(done, ms);
+  function done() { clearTimeout(t); map.off('idle', done); res(); }
+  map.once('idle', done);
+});
+
+// Kompasrichting bij punt i van de route: van de weg zo'n 600 m ervoor naar 600 m erna (zover de
+// route loopt). Onderin beeld zie je dan waar je vandaan komt, bovenin waar je heen gaat.
+function viewBearing(shape, i, r = 600) {
+  let a = i, b = i;
+  while (a > 0 && dist(shape[a], shape[i]) < r) a--;
+  while (b < shape.length - 1 && dist(shape[b], shape[i]) < r) b++;
+  return a === b ? map.getBearing() : bearing(shape[a], shape[b]);
+}
+
+// Bladeren door de kaartjes: eerst uitzoomen (in dezelfde kompasrichting, plat) tot het stuk route
+// van..tot in beeld is, met het punt waar je stond er steeds in; dan een duikvlucht naar punt ti met
+// een vloeiende draai naar de richting van de weg daar. Lange stukken krijgen meer tijd, en het
+// 3D-reliëf staat tijdens de vlucht even uit zodat de kaart niet schokt.
+// Opnieuw swipen of zelf de kaart pakken breekt het af.
+async function legTour(ti, from, to, extra, endPad) {
+  const n = legNav();
   const id = ++legTourId;
-  const i = n.legs[j].endIdx, p = n.shape[i];
-  const from = j ? n.legs[j - 1].endIdx : 0;
-  const pts = n.shape.slice(from, i + 1);
+  // Het punt waar je nu staat (de stop van het vorige kaartje) blijft in beeld
+  const here = map.getCenter().toArray();
+  const p = n.shape[ti];
+  const pts = n.shape.slice(from, to + 1);
   // Tijdens het navigeren loopt de huidige etappe vanaf waar je nu bent
-  if (state.nav && j === n.legIdx && state.fix) pts.push([state.fix.lon, state.fix.lat]);
-  const c = map.getCenter();
-  const km = Math.max(dist([c.lng, c.lat], p), ...pts.map(q => dist(q, p))) / 1000;
+  if (extra) pts.push(extra);
+  pts.push(here);
+  const km = Math.max(...pts.map(q => dist(q, p))) / 1000;
   const long = km > 15;
   const restore = long ? pauseTerrain() : () => {};
-  const bearing = map.getBearing();
+  const bear = map.getBearing();
   const h = map.getContainer().clientHeight, top = $('bottom-nav').getBoundingClientRect().top;
-  const pad = { top: 80, bottom: Math.max(40, h - top + 24), left: 40, right: 40 };
+  const pad = { top: 90, bottom: Math.max(50, h - top + 40), left: 50, right: 50 };
   const none = { top: 0, bottom: 0, left: 0, right: 0 };
-  const cam = fitRotated(pts, bearing, pad, STOP_ZOOM - 0.5);
+  const cam = fitRotated(pts, bear, pad, STOP_ZOOM - 0.5);
   if (cam) {
-    // Uitzoomen: langer naarmate de etappe langer is
+    // Uitzoomen: langer naarmate het stuk langer is
     const out = Math.min(2600, 1000 + km * 10);
-    map.easeTo({ center: cam.center, zoom: cam.zoom, bearing, pitch: 0, padding: none, duration: out, easing: t => t * (2 - t) });
-    // Even laten staan zodat je de etappe ziet en de kaartdelen kunnen laden
-    await Promise.all([mapSettled(out + (long ? 3000 : 1200)), new Promise(r => setTimeout(r, out + 700))]);
+    await zoomOutKeeping(here, cam, bear, out, id);
+    // Even laten staan zodat je het stuk ziet en de kaartdelen kunnen laden
+    await Promise.all([tilesLoaded(long ? 3000 : 1200), new Promise(r => setTimeout(r, 700))]);
     if (id !== legTourId) { restore(); return; }
   }
-  // Duikvlucht naar de stop, met de draai naar de aankomstrichting erin
-  map.flyTo({ center: p, zoom: STOP_ZOOM, bearing: arriveBearing(n.shape, i), pitch: camPitch(), padding: none,
+  // Duikvlucht naar het punt, met de draai naar de richting van de weg erin
+  map.flyTo({ center: p, zoom: STOP_ZOOM, bearing: viewBearing(n.shape, ti), pitch: camPitch(), padding: endPad || none,
     curve: 1.3, duration: Math.min(4500, 1600 + km * 18), essential: true });
   await mapSettled(long ? 4000 : 1500);
   restore();
