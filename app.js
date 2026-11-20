@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '107';
+const VERSION = '108';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -3040,7 +3040,9 @@ async function openMapSearch(kind, back, row = 0, pois = null) {
   else if (target) msmap.jumpTo({ center: ll(target), zoom: 15.5 });
   else if (all.length) {
     const b = all.reduce((bb, c) => bb.extend(c), new maplibregl.LngLatBounds(all[0], all[0]));
-    msmap.fitBounds(b, { padding: { top: pois ? 130 : 90, bottom: 190, left: 40, right: 40 }, duration: 0, maxZoom: 16 });
+    // Met tarieven naast de nummers rechts meer ruimte
+    const right = pois && pois.list.some(p => p.rate) ? 95 : 40;
+    msmap.fitBounds(b, { padding: { top: pois ? 130 : 90, bottom: 190, left: 40, right }, duration: 0, maxZoom: 16 });
   } else {
     const c = map.getCenter();
     msmap.jumpTo({ center: c, zoom: 15 });
@@ -3058,8 +3060,8 @@ const MAIN_LAYERS = ['route-casing', 'route-line', 'route-ends', 'concept-line',
 function showMainLayers(on) {
   for (const id of MAIN_LAYERS) if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
 }
-const MS_LAYERS = ['old-line', 'ms-casing', 'ms-line', 'guide', 'pts'];
-const MS_SOURCES = ['old', 'msroute', 'guide', 'pts'];
+const MS_LAYERS = ['mszone-fill', 'mszone-line', 'old-line', 'ms-casing', 'ms-line', 'guide', 'pts'];
+const MS_SOURCES = ['mszone', 'old', 'msroute', 'guide', 'pts'];
 
 function ensureMsMap() {
   if (msmap) return;
@@ -3423,6 +3425,13 @@ function msMarkers() {
     el.type = 'button';
     el.className = 'poimark';
     el.textContent = i + 1;
+    // Parkeerzones: het tarief naast het nummer
+    if (p.rate) {
+      const r = document.createElement('span');
+      r.className = 'poirate';
+      r.textContent = p.rate;
+      el.appendChild(r);
+    }
     el.setAttribute('aria-label', p.title);
     el.addEventListener('click', e => { e.stopPropagation(); msmap.easeTo({ center: ll(p) }); });
     const m = new maplibregl.Marker({ element: el }).setLngLat(ll(p)).addTo(msmap);
@@ -3530,8 +3539,15 @@ $('qmap').addEventListener('click', () => {
 // Een conceptroute stoppen: de kaart blijft op dezelfde plek
 // Rode knop: de route annuleren; vertrekpunt, bestemming en tussenstops zijn weg
 $('stop').addEventListener('click', () => {
-  // Geen route live: de grijze pijl gaat alleen terug naar de kaart, er wordt niets geannuleerd
-  if (!state.nav) { setTravelMode(modeAtOpen); closeSearch(); return; }
+  // Geen route live: de grijze pijl gaat terug naar de gezochte plek (met Nabij, Vanaf, Route en Start).
+  // Er wordt niets geannuleerd.
+  if (!state.nav) {
+    const back = [...stops].reverse().find(s => s && !s.here);
+    setTravelMode(modeAtOpen);
+    closeSearch();
+    if (back && !state.concept) { stopFollowing(); showFound(cleanPlace(resolveStop(back) || back)); }
+    return;
+  }
   // Navigatie onderweg gestopt (bijvoorbeeld eerder geparkeerd): betaald parkeren hier?
   if (state.nav && state.nav.mode === 'auto' && !state.nav.arrivedAt && state.fix) parkArrive(state.fix);
   stopRoute(!!state.concept && !state.nav);
@@ -4056,7 +4072,9 @@ const euro = (c, cur = 'EUR') => (CURRENCY[cur] || cur) + '\u00a0' + (c / 100).t
 function rateText(f, perHour = false) {
   if (f.zn || f.t) return f.zn || f.t;
   if (f.b) return `${euro(Math.round(f.h * f.b / 60), f.c)} per ${f.b % 60 ? f.b + ' min' : f.b / 60 + ' uur'}`;
-  return euro(hourly(f), f.c) + (perHour ? ' per uur' : '');
+  // ± : een staffel of een goedkoper eerste uur, dus een gemiddelde over de eerste twee uur
+  const h = hourly(f);
+  return (h !== f.h ? '±\u00a0' : '') + euro(h, f.c) + (perHour ? ' per uur' : '');
 }
 // De uurprijs: gemiddeld over de eerste twee uur (of korter, als je maar zo lang mag staan).
 // Zo tellen een goedkoper eerste uur (Brussel, Delft) en een staffel (Parijs, Rotterdam) eerlijk mee.
@@ -4201,7 +4219,7 @@ async function parkZonesNear(p, at = new Date()) {
     // Het punt waar de route heen gaat: net binnen de zone (barcelona: op de stoep zelf)
     const pt = g.a.sg ? areaNearest(p, g.a).pt : insidePoint(p, g.a, areas);
     if (!pt) continue;
-    out.push({ lat: pt[1], lon: pt[0], d: g.d, title: g.a.n, zone: { shape: g.shape, a: g.a, special: g.special },
+    out.push({ lat: pt[1], lon: pt[0], d: g.d, title: g.a.n, zone: { shape: g.shape, a: g.a, special: g.special }, rate: g.lab.say,
       sub: [g.a.g, g.lab.say].filter(Boolean).join(' · '), name: `${g.a.n}, ${g.a.g}` });
   }
   // In Brussel heeft elke gemeente een eigen Groene en Grijze zone, met eigen tarieven en tijden:
