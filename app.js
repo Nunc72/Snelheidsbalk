@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '109';
+const VERSION = '110';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -284,31 +284,31 @@ const DARK_BG = '#23262B';
 const DARK_PAINT = {
   background: { 'background-color': DARK_BG },
   landuse_residential: { 'fill-color': '#272A30' },
-  water: { 'fill-color': '#1E3550' },
-  waterway: { 'line-color': '#1E3550' },
-  landcover_wood: { 'fill-color': '#2F5E3E' },
-  landuse_park: { 'fill-color': '#2F5E3E' },
+  water: { 'fill-color': '#2B4F78' },
+  waterway: { 'line-color': '#2B4F78' },
+  landcover_wood: { 'fill-color': '#22402C' },
+  landuse_park: { 'fill-color': '#22402C' },
   landcover_ice_shelf: { 'fill-color': DARK_BG },
   building: { 'fill-color': '#30333A', 'fill-outline-color': '#3A3E46' },
   'aeroway-area': { 'fill-color': '#2B2E34' },
   'aeroway-runway': { 'line-color': '#3A3E46' },
   road_area_pier: { 'fill-color': DARK_BG },
   road_pier: { 'line-color': DARK_BG },
-  highway_path: { 'line-color': '#3A3E46' },
-  highway_minor: { 'line-color': '#474B54' },
+  highway_path: { 'line-color': '#4A4F58' },
+  highway_minor: { 'line-color': '#5A5F69' },
   highway_major_casing: { 'line-color': '#2A2D33' },
-  highway_major_inner: { 'line-color': '#5A5F69' },
-  highway_major_subtle: { 'line-color': '#4A4E57' },
+  highway_major_inner: { 'line-color': '#70757F' },
+  highway_major_subtle: { 'line-color': '#5A5F69' },
   highway_motorway_casing: { 'line-color': '#2A2D33' },
-  highway_motorway_inner: { 'line-color': '#6E737D' },
-  highway_motorway_subtle: { 'line-color': '#4A4E57' },
+  highway_motorway_inner: { 'line-color': '#878C96' },
+  highway_motorway_subtle: { 'line-color': '#5A5F69' },
   railway_transit: { 'line-color': '#3D4048' },
   railway_minor: { 'line-color': '#3D4048' },
   railway: { 'line-color': '#3D4048' },
   railway_transit_dashline: { 'line-color': DARK_BG },
   railway_minor_dashline: { 'line-color': DARK_BG },
   railway_dashline: { 'line-color': DARK_BG },
-  water_name: { 'text-color': '#7193B8', 'text-halo-color': '#1E3550' },
+  water_name: { 'text-color': '#9DBBDD', 'text-halo-color': '#2B4F78' },
   highway_name_other: { 'text-color': '#A6AAB2', 'text-halo-color': DARK_BG },
   highway_name_motorway: { 'text-color': '#B4B8C0' },
 };
@@ -332,9 +332,16 @@ async function darkStyle() {
     const at = style.layers.indexOf(wood) + 1;
     style.layers.splice(at, 0,
       { id: 'landcover_grass', type: 'fill', source: wood.source, 'source-layer': 'landcover',
-        filter: ['==', ['get', 'class'], 'grass'], paint: { 'fill-color': '#2A5436', 'fill-opacity': 0.85 } },
+        filter: ['==', ['get', 'class'], 'grass'], paint: { 'fill-color': '#213A29', 'fill-opacity': 0.85 } },
       { id: 'park_area', type: 'fill', source: wood.source, 'source-layer': 'park',
-        paint: { 'fill-color': '#2F5E3E', 'fill-opacity': 0.75 } });
+        paint: { 'fill-color': '#22402C', 'fill-opacity': 0.75 } });
+  }
+  // Water ligt in deze stijl onder bos en parken: een meer in een natuurgebied werd dan groen.
+  // Daarom het water boven het groen, vlak onder de rivieren.
+  const water = style.layers.findIndex(l => l.id === 'water');
+  if (water >= 0) {
+    const [w] = style.layers.splice(water, 1);
+    style.layers.splice(style.layers.findIndex(l => l.id === 'waterway'), 0, w);
   }
   darkStyleCache = style;
   return style;
@@ -401,7 +408,7 @@ function styleFor(base, kind, dark) {
   if (kind === 'terrain') {
     // Schaduw boven bos en gras, onder water en wegen; de bergen staan rechtop als je kantelt
     style.sources.dem = DEM;
-    style.layers.splice(at('waterway'), 0, { id: 'hillshade', type: 'hillshade', source: 'dem',
+    style.layers.splice(at(dark ? 'water' : 'waterway'), 0, { id: 'hillshade', type: 'hillshade', source: 'dem',
       paint: dark
         ? { 'hillshade-exaggeration': 0.45, 'hillshade-shadow-color': '#000000', 'hillshade-highlight-color': '#4A4F58', 'hillshade-accent-color': '#15171A' }
         : { 'hillshade-exaggeration': 0.4, 'hillshade-shadow-color': '#5A6B78', 'hillshade-highlight-color': '#FFFFFF', 'hillshade-accent-color': '#8A9A8A' } });
@@ -2149,8 +2156,9 @@ function updateClear() {
 // ---------- Het zoekscherm: tekst zoeken, overzicht en zoeken op kaart ----------
 const PANES = ['textpane', 'overview', 'mapsearch'];
 // Linksonder op het overzicht: met een live route de rode X (stoppen), anders een grijze pijl terug
+// Een gestarte route vanaf een ander vertrekpunt (conceptroute) telt ook als live
 function syncStopBtn() {
-  const live = !!state.nav;
+  const live = !!(state.nav || state.concept);
   $('stop').classList.toggle('backbig', !live);
   $('stop').innerHTML = `<i class="ti ti-${live ? 'x' : 'arrow-left'}" aria-hidden="true"></i>`;
   $('stop').setAttribute('aria-label', live ? 'Route stoppen' : 'Terug naar de kaart');
@@ -3551,11 +3559,11 @@ $('qmap').addEventListener('click', () => {
 $('stop').addEventListener('click', () => {
   // Geen route live: de grijze pijl gaat terug naar de gezochte plek (met Nabij, Vanaf, Route en Start).
   // Er wordt niets geannuleerd.
-  if (!state.nav) {
+  if (!state.nav && !state.concept) {
     const back = [...stops].reverse().find(s => s && !s.here);
     setTravelMode(modeAtOpen);
     closeSearch();
-    if (back && !state.concept) { stopFollowing(); showFound(cleanPlace(resolveStop(back) || back)); }
+    if (back) { stopFollowing(); showFound(cleanPlace(resolveStop(back) || back)); }
     return;
   }
   // Navigatie onderweg gestopt (bijvoorbeeld eerder geparkeerd): betaald parkeren hier?
