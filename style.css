@@ -160,6 +160,7 @@ body.legback #bottom-next { transform: translateX(calc(200% + 12px)); }
 .roundbtn .ti { font-size: 30px; }
 .roundbtn:disabled { opacity: .35; }
 .stopbig { background: #E5484D; }
+.stopbig.backbig { background: #F1F0EC; color: #3a3a3c; }
 .okbig { background: #008000; }
 .lookbig { background: #1F6FE0; }
 .lookpin { width: 30px; height: 40px; filter: drop-shadow(0 1px 3px rgba(0,0,0,.35)); }
@@ -587,6 +588,7 @@ body.driving .mapctl { opacity: 0; pointer-events: none; }
   .bottom { box-shadow: 0 2px 14px rgba(0,0,0,.5); }
   .where { background: #2c2c2e; color: #a1a1a6; }
   .wheremap, .addbig, .sfield { background: #2c2c2e; color: #f2f2f7; }
+  .stopbig.backbig { background: #2c2c2e; color: #f2f2f7; }
   .nearb { background: #2c2c2e; color: #f2f2f7; }
   .tob { background: #12321A; color: #4CC764; }
   .wheremap, .sbtn, .where.to { color: #5EA0FF; }

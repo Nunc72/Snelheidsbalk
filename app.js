@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '106';
+const VERSION = '107';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -2148,6 +2148,13 @@ function updateClear() {
 
 // ---------- Het zoekscherm: tekst zoeken, overzicht en zoeken op kaart ----------
 const PANES = ['textpane', 'overview', 'mapsearch'];
+// Linksonder op het overzicht: met een live route de rode X (stoppen), anders een grijze pijl terug
+function syncStopBtn() {
+  const live = !!state.nav;
+  $('stop').classList.toggle('backbig', !live);
+  $('stop').innerHTML = `<i class="ti ti-${live ? 'x' : 'arrow-left'}" aria-hidden="true"></i>`;
+  $('stop').setAttribute('aria-label', live ? 'Route stoppen' : 'Terug naar de kaart');
+}
 function showPane(id) {
   if (id !== 'mapsearch') leaveMsMap(false);
   for (const p of PANES) $(p).hidden = p !== id;
@@ -2156,6 +2163,7 @@ function showPane(id) {
   const row = $('moderow');
   if (id === 'mapsearch') $('mstop').appendChild(row);
   else if (id === 'overview' && row.parentElement !== $('overview')) $('overview').insertBefore(row, $('preview'));
+  if (id === 'overview') syncStopBtn();
 }
 
 function openSheet() {
@@ -3128,6 +3136,10 @@ function addMsLayers(m) {
   m.addSource('old', { type: 'geojson', data: EMPTY_FC });
   m.addLayer({ id: 'old-line', type: 'line', source: 'old', layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: { 'line-color': dark ? '#5A6270' : '#A9B4C2', 'line-width': 6 } });
+  // Parkeerzones uit In de buurt → Park: de vlakken onder de nummers
+  m.addSource('mszone', { type: 'geojson', data: EMPTY_FC });
+  m.addLayer({ id: 'mszone-fill', type: 'fill', source: 'mszone', paint: { 'fill-color': dark ? '#3D8BFF' : '#1F6FE0', 'fill-opacity': 0.14 } });
+  m.addLayer({ id: 'mszone-line', type: 'line', source: 'mszone', paint: { 'line-color': dark ? '#3D8BFF' : '#1F6FE0', 'line-width': 1.6, 'line-opacity': 0.8 } });
   m.addSource('msroute', { type: 'geojson', data: EMPTY_FC });
   m.addLayer({ id: 'ms-casing', type: 'line', source: 'msroute',
     layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': dark ? DARK_BG : '#ffffff', 'line-width': 10 } });
@@ -3153,6 +3165,9 @@ function msDraw() {
   else if (ms.kind === 'row') solid = previewData && previewData.coords.length ? [lineFeature(previewData.coords)] : [];
   else solid = ms.legs.map((l, i) => (l && !oldLegs.has(i) ? lineFeature(l) : null)).filter(Boolean);
   msmap.getSource('msroute').setData({ type: 'FeatureCollection', features: solid });
+  const zones = ms.pois ? ms.pois.list.filter(p => p.zone && p.zone.shape.length) : [];
+  msmap.getSource('mszone').setData({ type: 'FeatureCollection', features: zones.map(p => ({ type: 'Feature', properties: {},
+    geometry: { type: 'MultiPolygon', coordinates: p.zone.shape.map(r => [[...r, r[0]]]) } })) });
   msmap.getSource('old').setData({ type: 'FeatureCollection',
     features: [...oldLegs].filter(i => ms.legs[i]).map(i => lineFeature(ms.legs[i])) });
   const fc = stopPoints(ms.pts);
@@ -3515,6 +3530,8 @@ $('qmap').addEventListener('click', () => {
 // Een conceptroute stoppen: de kaart blijft op dezelfde plek
 // Rode knop: de route annuleren; vertrekpunt, bestemming en tussenstops zijn weg
 $('stop').addEventListener('click', () => {
+  // Geen route live: de grijze pijl gaat alleen terug naar de kaart, er wordt niets geannuleerd
+  if (!state.nav) { setTravelMode(modeAtOpen); closeSearch(); return; }
   // Navigatie onderweg gestopt (bijvoorbeeld eerder geparkeerd): betaald parkeren hier?
   if (state.nav && state.nav.mode === 'auto' && !state.nav.arrivedAt && state.fix) parkArrive(state.fix);
   stopRoute(!!state.concept && !state.nav);
@@ -4041,9 +4058,15 @@ function rateText(f, perHour = false) {
   if (f.b) return `${euro(Math.round(f.h * f.b / 60), f.c)} per ${f.b % 60 ? f.b + ' min' : f.b / 60 + ' uur'}`;
   return euro(hourly(f), f.c) + (perHour ? ' per uur' : '');
 }
-// Prijs van het eerste uur: meestal het uurtarief, in Brussel is het eerste halfuur goedkoper
-// (Delft: de eerste 5 minuten gratis, dan per uur: het bedrag van dat eerste uur)
-const hourly = f => f.l ?? (f.s && f.s[0][0] < 60 && !f.b ? fareSpan(f, 0, 60) : f.h);
+// De uurprijs: gemiddeld over de eerste twee uur (of korter, als je maar zo lang mag staan).
+// Zo tellen een goedkoper eerste uur (Brussel, Delft) en een staffel (Parijs, Rotterdam) eerlijk mee.
+// Bij een tarief per blok (dagkaart): gewoon het uurtarief.
+function hourly(f) {
+  if (f.b || (!f.s && f.l == null)) return f.h;
+  const dur = Math.min(120, f.mx || 120);
+  const cost = f.l != null ? f.l * Math.min(dur, 60) / 60 + (dur > 60 ? fareSpan(f, 60, dur) : 0) : fareSpan(f, 0, dur);
+  return Math.round(cost * 60 / dur);
+}
 // Maximale parkeerduur van een tarief (Parijs 6 uur, Brussel rood 2 uur), als die niet langer is dan een dag
 const maxText = (f, unit = 'u') => {
   if (!f || !f.mx || f.mx > 1440) return '';
@@ -4147,7 +4170,7 @@ function insidePoint(p, a, areas) {
 function zoneRate(a, special, at) {
   const st = parkStatus(a, special, at);
   if (st.kind === 'free') return 0;
-  return st.f.zn || st.f.nc ? null : fareSpan(st.f, 0, 60);
+  return st.f.zn || st.f.nc ? null : hourly(st.f);
 }
 // De zone het dichtst bij, en verder alleen zones die even duur zijn (hooguit 2) of goedkoper; is er
 // een goedkopere, dan geldt die als nieuwe maat (weer hooguit 2), en zo verder, tot 1 km ver
@@ -4373,7 +4396,9 @@ function openParkSheet() {
       now.classList.add(st.f.lv === 3 ? 'grey' : 'zone');
       body.parentElement.querySelector('.phead .psq').classList.add(st.f.lv === 3 ? 'plain' : 'zone');
     } else if (st.kind === 'paid') {
-      v.innerHTML = st.f.t ? '' : `${rateText(st.f)}${st.f.b ? '' : ' <small>per uur</small>'}`;
+      // Loopt de prijs op (of is het eerste uur goedkoper), dan staat erbij dat het een gemiddelde is
+      const avg = !st.f.b && hourly(st.f) !== st.f.h;
+      v.innerHTML = st.f.t ? '' : `${rateText(st.f)}${st.f.b ? '' : ` <small>per uur${avg ? ', gemiddeld eerste 2 uur' : ''}</small>`}`;
       if (st.f.t) v.textContent = rateText(st.f);
       s.textContent = [st.until - at >= 24 * 3600e3 ? 'Altijd betaald' : `Betaald tot ${fmtClock(st.until)}`,
         maxText(st.f, 'uur')].filter(Boolean).join(' · ');
