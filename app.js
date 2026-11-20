@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '112';
+const VERSION = '113';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -5335,31 +5335,87 @@ function slideLeg(dir) {
   legTour(n, n.legIdx + v - 1);
 }
 
-// Eerst uitzoomen tot de hele etappe in beeld is (plat, noord boven), dan inzoomen op de stop
-// waar hij eindigt: midden in beeld, in de rijrichting waarin je er aankomt.
-// Opnieuw swipen of zelf de kaart pakken breekt het af.
+// Eerst uitzoomen tot de hele etappe in beeld is (in dezelfde kompasrichting, plat), dan met een
+// duikvlucht naar de stop waar hij eindigt, met een vloeiende draai naar de rijrichting waarin je
+// er aankomt. Lange etappes krijgen meer tijd, en het 3D-reliëf staat tijdens de vlucht even uit
+// zodat de kaart niet schokt. Opnieuw swipen of zelf de kaart pakken breekt het af.
+const STOP_ZOOM = 14.5;
 let legTourId = 0;
 map.on('dragstart', () => { legTourId++; });
-function legTour(n, j) {
+// Reliëf uit zolang er een vlucht loopt; pas weer aan als de laatste klaar is
+let toursFlying = 0, terrainPaused = false;
+function pauseTerrain() {
+  toursFlying++;
+  if (map.getTerrain()) {
+    map.setTerrain(null);
+    if (map.getLayer('hillshade')) map.setLayoutProperty('hillshade', 'visibility', 'none');
+    terrainPaused = true;
+  }
+  return () => {
+    if (--toursFlying > 0 || !terrainPaused) return;
+    terrainPaused = false;
+    if (mapKind !== 'terrain' || !map.getSource('dem') || map.getTerrain()) return;
+    map.setTerrain({ source: 'dem', exaggeration: 1.2 });
+    if (map.getLayer('hillshade')) map.setLayoutProperty('hillshade', 'visibility', 'visible');
+  };
+}
+// Wacht tot de kaart klaar is met bewegen en laden (maximaal ms)
+const mapSettled = ms => new Promise(res => {
+  const t = setTimeout(done, ms);
+  function done() { clearTimeout(t); map.off('idle', done); res(); }
+  map.once('moveend', () => map.once('idle', done));
+});
+// Camera die de punten zo groot mogelijk in beeld zet bij deze kompasrichting
+// (cameraForBounds past een recht kader om de punten, dat bij een gedraaide kaart te ruim is)
+function fitRotated(pts, bearing, pad, maxZoom) {
+  const W = map.getContainer().clientWidth, H = map.getContainer().clientHeight;
+  const a = rad(bearing), cs = Math.cos(a), sn = Math.sin(a);
+  const m = pts.map(q => maplibregl.MercatorCoordinate.fromLngLat(q));
+  // Naar schermrichting gedraaid (x rechts, y omlaag)
+  const r = m.map(q => [q.x * cs + q.y * sn, -q.x * sn + q.y * cs]);
+  const xs = r.map(q => q[0]), ys = r.map(q => q[1]);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const w = W - pad.left - pad.right, hh = H - pad.top - pad.bottom;
+  if (w <= 0 || hh <= 0) return null;
+  const scale = Math.min(w / Math.max(x1 - x0, 1e-9), hh / Math.max(y1 - y0, 1e-9));
+  const zoom = Math.min(maxZoom, Math.log2(scale / 512));
+  const world = 512 * 2 ** zoom;
+  // Midden van het kader komt midden in de vrije ruimte; het kaartmidden ligt daar iets naast
+  const sx = (x0 + x1) / 2 - ((pad.left - pad.right) / 2) / world;
+  const sy = (y0 + y1) / 2 - ((pad.top - pad.bottom) / 2) / world;
+  const c = new maplibregl.MercatorCoordinate(sx * cs - sy * sn, sx * sn + sy * cs).toLngLat();
+  return { center: c, zoom };
+}
+
+async function legTour(n, j) {
   const id = ++legTourId;
   const i = n.legs[j].endIdx, p = n.shape[i];
   const from = j ? n.legs[j - 1].endIdx : 0;
   const pts = n.shape.slice(from, i + 1);
   // Tijdens het navigeren loopt de huidige etappe vanaf waar je nu bent
   if (state.nav && j === n.legIdx && state.fix) pts.push([state.fix.lon, state.fix.lat]);
-  const zoomIn = () => {
-    if (id !== legTourId) return;
-    map.easeTo({ center: p, zoom: 15.5, bearing: arriveBearing(n.shape, i), pitch: camPitch(),
-      padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: farJump(p) ? 0 : 1200 });
-  };
-  const b = pts.reduce((bb, c) => bb.extend(c), new maplibregl.LngLatBounds(pts[0], pts[0]));
+  const c = map.getCenter();
+  const km = Math.max(dist([c.lng, c.lat], p), ...pts.map(q => dist(q, p))) / 1000;
+  const long = km > 15;
+  const restore = long ? pauseTerrain() : () => {};
+  const bearing = map.getBearing();
   const h = map.getContainer().clientHeight, top = $('bottom-nav').getBoundingClientRect().top;
-  const cam = map.cameraForBounds(b, { padding: { top: 80, bottom: Math.max(40, h - top + 24), left: 40, right: 40 }, maxZoom: 16 });
-  if (!cam) { zoomIn(); return; }
-  const far = farJump(cam.center.toArray ? cam.center.toArray() : [cam.center.lng, cam.center.lat]);
-  map.easeTo({ ...cam, bearing: 0, pitch: 0, padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: far ? 0 : 900 });
-  // Even laten staan zodat je de etappe ziet, dan erheen
-  setTimeout(zoomIn, (far ? 0 : 900) + 900);
+  const pad = { top: 80, bottom: Math.max(40, h - top + 24), left: 40, right: 40 };
+  const none = { top: 0, bottom: 0, left: 0, right: 0 };
+  const cam = fitRotated(pts, bearing, pad, STOP_ZOOM - 0.5);
+  if (cam) {
+    // Uitzoomen: langer naarmate de etappe langer is
+    const out = Math.min(2600, 1000 + km * 10);
+    map.easeTo({ center: cam.center, zoom: cam.zoom, bearing, pitch: 0, padding: none, duration: out, easing: t => t * (2 - t) });
+    // Even laten staan zodat je de etappe ziet en de kaartdelen kunnen laden
+    await Promise.all([mapSettled(out + (long ? 3000 : 1200)), new Promise(r => setTimeout(r, out + 700))]);
+    if (id !== legTourId) { restore(); return; }
+  }
+  // Duikvlucht naar de stop, met de draai naar de aankomstrichting erin
+  map.flyTo({ center: p, zoom: STOP_ZOOM, bearing: arriveBearing(n.shape, i), pitch: camPitch(), padding: none,
+    curve: 1.3, duration: Math.min(4500, 1600 + km * 18), essential: true });
+  await mapSettled(long ? 4000 : 1500);
+  restore();
 }
 
 // Vinger op het kaartje: het schuift mee; ver genoeg en het volgende of vorige kaartje komt
