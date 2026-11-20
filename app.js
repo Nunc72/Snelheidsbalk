@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '110';
+const VERSION = '111';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -5323,6 +5323,7 @@ function slideLeg(dir) {
   const v = (legView || 0) + dir;
   if (v < 0 || v > viewCount(n)) return;
   legView = v || null;
+  legTourId++;
   document.body.classList.add(dir > 0 ? 'legslide' : 'legback');
   legSlide = setTimeout(endSlide, 480);
   if (!v) {
@@ -5331,11 +5332,34 @@ function slideLeg(dir) {
     return;
   }
   stopFollowing();
-  // De stop midden in beeld (zonder de ruimte boven die je eigen positie lager zet),
-  // in de rijrichting waarin je er aankomt
-  const i = n.legs[n.legIdx + v - 1].endIdx, p = n.shape[i];
-  map.easeTo({ center: p, zoom: 15.5, bearing: arriveBearing(n.shape, i), pitch: camPitch(),
-    padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: farJump(p) ? 0 : 800 });
+  legTour(n, n.legIdx + v - 1);
+}
+
+// Eerst uitzoomen tot de hele etappe in beeld is (plat, noord boven), dan inzoomen op de stop
+// waar hij eindigt: midden in beeld, in de rijrichting waarin je er aankomt.
+// Opnieuw swipen of zelf de kaart pakken breekt het af.
+let legTourId = 0;
+map.on('dragstart', () => { legTourId++; });
+function legTour(n, j) {
+  const id = ++legTourId;
+  const i = n.legs[j].endIdx, p = n.shape[i];
+  const from = j ? n.legs[j - 1].endIdx : 0;
+  const pts = n.shape.slice(from, i + 1);
+  // Tijdens het navigeren loopt de huidige etappe vanaf waar je nu bent
+  if (state.nav && j === n.legIdx && state.fix) pts.push([state.fix.lon, state.fix.lat]);
+  const zoomIn = () => {
+    if (id !== legTourId) return;
+    map.easeTo({ center: p, zoom: 15.5, bearing: arriveBearing(n.shape, i), pitch: camPitch(),
+      padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: farJump(p) ? 0 : 1200 });
+  };
+  const b = pts.reduce((bb, c) => bb.extend(c), new maplibregl.LngLatBounds(pts[0], pts[0]));
+  const h = map.getContainer().clientHeight, top = $('bottom-nav').getBoundingClientRect().top;
+  const cam = map.cameraForBounds(b, { padding: { top: 80, bottom: Math.max(40, h - top + 24), left: 40, right: 40 }, maxZoom: 16 });
+  if (!cam) { zoomIn(); return; }
+  const far = farJump(cam.center.toArray ? cam.center.toArray() : [cam.center.lng, cam.center.lat]);
+  map.easeTo({ ...cam, bearing: 0, pitch: 0, padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: far ? 0 : 900 });
+  // Even laten staan zodat je de etappe ziet, dan erheen
+  setTimeout(zoomIn, (far ? 0 : 900) + 900);
 }
 
 // Vinger op het kaartje: het schuift mee; ver genoeg en het volgende of vorige kaartje komt
