@@ -263,7 +263,7 @@ body.legback #bottom-next { transform: translateX(calc(200% + 12px)); }
 .setbtn { width: 40px; height: 40px; border-radius: 50%; background: #F1F0EC; color: #3a3a3c; display: flex; align-items: center; justify-content: center; }
 .setbtn .ti { font-size: 24px; }
 .mapmenu {
-  position: absolute; top: 48px; right: 0; z-index: 10;
+  position: absolute; top: 48px; right: 0; z-index: 10; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
   background: #fff; border-radius: 14px; box-shadow: 0 4px 20px rgba(0,0,0,.18); padding: 6px; min-width: 170px; width: max-content; max-width: calc(100vw - 32px);
 }
 .mapmenu button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 12px; border-radius: 9px; font-size: 16px; text-align: left; }
@@ -347,6 +347,8 @@ body:not(.nobar) .mapctl { top: calc(15vh + 10px); }
 .instr:not([hidden]) ~ .mapctl { top: calc(15vh + 120px); }
 body.nobar .instr:not([hidden]) ~ .mapctl { top: calc(env(safe-area-inset-top) + 120px); }
 body.driving .mapctl { opacity: 0; pointer-events: none; }
+/* Open menu: boven de kaartjes, meldingen en de knoppen (maar onder bladen van onderen) */
+body.menuopen .mapctl { z-index: 12; opacity: 1; pointer-events: auto; }
 .mapctl .setbtn { background: none; color: #2c2c2e; filter: drop-shadow(0 0 1.5px #fff) drop-shadow(0 0 1.5px #fff) drop-shadow(0 0 1px #fff); }
 .mapctl .setbtn .ti { font-size: 28px; }
 .compass { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; }

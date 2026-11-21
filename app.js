@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '121';
+const VERSION = '122';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -3619,6 +3619,21 @@ function toggleMapMenu(open) {
   syncTraffic();
   $('trailleg').hidden = !(open && travelMode === 'pedestrian');
   if (!$('trailleg').hidden) showTrailLegend();
+  // Open menu boven alle kaartjes; past het niet tot onderin het scherm, dan scrollen
+  document.body.classList.toggle('menuopen', open);
+  if (open) fitMapMenu();
+}
+function fitMapMenu() {
+  const el = $('mapmenu');
+  el.style.maxHeight = '';
+  const top = el.getBoundingClientRect().top;
+  // Ruimte voor de streep onderin de iPhone (de 'safe area')
+  const probe = document.createElement('div');
+  probe.style.cssText = 'position:fixed;visibility:hidden;height:env(safe-area-inset-bottom)';
+  document.body.appendChild(probe);
+  const safe = probe.offsetHeight;
+  probe.remove();
+  el.style.maxHeight = Math.max(160, innerHeight - top - 12 - safe) + 'px';
 }
 
 // Legenda van de wandelroutes: alleen de soorten die in dit kaartdeel voorkomen
