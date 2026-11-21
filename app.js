@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '123';
+const VERSION = '124';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -5027,7 +5027,8 @@ async function previewJams() {
   if (!trafficReady() || !d || !d.routes || travelMode !== 'auto') return;
   const all = await Promise.all(d.routes.map(r => incidentsAlong(r.shape, 0, Infinity, null).then(inc => jamsOnRoute(r, inc)).catch(() => [])));
   // Altijd bij de routes bewaren: ook als je intussen al bent gaan rijden, telt de file mee
-  d.routes.forEach((r, i) => { if (!navJams.has(r)) navJams.set(r, all[i]); });
+  // (maar niet over nieuwere files heen die de navigatie onderweg zelf al heeft opgehaald)
+  d.routes.forEach((r, i) => { if (!(r === state.nav && navJams.has(r))) navJams.set(r, all[i]); });
   if (state.nav && d.routes.includes(state.nav)) drawNavJams();
   // Het overzicht alleen bijwerken als het nog openstaat met deze routes
   if (seq !== previewJamSeq || d !== previewData || !previewNav) return;
