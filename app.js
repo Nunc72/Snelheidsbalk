@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '122';
+const VERSION = '123';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -4900,16 +4900,19 @@ function setTrafficOn(on) {
 
 // ---------- Meldingen langs de route ----------
 // TomTom geeft meldingen per vak. Grote vakken zijn zwaar (honderden kleine stadsfiles), dus
-// smalle vakken langs de route: een nieuw vak elke 20 km, met zo'n 1 km ruimte eromheen.
+// smalle vakken langs de route: een nieuw vak elke 20 km (bij lange routes langer, hooguit
+// 10 vakken per route), met zo'n 1 km ruimte eromheen.
 const incMemo = new Map();
 function routeBoxes(shape, from = 0, upto = Infinity, cum = null) {
   const boxes = [], pad = 0.01;
+  const span = cum ? Math.min(upto, cum[cum.length - 1]) - from : shape.reduce((t, q, i) => t + (i ? dist(shape[i - 1], q) : 0), 0);
+  const step = Math.max(20000, span / 10);
   let b = null, run = 0;
   for (let i = 0; i < shape.length; i++) {
     if (cum && (cum[i] < from - 2000 || cum[i] > upto)) continue;
     const [lon, lat] = shape[i];
     if (b && i) run += dist(shape[i - 1], shape[i]);
-    if (b && run > 20000) { boxes.push(b); b = null; run = 0; }
+    if (b && run > step) { boxes.push(b); b = null; run = 0; }
     b = b ? [Math.min(b[0], lon), Math.min(b[1], lat), Math.max(b[2], lon), Math.max(b[3], lat)] : [lon, lat, lon, lat];
   }
   if (b) boxes.push(b);
@@ -4927,7 +4930,7 @@ function incidentsIn(bbox) {
   return p;
 }
 async function incidentsAlong(shape, from, upto, cum) {
-  const boxes = routeBoxes(shape, from, upto, cum).slice(0, 30);
+  const boxes = routeBoxes(shape, from, upto, cum).slice(0, 12);
   const lists = await Promise.all(boxes.map(b => incidentsIn(b).catch(() => [])));
   const seen = new Set(), out = [];
   for (const f of lists.flat()) {
@@ -5023,8 +5026,11 @@ async function previewJams() {
   const d = previewData, seq = ++previewJamSeq;
   if (!trafficReady() || !d || !d.routes || travelMode !== 'auto') return;
   const all = await Promise.all(d.routes.map(r => incidentsAlong(r.shape, 0, Infinity, null).then(inc => jamsOnRoute(r, inc)).catch(() => [])));
-  if (seq !== previewJamSeq || d !== previewData) return;
-  d.routes.forEach((r, i) => navJams.set(r, all[i]));
+  // Altijd bij de routes bewaren: ook als je intussen al bent gaan rijden, telt de file mee
+  d.routes.forEach((r, i) => { if (!navJams.has(r)) navJams.set(r, all[i]); });
+  if (state.nav && d.routes.includes(state.nav)) drawNavJams();
+  // Het overzicht alleen bijwerken als het nog openstaat met deze routes
+  if (seq !== previewJamSeq || d !== previewData || !previewNav) return;
   drawPreview();
   previewSummary(d.note, previewNav.time, previewNav.total);
 }
