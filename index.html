@@ -15,7 +15,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
-<link rel="stylesheet" href="style.css?v=118">
+<link rel="stylesheet" href="style.css?v=119">
 </head>
 <body>
 <div id="map"></div>
@@ -45,6 +45,9 @@
 
 <!-- Parkeren: melding bij aankomst of vertrek, boven het onderste kaartje -->
 <div class="ptoast" id="ptoast" hidden></div>
+<!-- Files: melding onderweg, en een label zolang je in de file staat -->
+<div class="ptoast jtoast" id="jtoast" hidden></div>
+<div class="injam" id="injam" hidden><i class="ti ti-car" aria-hidden="true"></i><span id="injamtxt"></span></div>
 
 <button class="recenter" id="recenter" hidden aria-label="Centreer op je positie"><i class="ti ti-current-location" aria-hidden="true"></i></button>
 
@@ -135,6 +138,8 @@
           <button type="button" role="menuitemradio" data-kind="satellite"><i class="ti ti-photo" aria-hidden="true"></i>Satelliet</button>
           <div class="mmsep" id="parksep" hidden></div>
           <button type="button" role="menuitem" id="parkmenu" hidden><span class="psq">P</span>Parkeervergunning<span class="cnt" id="parkcnt"></span></button>
+          <div class="mmsep" id="trafficsep" hidden></div>
+          <button type="button" role="menuitemcheckbox" id="trafficmenu" hidden><i class="ti ti-traffic-lights" aria-hidden="true"></i>Verkeer<span class="tsw" aria-hidden="true"></span></button>
           <div class="mmsep"></div>
           <button type="button" role="menuitem" id="backupmenu"><i class="ti ti-cloud-upload" aria-hidden="true"></i>Back-up</button>
           <div class="trailleg" id="trailleg" hidden>
@@ -149,6 +154,7 @@
         <button type="button" class="pmapedit" id="pmapedit" aria-label="Route aanpassen op de kaart"><i class="ti ti-arrows-maximize" aria-hidden="true"></i></button>
       </div>
       <div class="psumrow"><div class="psum" id="psum"></div><button type="button" class="pchip" id="pchip" hidden></button></div>
+      <button type="button" class="pjam" id="pjam" hidden></button>
       <div class="pbtns">
         <button type="button" class="roundbtn stopbig" id="stop" aria-label="Terug naar de kaart, route stoppen"><i class="ti ti-x" aria-hidden="true"></i></button>
         <button type="button" class="roundbtn addbig" id="qadd" aria-label="Adresregel toevoegen"><i class="ti ti-plus" aria-hidden="true"></i></button>
@@ -201,6 +207,6 @@
 </div>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-<script src="app.js?v=118"></script>
+<script src="app.js?v=119"></script>
 </body>
 </html>

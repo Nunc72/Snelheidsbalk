@@ -1,10 +1,19 @@
 'use strict';
 
-const VERSION = '118';
+const VERSION = '119';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
+// Verkeer (files): met een eigen sleutel van TomTom, zie het blok Verkeer verderop
+const TOMTOM_BUILTIN = '';
+const TOMTOM_KEY = (() => { try { return localStorage.getItem('tomtomKey') || ''; } catch (e) { return ''; } })() || TOMTOM_BUILTIN;
+const TT = 'https://api.tomtom.com/traffic';
+const JAM_SHOW = 180, JAM_CHANGE = 300, TAIL_M = 1000, TAIL_KMH = 70, TRAFFIC_EVERY = 2 * 60 * 1000;
+let trafficOn = true;
+try { trafficOn = localStorage.getItem('traffic') !== '0'; } catch (e) { /* geen opslag */ }
+const trafficReady = () => !!TOMTOM_KEY;
+const trafficMode = () => (state.nav ? state.nav.mode : travelMode) === 'auto';
 const STYLES = {
   light: 'https://tiles.openfreemap.org/styles/positron',
   dark: 'https://tiles.openfreemap.org/styles/dark',
@@ -838,8 +847,11 @@ function drawRouteEnds() {
 map.on('style.load', () => {
   addClosureLayer(map);
   addZoneLayers(map);
-  addRouteLayers(map, routeCoords); addRouteEnds(map); addConceptLayers(map);
-  scaleLines(map, { 'route-casing': 13, 'route-line': 8 });
+  addRouteLayers(map, routeCoords); addJamLayer(map, 8); addRouteEnds(map); addConceptLayers(map);
+  addTrafficLayers(map);
+  scaleLines(map, { 'route-casing': 13, 'route-line': 8, ...(trafficReady() ? { rjam: 8 } : {}) });
+  syncTraffic();
+  drawNavJams();
   if (msmap) { showMainLayers(false); addMsLayers(map); msDraw(); msTilt(true); }
 });
 
@@ -1191,6 +1203,7 @@ function setTravelMode(mode) {
   try { localStorage.setItem('travelMode', mode); } catch (e) { /* geen opslag */ }
   document.querySelectorAll('.modes button').forEach(b => b.setAttribute('aria-checked', String(b.dataset.mode === mode)));
   updateTrails(map);
+  syncTraffic();
 }
 
 // Laatst gekozen bestemmingen, per toestel bewaard
@@ -2753,7 +2766,7 @@ function drawAltTags() {
       leaf = d >= 0 ? `<span class="ecopct">${t}%</span><i class="ti ti-leaf" aria-label="${t}% zuiniger dan de snelste"></i>`
         : `<span class="ecopct worse">−${t}%</span><i class="ti ti-leaf worse" aria-label="${t}% minder zuinig dan de snelste"></i>`;
     }
-    el.innerHTML = leaf + fmtDuration(r.time);
+    el.innerHTML = leaf + fmtDuration(r.time + jamSec(jamsOf(r), 0, Infinity));
     el.addEventListener('click', e => { e.stopPropagation(); selectAlt(i); });
     const at = labelPoint(r, routes.filter(o => o !== r), previewTags.map(t => pmap.project(t.getLngLat())));
     previewTags.push(new maplibregl.Marker({ element: el }).setLngLat(at).addTo(pmap));
@@ -2767,6 +2780,7 @@ function drawPreview() {
   pmap.getSource('alts').setData({ type: 'FeatureCollection',
     features: (routes || []).map((r, i) => ({ ...lineFeature(r.shape), properties: { i } })).filter((_, i) => i !== sel) });
   pmap.getSource('ends').setData(stopPoints(pts));
+  if (pmap.getSource('rjam')) pmap.getSource('rjam').setData(previewNav ? jamFeatures(previewNav) : EMPTY_FC);
   const all = (routes || []).flatMap(r => r.shape);
   if (!all.length) all.push(...(coords.length ? coords : pts.map(p => [p.lon, p.lat])));
   pmap.resize();
@@ -2780,6 +2794,7 @@ function drawPreview() {
 
 function previewSummary(note, time, d) {
   const n = filled().length - 2;
+  time += previewJamLine();
   $('psum').textContent = (note ? note + ' · ' : '') + `${fmtDuration(time)} · ${fmtDist(d)} · ${MODE_LABEL[travelMode]}`
     + (n > 0 ? ` · ${n} ${n === 1 ? 'tussenstop' : 'tussenstops'}` : '');
   updateParkChip();
@@ -2810,6 +2825,7 @@ async function ensurePreviewMap() {
     // Kleine overzichtskaart: dunnere lijnen dan tijdens het rijden
     pmap.setPaintProperty('route-casing', 'line-width', 7);
     pmap.setPaintProperty('route-line', 'line-width', 4);
+    addJamLayer(pmap, 4);
     pmap.addSource('alts', { type: 'geojson', data: EMPTY_FC });
     pmap.addLayer({ id: 'alts-casing', type: 'line', source: 'alts', layout: { 'line-cap': 'round', 'line-join': 'round' },
       paint: { 'line-color': dark ? DARK_BG : '#ffffff', 'line-width': 6 } }, 'route-casing');
@@ -2898,6 +2914,7 @@ async function computePreview(note) {
     previewData = { coords: [], pts: pts.filter(Boolean), routes: null, sel: 0, note };
     drawPreview();
     $('psum').textContent = msg;
+    $('pjam').hidden = true;
     hideParkChip();
   };
   syncOk();
@@ -2931,6 +2948,7 @@ async function computePreview(note) {
     drawPreview();
     previewSummary(note, previewNav.time, previewNav.total);
     $('qok').disabled = false;
+    previewJams();
   } catch (e) {
     if (seq === previewSeq) noRoute('Route berekenen lukt niet: ' + e.message);
   }
@@ -3599,6 +3617,7 @@ function toggleMapMenu(open) {
   $('mapset').setAttribute('aria-expanded', String(open));
   $('mapmenu').querySelectorAll('button[data-kind]').forEach(b => b.setAttribute('aria-checked', String(b.dataset.kind === mapKind)));
   syncParkMenu();
+  syncTraffic();
   $('trailleg').hidden = !(open && travelMode === 'pedestrian');
   if (!$('trailleg').hidden) showTrailLegend();
 }
@@ -4602,6 +4621,9 @@ function syncParkMenu() {
 }
 $('parkmenu').addEventListener('click', e => { e.stopPropagation(); toggleMapMenu(false); openPermitSheet(); });
 $('pchip').addEventListener('click', openParkSheet);
+$('pjam').addEventListener('click', openJamList);
+$('trafficmenu').addEventListener('click', e => { e.stopPropagation(); setTrafficOn(!trafficOn); toggleMapMenu(false); });
+map.on('click', 'tinc', e => { lp.eatUntil = Date.now() + 400; incidentTap(e.features[0]); });
 
 // Gebied kiezen op de kaart: de pin staat vast in het midden, het vlak eronder kleurt blauw
 let zmap = null, zoneHit = null, zoneSeq = 0;
@@ -4780,6 +4802,404 @@ function segDist(p, a, b) {
   const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
   const u = l2 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / l2)) : 0;
   return Math.hypot(px - ax - u * dx, py - ay - u * dy);
+}
+
+// ---------- Verkeer: files en meldingen (TomTom) ----------
+// Op de kaart: langzaam (oranje), file (rood) en stilstand (donkerrood), met rondjes voor
+// ongevallen en werk. Op de route: de vertraging zit in de aankomsttijd, en onderweg één
+// melding per file, een waarschuwing vlak voor de staart en een label zolang je erin staat.
+// Zonder sleutel is dit er allemaal niet.
+const JAM_COLOR = { slow: '#F08C00', jam: '#E5484D', stop: '#9B1C1F' };
+const magColor = m => (m >= 3 ? JAM_COLOR.stop : m === 2 ? JAM_COLOR.jam : JAM_COLOR.slow);
+// Icoon per soort melding (zelfde nummers als bij TomTom)
+const INC_ICON = { 1: 'car-crash', 6: 'car', 7: 'traffic-cone', 8: 'road-off', 9: 'traffic-cone', 14: 'car' };
+const incIcon = c => INC_ICON[c] || 'alert-triangle';
+const incColor = c => (c === 7 || c === 9 ? JAM_COLOR.slow : c === 8 ? JAM_COLOR.stop : JAM_COLOR.jam);
+
+// Rondjes voor op de kaart, getekend met het icoon uit het lettertype van de knoppen
+async function incidentImages(m) {
+  try { await document.fonts.load('20px tabler-icons'); } catch (e) { /* dan zonder icoon */ }
+  const probe = document.createElement('i');
+  probe.style.cssText = 'position:absolute;visibility:hidden';
+  document.body.appendChild(probe);
+  for (const c of [0, 1, 6, 7, 8, 9]) {
+    const id = 'inc-' + c;
+    if (m.hasImage(id)) continue;
+    probe.className = 'ti ti-' + incIcon(c);
+    const ch = getComputedStyle(probe, '::before').content.replace(/^"|"$/g, '');
+    const s = 2, cv = document.createElement('canvas');
+    cv.width = cv.height = 30 * s;
+    const g = cv.getContext('2d');
+    g.scale(s, s);
+    g.fillStyle = '#fff';
+    g.beginPath(); g.arc(15, 15, 14, 0, Math.PI * 2); g.fill();
+    g.fillStyle = incColor(c);
+    g.beginPath(); g.arc(15, 15, 11.5, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#fff';
+    g.font = '15px tabler-icons';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    if (ch && ch !== 'none') g.fillText(ch, 15, 15.5);
+    if (!m.hasImage(id)) m.addImage(id, g.getImageData(0, 0, cv.width, cv.height), { pixelRatio: s });
+  }
+  probe.remove();
+}
+
+function addTrafficLayers(m) {
+  if (!trafficReady()) return;
+  const dark = theme() === 'dark';
+  m.addSource('tflow', { type: 'vector', maxzoom: 18,
+    tiles: [`${TT}/map/4/tile/flow/relative/{z}/{x}/{y}.pbf?key=${TOMTOM_KEY}&roadTypes=[0,1,2,3,4,5]&tags=[traffic_level,road_closure]`] });
+  m.addSource('tinc', { type: 'vector', maxzoom: 18,
+    tiles: [`${TT}/map/4/tile/incidents/{z}/{x}/{y}.pbf?key=${TOMTOM_KEY}&language=nl-NL&tags=[icon_category,description,delay,magnitude,id,end_date]`] });
+  const lvl = ['to-number', ['get', 'traffic_level'], 1];
+  m.addLayer({ id: 'tflow', type: 'line', source: 'tflow', 'source-layer': 'Traffic flow', minzoom: 6,
+    filter: ['<', lvl, 0.75],
+    layout: { 'line-cap': 'round', 'line-join': 'round', visibility: 'none' },
+    paint: { 'line-color': ['step', lvl, JAM_COLOR.stop, 0.15, JAM_COLOR.jam, 0.45, JAM_COLOR.slow],
+      'line-width': ['interpolate', ['linear'], ['zoom'], 6, 1.5, 10, 2.5, 14, 4, 17, 6], 'line-opacity': dark ? 0.85 : 0.9 } }, 'route-casing');
+  m.addLayer({ id: 'tinc', type: 'symbol', source: 'tinc', 'source-layer': 'Traffic incident POI', minzoom: 8,
+    filter: ['!', ['has', 'cluster_id']],
+    layout: { visibility: 'none', 'icon-image': ['match', ['get', 'icon_category'], [1, 6, 7, 8, 9], ['concat', 'inc-', ['to-string', ['get', 'icon_category']]], 'inc-0'],
+      'icon-size': ['interpolate', ['linear'], ['zoom'], 8, 0.7, 13, 1], 'icon-allow-overlap': true,
+      'symbol-sort-key': ['-', 0, ['coalesce', ['get', 'delay'], 0]] } });
+  incidentImages(m);
+}
+function syncTraffic() {
+  const vis = trafficReady() && trafficOn && trafficMode() ? 'visible' : 'none';
+  for (const id of ['tflow', 'tinc']) if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', vis);
+  const b = $('trafficmenu');
+  if (b) {
+    b.hidden = $('trafficsep').hidden = !trafficReady() || travelMode !== 'auto';
+    b.setAttribute('aria-checked', String(trafficOn));
+  }
+}
+function setTrafficOn(on) {
+  trafficOn = on;
+  try { localStorage.setItem('traffic', on ? '1' : '0'); } catch (e) { /* geen opslag */ }
+  syncTraffic();
+}
+
+// ---------- Meldingen langs de route ----------
+// TomTom geeft meldingen per vak van hooguit 10.000 km²: de route in stukken, elk stuk een vak
+const incMemo = new Map();
+function routeBoxes(shape, from = 0, upto = Infinity, cum = null) {
+  const boxes = [], pad = 0.02;
+  let b = null;
+  for (let i = 0; i < shape.length; i++) {
+    if (cum && (cum[i] < from - 2000 || cum[i] > upto)) continue;
+    const [lon, lat] = shape[i];
+    const nb = b ? [Math.min(b[0], lon), Math.min(b[1], lat), Math.max(b[2], lon), Math.max(b[3], lat)] : [lon, lat, lon, lat];
+    const area = ((nb[3] - nb[1] + 2 * pad) * 111) * ((nb[2] - nb[0] + 2 * pad) * 111 * Math.cos(rad(lat)));
+    if (b && area > 7000) { boxes.push(b); b = [lon, lat, lon, lat]; } else b = nb;
+  }
+  if (b) boxes.push(b);
+  return boxes.map(x => [x[0] - pad, x[1] - pad, x[2] + pad, x[3] + pad].map(v => v.toFixed(4)).join(','));
+}
+const INC_FIELDS = '{incidents{type,geometry{type,coordinates},properties{id,iconCategory,magnitudeOfDelay,events{description,code,iconCategory},startTime,endTime,from,to,length,delay,roadNumbers}}}';
+function incidentsIn(bbox) {
+  const hit = incMemo.get(bbox);
+  if (hit && Date.now() - hit.at < 90 * 1000) return hit.p;
+  const url = `${TT}/services/5/incidentDetails?key=${TOMTOM_KEY}&bbox=${bbox}&fields=${encodeURIComponent(INC_FIELDS)}&language=nl-NL&timeValidityFilter=present`;
+  const p = fetch(url).then(r => (r.ok ? r.json() : Promise.reject(new Error('TomTom ' + r.status)))).then(j => j.incidents || []);
+  p.catch(() => incMemo.delete(bbox));
+  if (incMemo.size > 60) incMemo.delete(incMemo.keys().next().value);
+  incMemo.set(bbox, { at: Date.now(), p });
+  return p;
+}
+async function incidentsAlong(shape, from, upto, cum) {
+  const boxes = routeBoxes(shape, from, upto, cum).slice(0, 24);
+  const lists = await Promise.all(boxes.map(b => incidentsIn(b).catch(() => [])));
+  const seen = new Set(), out = [];
+  for (const f of lists.flat()) {
+    const id = f.properties && f.properties.id;
+    if (!f.geometry || f.geometry.type !== 'LineString' || seen.has(id)) continue;
+    seen.add(id);
+    out.push(f);
+  }
+  return out;
+}
+
+// Welke meldingen liggen op deze route, in dezelfde rijrichting? Punten van de melding om de
+// 150 m; elk punt moet binnen 25 m van de route liggen en dezelfde kant op gaan.
+function routeGrid(r) {
+  if (r._grid) return r._grid;
+  const g = new Map(), C = 0.01;
+  for (let i = 0; i < r.shape.length - 1; i++) {
+    const [a, b] = [r.shape[i], r.shape[i + 1]];
+    for (let x = Math.floor(Math.min(a[0], b[0]) / C); x <= Math.floor(Math.max(a[0], b[0]) / C); x++)
+      for (let y = Math.floor(Math.min(a[1], b[1]) / C); y <= Math.floor(Math.max(a[1], b[1]) / C); y++) {
+        const k = x + ',' + y;
+        if (!g.has(k)) g.set(k, []);
+        g.get(k).push(i);
+      }
+  }
+  Object.defineProperty(r, '_grid', { value: g, enumerable: false, configurable: true });
+  return g;
+}
+function onRoute(r, p, dir) {
+  const g = routeGrid(r), C = 0.01, x = Math.floor(p[0] / C), y = Math.floor(p[1] / C);
+  let best = null;
+  for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+    for (const i of g.get((x + dx) + ',' + (y + dy)) || []) {
+      const q = projectOnSegment(p, r.shape[i], r.shape[i + 1]);
+      if (q.d > 25 || (best && q.d >= best.d)) continue;
+      let diff = Math.abs(bearing(r.shape[i], r.shape[i + 1]) - dir) % 360;
+      if (diff > 180) diff = 360 - diff;
+      if (diff < 50) best = { d: q.d, at: r.cum[i] + dist(r.shape[i], q.pt) };
+    }
+  }
+  return best;
+}
+function resample(line, step = 150) {
+  const out = [];
+  for (let i = 0; i < line.length - 1; i++) {
+    const a = line[i], b = line[i + 1], len = dist(a, b), dir = bearing(a, b);
+    const k = Math.max(1, Math.ceil(len / step));
+    for (let j = 0; j < k; j++) out.push({ p: [a[0] + (b[0] - a[0]) * j / k, a[1] + (b[1] - a[1]) * j / k], dir });
+  }
+  if (line.length > 1) out.push({ p: line[line.length - 1], dir: bearing(line[line.length - 2], line[line.length - 1]) });
+  return out;
+}
+function jamsOnRoute(r, incidents) {
+  const jams = [];
+  for (const f of incidents) {
+    const pr = f.properties || {};
+    if (!pr.delay && pr.iconCategory !== 8) continue;
+    const hits = resample(f.geometry.coordinates).map(s => onRoute(r, s.p, s.dir));
+    const ok = hits.filter(Boolean);
+    if (ok.length < Math.max(2, hits.length * 0.6)) continue;
+    const a = Math.min(...ok.map(h => h.at)), b = Math.max(...ok.map(h => h.at));
+    if (b - a < 100) continue;
+    const ev = (pr.events || [])[0] || {};
+    jams.push({ id: pr.id, a, b, delay: pr.delay || 0, mag: pr.magnitudeOfDelay || 0, cat: pr.iconCategory, desc: ev.description || '',
+      from: pr.from || '', to: pr.to || '', len: pr.length || b - a, roads: pr.roadNumbers || [], start: pr.startTime, end: pr.endTime });
+  }
+  return jams.sort((x, y) => x.a - y.a);
+}
+// Vertraging tussen twee plekken op de route (een file waar je al in staat telt naar rato)
+function jamSec(jams, from, upto) {
+  let s = 0;
+  for (const j of jams || []) {
+    if (j.b <= from || j.a >= upto) continue;
+    const f = (Math.min(j.b, upto) - Math.max(j.a, from)) / ((j.b - j.a) || 1);
+    s += j.delay * f;
+  }
+  return s;
+}
+const navJams = new WeakMap();
+const jamsOf = n => navJams.get(n) || null;
+const jamText = j => (j.roads.length ? ' op de ' + j.roads[0] : '');
+const minText = s => Math.max(1, Math.round(s / 60)) + ' min';
+
+// Overzicht: files op alle getoonde routes, de vertraging in de reistijd en de labels
+let previewJamSeq = 0;
+async function previewJams() {
+  const d = previewData, seq = ++previewJamSeq;
+  if (!trafficReady() || !d || !d.routes || travelMode !== 'auto') return;
+  const all = await Promise.all(d.routes.map(r => incidentsAlong(r.shape, 0, Infinity, null).then(inc => jamsOnRoute(r, inc)).catch(() => [])));
+  if (seq !== previewJamSeq || d !== previewData) return;
+  d.routes.forEach((r, i) => navJams.set(r, all[i]));
+  drawPreview();
+  previewSummary(d.note, previewNav.time, previewNav.total);
+}
+function jamFeatures(n, from = 0) {
+  const out = [];
+  for (const j of jamsOf(n) || []) {
+    if (j.b <= from || (j.delay < 60 && j.cat !== 8)) continue;
+    const pts = [];
+    for (let i = 0; i < n.shape.length; i++) if (n.cum[i] >= Math.max(j.a, from) && n.cum[i] <= j.b) pts.push(n.shape[i]);
+    if (pts.length < 2) continue;
+    out.push({ ...lineFeature(pts), properties: { c: magColor(j.mag) } });
+  }
+  return { type: 'FeatureCollection', features: out };
+}
+function addJamLayer(m, w) {
+  if (!trafficReady()) return;
+  m.addSource('rjam', { type: 'geojson', data: EMPTY_FC });
+  m.addLayer({ id: 'rjam', type: 'line', source: 'rjam', layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: { 'line-color': ['get', 'c'], 'line-width': w } });
+}
+function previewJamLine() {
+  const el = $('pjam'), n = previewNav, jams = n && jamsOf(n);
+  const s = jams ? jamSec(jams, 0, Infinity) : 0;
+  el.hidden = s < 60;
+  if (el.hidden) return 0;
+  const worst = jams.reduce((a, j) => (j.delay > a.delay ? j : a));
+  el.innerHTML = '<span class="fsq sm"><i class="ti ti-car" aria-hidden="true"></i></span><span></span>';
+  el.lastChild.textContent = `incl. ${minText(s)} file` + jamText(worst);
+  return s;
+}
+
+// Detailblad van één file
+function openJamSheet(j) {
+  const where = [j.from, j.to].filter(Boolean).join(' – ');
+  const body = parkSheetShell(j.roads.length ? `File ${j.roads[0]}` : 'File', where || j.desc,
+    `<span class="fsq big" style="background:${incColor(j.cat)}"><i class="ti ti-${incIcon(j.cat)}" aria-hidden="true"></i></span>`);
+  const clock = t => (t ? fmtClock(new Date(t)) : '');
+  const rows = [['Wat', j.desc], ['Sinds', clock(j.start)], ['Verwacht weg', j.end && new Date(j.end) > new Date() ? 'ca. ' + clock(j.end) : '']]
+    .filter(r => r[1]);
+  body.innerHTML = `<div class="jbig"><div class="v"></div><div class="s"></div></div><ul class="vlist jrows"></ul><div class="psrc"></div>`;
+  body.querySelector('.v').textContent = j.delay ? '+' + minText(j.delay) : j.cat === 8 ? 'Weg dicht' : 'Langzaam';
+  body.querySelector('.s').textContent = fmtDist(j.len);
+  for (const [k, v] of rows) {
+    const li = document.createElement('li');
+    li.innerHTML = '<span class="k"></span><span class="v2"></span>';
+    li.firstChild.textContent = k;
+    li.lastChild.textContent = v;
+    body.querySelector('.jrows').appendChild(li);
+  }
+  body.querySelector('.psrc').textContent = 'Bron: TomTom · ' + fmtClock(new Date());
+}
+function openJamList() {
+  const jams = (jamsOf(previewNav) || []).filter(j => j.delay >= 60);
+  if (jams.length === 1) { openJamSheet(jams[0]); return; }
+  const body = parkSheetShell('Files op je route', `${jams.length} files`, '<span class="fsq big"><i class="ti ti-car" aria-hidden="true"></i></span>');
+  const ul = document.createElement('ul');
+  ul.className = 'vlist jlist';
+  for (const j of jams) {
+    const li = document.createElement('li');
+    li.innerHTML = '<button type="button"><span class="k"></span><span class="v2"></span></button>';
+    li.querySelector('.k').textContent = (j.roads[0] ? j.roads[0] + ' · ' : '') + ([j.from, j.to].filter(Boolean).join(' – ') || j.desc);
+    li.querySelector('.v2').textContent = '+' + minText(j.delay);
+    li.querySelector('button').addEventListener('click', () => openJamSheet(j));
+    ul.appendChild(li);
+  }
+  body.appendChild(ul);
+}
+
+// Tik op een rondje op de kaart: de details van die melding
+async function incidentTap(f) {
+  const pr = f.properties || {};
+  let j = { id: pr.id, delay: pr.delay || 0, mag: pr.magnitude || 0, cat: pr.icon_category, desc: pr.description || '', from: '', to: '',
+    len: 0, roads: [], end: pr.end_date };
+  openJamSheet(j);
+  if (!pr.id) return;
+  try {
+    const r = await fetch(`${TT}/services/5/incidentDetails?key=${TOMTOM_KEY}&ids=${encodeURIComponent(pr.id)}&fields=${encodeURIComponent(INC_FIELDS)}&language=nl-NL`);
+    const g = r.ok && (await r.json()).incidents[0];
+    if (!g || !document.querySelector('.psheet')) return;
+    const q = g.properties, ev = (q.events || [])[0] || {};
+    j = { ...j, from: q.from || '', to: q.to || '', len: q.length || 0, roads: q.roadNumbers || [], start: q.startTime, end: q.endTime, desc: ev.description || j.desc };
+    openJamSheet(j);
+  } catch (e) { /* dan blijft het korte blad staan */ }
+}
+
+// ---------- Onderweg ----------
+const tr = { nav: null, at: 0, busy: false, told: new Map(), tail: new Set(), lastToast: 0, beep: null };
+async function refreshNavJams(n) {
+  if (tr.busy || !trafficReady() || n.mode !== 'auto') return;
+  tr.busy = true;
+  tr.at = Date.now();
+  try {
+    const inc = await incidentsAlong(n.shape, n.along, n.along + 150000, n.cum);
+    if (state.nav !== n) return;
+    const old = jamsOf(n) || [];
+    const jams = jamsOnRoute(n, inc);
+    navJams.set(n, jams);
+    // Opgelost terwijl hij nog voor je lag
+    for (const [id, delay] of tr.told) {
+      const was = old.find(j => j.id === id);
+      if (was && was.a > n.along && !jams.some(j => j.id === id) && delay >= JAM_CHANGE) {
+        tr.told.delete(id);
+        jamToast({ title: 'File opgelost', sub: `${minText(delay)} eerder` + jamText(was), cls: 'good' });
+      }
+    }
+    drawNavJams();
+  } catch (e) { /* volgende keer opnieuw */ } finally { tr.busy = false; }
+}
+function drawNavJams() {
+  const src = map.getSource('rjam');
+  if (src) src.setData(state.nav ? jamFeatures(state.nav, state.nav.along) : EMPTY_FC);
+}
+function jamToast({ title, sub, cls = '', icon = 'car', ttl = 8000 }) {
+  const el = $('jtoast');
+  clearTimeout(tr.toastTimer);
+  el.className = 'ptoast jtoast ' + cls;
+  el.innerHTML = `<span class="fsq big"><i class="ti ti-${icon}" aria-hidden="true"></i></span><div class="pt"><div class="tt"></div><div class="ts"></div></div>`
+    + '<button type="button" class="px" aria-label="Melding sluiten"><i class="ti ti-x" aria-hidden="true"></i></button>';
+  el.querySelector('.tt').textContent = title;
+  el.querySelector('.ts').textContent = sub;
+  el.querySelector('.px').addEventListener('click', hideJamToast);
+  el.hidden = false;
+  tr.lastToast = Date.now();
+  tr.toastTimer = setTimeout(hideJamToast, ttl);
+}
+function hideJamToast() { clearTimeout(tr.toastTimer); $('jtoast').hidden = true; }
+// Kort, duidelijk geluid (twee tonen) voor de waarschuwing vlak voor de file
+function beep() {
+  try {
+    const ac = tr.beep || (tr.beep = new (window.AudioContext || window.webkitAudioContext)());
+    if (ac.state === 'suspended') ac.resume();
+    [0, 0.18].forEach((t, i) => {
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.frequency.value = i ? 660 : 880;
+      g.gain.setValueAtTime(0.0001, ac.currentTime + t);
+      g.gain.exponentialRampToValueAtTime(0.35, ac.currentTime + t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + t + 0.16);
+      o.connect(g).connect(ac.destination);
+      o.start(ac.currentTime + t);
+      o.stop(ac.currentTime + t + 0.17);
+    });
+  } catch (e) { /* geen geluid */ }
+}
+// Het geluid mag pas na een tik van jezelf (iOS): bij de eerste tik alvast klaarzetten
+document.addEventListener('pointerdown', () => {
+  if (tr.beep) return;
+  try { tr.beep = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { /* geen geluid */ }
+}, { once: true });
+
+function trafficTick(n) {
+  if (!trafficReady() || n.mode !== 'auto') { $('injam').hidden = true; return; }
+  if (tr.nav !== n) {
+    // Nieuwe route (of opnieuw berekend): meldingen die al gedaan zijn blijven gedaan
+    tr.nav = n;
+    if (!jamsOf(n)) tr.at = 0;
+  }
+  if (!tr.busy && Date.now() - tr.at > TRAFFIC_EVERY) refreshNavJams(n);
+  const jams = jamsOf(n) || [];
+  const here = n.along;
+  // In de file: hoe ver nog en ongeveer hoe lang
+  const inside = jams.find(j => j.a <= here && here < j.b && j.delay >= 60);
+  $('injam').hidden = !inside;
+  // In de file: de waarschuwing heeft zijn werk gedaan
+  if (inside && !$('jtoast').hidden && $('jtoast').classList.contains('warn')) hideJamToast();
+  if (inside) {
+    const left = inside.b - here, f = left / ((inside.b - inside.a) || 1);
+    $('injamtxt').textContent = `In de file · nog ${fmtDist(left)} · ±${minText(inside.delay * f + left / 25)}`;
+  }
+  const ahead = jams.filter(j => j.a > here);
+  // Vlak voor de staart, en je rijdt nog hard: waarschuwen (met geluid)
+  const kmh = state.fix && state.fix.speed != null ? state.fix.speed * 3.6 : 0;
+  const near = ahead.find(j => j.a - here <= TAIL_M && (j.delay >= 60 || j.mag >= 2));
+  if (near && !tr.tail.has(near.id) && kmh > TAIL_KMH) {
+    tr.tail.add(near.id);
+    tr.told.set(near.id, near.delay);
+    const m = Math.max(100, Math.round((near.a - here) / 100) * 100);
+    jamToast({ title: 'Langzaam verkeer', sub: 'over ' + fmtDist(m), cls: 'warn', icon: 'alert-triangle', ttl: 10000 });
+    beep();
+    drawNavJams();
+    return;
+  }
+  if (Date.now() - tr.lastToast < 30000) return;
+  // Eén melding per file van 3 min of meer; opnieuw als de vertraging 5 min of meer verandert
+  for (const j of ahead) {
+    if (j.delay < JAM_SHOW) continue;
+    const was = tr.told.get(j.id);
+    if (was === undefined) {
+      tr.told.set(j.id, j.delay);
+      jamToast({ title: `File over ${fmtDist(Math.round((j.a - here) / 100) * 100)}`,
+        sub: [fmtDist(j.len), '+' + minText(j.delay), j.desc].filter(Boolean).join(' · ') });
+      break;
+    }
+    if (Math.abs(j.delay - was) >= JAM_CHANGE) {
+      tr.told.set(j.id, j.delay);
+      jamToast({ title: j.delay > was ? `File langer: nu +${minText(j.delay)}` : `File korter: nu +${minText(j.delay)}`,
+        sub: `Over ${fmtDist(Math.round((j.a - here) / 100) * 100)}` + jamText(j) });
+      break;
+    }
+  }
+  if (Date.now() - (tr.drawn || 0) > 15000) { tr.drawn = Date.now(); drawNavJams(); }
 }
 
 // ---------- Route (Valhalla) ----------
@@ -5136,6 +5556,9 @@ async function reroute() {
 // stay: de kaart blijft waar hij is (en wordt plat), in plaats van terug naar je positie
 function stopRoute(stay = false) {
   state.nav = null;
+  $('injam').hidden = true;
+  hideJamToast();
+  drawNavJams();
   state.navStart = null;
   drawRouteEnds();
   state.dest = null;
@@ -5219,7 +5642,7 @@ function legTitle(n, k) {
   const s = (n.legStops && n.legStops[k]) || state.dest || { name: '' };
   return (k < n.legs.length - 1 ? 'Tussenstop · ' : 'Bestemming · ') + withoutPostcode(s.name);
 }
-function fillCard(card, n, k, legSec, totalSec, totalM, title) {
+function fillCard(card, n, k, legSec, totalSec, totalM, title, extra = 0) {
   // Naam afkappen, de tijd tot de stop blijft altijd zichtbaar
   const lbl = card.querySelector('.destlbl');
   const t = document.createElement('span');
@@ -5233,8 +5656,16 @@ function fillCard(card, n, k, legSec, totalSec, totalM, title) {
     sp.textContent = ' · ' + fmtDuration(legSec);
     lbl.appendChild(sp);
   }
-  card.querySelector('.eta').textContent = fmtClock(new Date(Date.now() + totalSec * 1000));
-  card.querySelector('.min').textContent = fmtDuration(totalSec);
+  // Vertraging door files: in de aankomsttijd, met in rood hoeveel minuten dat scheelt
+  const eta = card.querySelector('.eta');
+  eta.textContent = fmtClock(new Date(Date.now() + (totalSec + extra) * 1000));
+  if (extra >= 60) {
+    const late = document.createElement('span');
+    late.className = 'late';
+    late.textContent = '+' + Math.round(extra / 60);
+    eta.appendChild(late);
+  }
+  card.querySelector('.min').textContent = fmtDuration(totalSec + extra);
   card.querySelector('.mid .lbl').textContent = fmtDist(totalM);
 }
 
@@ -5247,16 +5678,16 @@ const viewCount = n => n.legs.length - n.legIdx;  // aantal stop-kaartjes na het
 // Kaartje v: 0 = live (tijd naar de eerstvolgende stop, totale reistijd),
 // v >= 1 = stop: lichtgrijs de etappe zelf, groot de aankomst bij die stop
 function fillView(card, n, v) {
-  const c = n.cur;
+  const c = n.cur, J = jamsOf(n), here = n.along || 0;
   // Gestippelde route: het eerste kaartje is het vertrekpunt, waar de kaart dan staat
   if (!v && state.concept && !state.nav) {
-    fillCard(card, n, 0, 0, c.totalSec, c.totalM, 'Vertrek · ' + withoutPostcode(shortName(state.concept.stops[0])));
+    fillCard(card, n, 0, 0, c.totalSec, c.totalM, 'Vertrek · ' + withoutPostcode(shortName(state.concept.stops[0])), jamSec(J, 0, Infinity));
     return;
   }
-  if (!v) { fillCard(card, n, n.legIdx, c.legSec, c.totalSec, c.totalM); return; }
+  if (!v) { fillCard(card, n, n.legIdx, c.legSec, c.totalSec, c.totalM, undefined, jamSec(J, here, Infinity)); return; }
   const j = n.legIdx + v - 1;
   const until = c.legSec + n.legs.slice(n.legIdx + 1, j + 1).reduce((t, l) => t + l.time, 0);
-  fillCard(card, n, j, j === n.legIdx ? c.legSec : n.legs[j].time, until, Math.max(0, n.legs[j].end - n.along));
+  fillCard(card, n, j, j === n.legIdx ? c.legSec : n.legs[j].time, until, Math.max(0, n.legs[j].end - here), undefined, jamSec(J, here, n.legs[j].end));
 }
 
 function renderCards() {
@@ -5602,8 +6033,10 @@ function updateNav(p) {
   const totalSec = legSec + n.legs.slice(n.legIdx + 1).reduce((s, l) => s + l.time, 0);
   const remaining = Math.max(0, n.total - n.along);
   renderLegs(n, legSec, totalSec, remaining);
+  trafficTick(n);
 
   if (remaining < 30) {
+    $('injam').hidden = true;
     $('instr-icon').className = 'ti ti-flag';
     $('instr-title').textContent = 'Je bent er';
     setInstrSub(state.dest ? state.dest.name : '');
@@ -5670,7 +6103,7 @@ if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catc
 // en de sleutel waarmee alles op de telefoon versleuteld wordt: de server ziet alleen onleesbare tekst.
 const BACKUP_URL = 'https://verlocidad-backup.verlocidad.workers.dev';
 const BACKUP_KEYS = ['bookmarks1', 'favorites', 'listTab', 'mapKind', 'nearCat', 'parkNoPermit', 'parkPermits', 'pins',
-  'recent', 'routes', 'savedRoutes', 'trailOff2', 'travelMode', 'walks'];
+  'recent', 'routes', 'savedRoutes', 'traffic', 'trailOff2', 'travelMode', 'walks'];
 const store = {
   get: k => { try { return localStorage.getItem(k); } catch (e) { return null; } },
   set: (k, v) => { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* geen opslag */ } },
