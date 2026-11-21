@@ -1,18 +1,17 @@
 'use strict';
 
-const VERSION = '120';
+const VERSION = '121';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
-// Verkeer (files): met een eigen sleutel van TomTom, zie het blok Verkeer verderop
-const TOMTOM_BUILTIN = '2FkDvmHSSMe4WMytP4Ik98x7PXCNbg9I';
-const TOMTOM_KEY = (() => { try { return localStorage.getItem('tomtomKey') || ''; } catch (e) { return ''; } })() || TOMTOM_BUILTIN;
-const TT = 'https://api.tomtom.com/traffic';
+// Verkeer (files) van TomTom, via onze eigen worker: daar staat de sleutel, niet in de app.
+// Zie het blok Verkeer verderop.
+const TT = 'https://verlocidad-backup.verlocidad.workers.dev/tt';
 const JAM_SHOW = 180, JAM_CHANGE = 300, TAIL_M = 1000, TAIL_KMH = 70, TRAFFIC_EVERY = 2 * 60 * 1000;
 let trafficOn = true;
 try { trafficOn = localStorage.getItem('traffic') !== '0'; } catch (e) { /* geen opslag */ }
-const trafficReady = () => !!TOMTOM_KEY;
+const trafficReady = () => true;
 const trafficMode = () => (state.nav ? state.nav.mode : travelMode) === 'auto';
 const STYLES = {
   light: 'https://tiles.openfreemap.org/styles/positron',
@@ -4808,7 +4807,7 @@ function segDist(p, a, b) {
 // Op de kaart: langzaam (oranje), file (rood) en stilstand (donkerrood), met rondjes voor
 // ongevallen en werk. Op de route: de vertraging zit in de aankomsttijd, en onderweg één
 // melding per file, een waarschuwing vlak voor de staart en een label zolang je erin staat.
-// Zonder sleutel is dit er allemaal niet.
+// De sleutel van TomTom staat in de worker (backup/worker.js), niet hier.
 const JAM_COLOR = { slow: '#F08C00', jam: '#E5484D', stop: '#9B1C1F' };
 const magColor = m => (m >= 3 ? JAM_COLOR.stop : m === 2 ? JAM_COLOR.jam : JAM_COLOR.slow);
 // Icoon per soort melding (zelfde nummers als bij TomTom)
@@ -4850,9 +4849,9 @@ function addTrafficLayers(m) {
   if (!trafficReady()) return;
   const dark = theme() === 'dark';
   m.addSource('tflow', { type: 'vector', maxzoom: 18,
-    tiles: [`${TT}/map/4/tile/flow/relative/{z}/{x}/{y}.pbf?key=${TOMTOM_KEY}&roadTypes=[0,1,2,3,4,5]&tags=[traffic_level,road_closure]`] });
+    tiles: [`${TT}/map/4/tile/flow/relative/{z}/{x}/{y}.pbf?roadTypes=[0,1,2,3,4,5]&tags=[traffic_level,road_closure]`] });
   m.addSource('tinc', { type: 'vector', maxzoom: 18,
-    tiles: [`${TT}/map/4/tile/incidents/{z}/{x}/{y}.pbf?key=${TOMTOM_KEY}&language=nl-NL&tags=[icon_category,description,delay,magnitude,id,end_date]`] });
+    tiles: [`${TT}/map/4/tile/incidents/{z}/{x}/{y}.pbf?language=nl-NL&tags=[icon_category,description,delay,magnitude,id,end_date]`] });
   const lvl = ['to-number', ['get', 'traffic_level'], 1];
   // Soort melding: bij één melding heet het veld icon_category_0
   const incCat = ['to-number', ['coalesce', ['get', 'icon_category'], ['get', 'icon_category_0'], 0]];
@@ -4905,7 +4904,7 @@ const INC_FIELDS = '{incidents{type,geometry{type,coordinates},properties{id,ico
 function incidentsIn(bbox) {
   const hit = incMemo.get(bbox);
   if (hit && Date.now() - hit.at < 90 * 1000) return hit.p;
-  const url = `${TT}/services/5/incidentDetails?key=${TOMTOM_KEY}&bbox=${bbox}&fields=${encodeURIComponent(INC_FIELDS)}&language=nl-NL&timeValidityFilter=present`;
+  const url = `${TT}/services/5/incidentDetails?bbox=${bbox}&fields=${encodeURIComponent(INC_FIELDS)}&language=nl-NL&timeValidityFilter=present`;
   const p = fetch(url).then(r => (r.ok ? r.json() : Promise.reject(new Error('TomTom ' + r.status)))).then(j => j.incidents || []);
   p.catch(() => incMemo.delete(bbox));
   if (incMemo.size > 60) incMemo.delete(incMemo.keys().next().value);
@@ -4980,7 +4979,13 @@ function jamsOnRoute(r, incidents) {
     jams.push({ id: pr.id, a, b, delay: pr.delay || 0, mag: pr.magnitudeOfDelay || 0, cat: pr.iconCategory, desc: ev.description || '',
       from: pr.from || '', to: pr.to || '', len: pr.length || b - a, roads: pr.roadNumbers || [], start: pr.startTime, end: pr.endTime });
   }
-  return jams.sort((x, y) => x.a - y.a);
+  // Dezelfde file soms twee keer gemeld: bij meer dan de helft overlap alleen de grootste
+  const kept = [];
+  for (const j of jams.sort((x, y) => y.delay - x.delay)) {
+    const dup = kept.some(k => Math.min(k.b, j.b) - Math.max(k.a, j.a) > 0.5 * Math.min(k.b - k.a, j.b - j.a));
+    if (!dup) kept.push(j);
+  }
+  return kept.sort((x, y) => x.a - y.a);
 }
 // Vertraging tussen twee plekken op de route (een file waar je al in staat telt naar rato)
 function jamSec(jams, from, upto) {
@@ -5092,7 +5097,7 @@ async function incidentTap(f) {
   openJamSheet(j);
   if (!pr.id) return;
   try {
-    const r = await fetch(`${TT}/services/5/incidentDetails?key=${TOMTOM_KEY}&ids=${encodeURIComponent(pr.id)}&fields=${encodeURIComponent(INC_FIELDS)}&language=nl-NL`);
+    const r = await fetch(`${TT}/services/5/incidentDetails?ids=${encodeURIComponent(pr.id)}&fields=${encodeURIComponent(INC_FIELDS)}&language=nl-NL`);
     const g = r.ok && (await r.json()).incidents[0];
     if (!g || !document.querySelector('.psheet')) return;
     const q = g.properties, ev = (q.events || [])[0] || {};
