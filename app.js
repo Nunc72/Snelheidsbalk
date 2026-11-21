@@ -1,12 +1,12 @@
 'use strict';
 
-const VERSION = '119';
+const VERSION = '120';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
 const PHOTON = 'https://photon.komoot.io/api/';
 // Verkeer (files): met een eigen sleutel van TomTom, zie het blok Verkeer verderop
-const TOMTOM_BUILTIN = '';
+const TOMTOM_BUILTIN = '2FkDvmHSSMe4WMytP4Ik98x7PXCNbg9I';
 const TOMTOM_KEY = (() => { try { return localStorage.getItem('tomtomKey') || ''; } catch (e) { return ''; } })() || TOMTOM_BUILTIN;
 const TT = 'https://api.tomtom.com/traffic';
 const JAM_SHOW = 180, JAM_CHANGE = 300, TAIL_M = 1000, TAIL_KMH = 70, TRAFFIC_EVERY = 2 * 60 * 1000;
@@ -4814,6 +4814,7 @@ const magColor = m => (m >= 3 ? JAM_COLOR.stop : m === 2 ? JAM_COLOR.jam : JAM_C
 // Icoon per soort melding (zelfde nummers als bij TomTom)
 const INC_ICON = { 1: 'car-crash', 6: 'car', 7: 'traffic-cone', 8: 'road-off', 9: 'traffic-cone', 14: 'car' };
 const incIcon = c => INC_ICON[c] || 'alert-triangle';
+const INC_NAME = { 1: 'Ongeval', 6: 'File', 7: 'Rijstrook dicht', 8: 'Weg dicht', 9: 'Werkzaamheden', 14: 'Pechgeval' };
 const incColor = c => (c === 7 || c === 9 ? JAM_COLOR.slow : c === 8 ? JAM_COLOR.stop : JAM_COLOR.jam);
 
 // Rondjes voor op de kaart, getekend met het icoon uit het lettertype van de knoppen
@@ -4853,14 +4854,17 @@ function addTrafficLayers(m) {
   m.addSource('tinc', { type: 'vector', maxzoom: 18,
     tiles: [`${TT}/map/4/tile/incidents/{z}/{x}/{y}.pbf?key=${TOMTOM_KEY}&language=nl-NL&tags=[icon_category,description,delay,magnitude,id,end_date]`] });
   const lvl = ['to-number', ['get', 'traffic_level'], 1];
+  // Soort melding: bij één melding heet het veld icon_category_0
+  const incCat = ['to-number', ['coalesce', ['get', 'icon_category'], ['get', 'icon_category_0'], 0]];
   m.addLayer({ id: 'tflow', type: 'line', source: 'tflow', 'source-layer': 'Traffic flow', minzoom: 6,
     filter: ['<', lvl, 0.75],
     layout: { 'line-cap': 'round', 'line-join': 'round', visibility: 'none' },
     paint: { 'line-color': ['step', lvl, JAM_COLOR.stop, 0.15, JAM_COLOR.jam, 0.45, JAM_COLOR.slow],
       'line-width': ['interpolate', ['linear'], ['zoom'], 6, 1.5, 10, 2.5, 14, 4, 17, 6], 'line-opacity': dark ? 0.85 : 0.9 } }, 'route-casing');
   m.addLayer({ id: 'tinc', type: 'symbol', source: 'tinc', 'source-layer': 'Traffic incident POI', minzoom: 8,
-    filter: ['!', ['has', 'cluster_id']],
-    layout: { visibility: 'none', 'icon-image': ['match', ['get', 'icon_category'], [1, 6, 7, 8, 9], ['concat', 'inc-', ['to-string', ['get', 'icon_category']]], 'inc-0'],
+    // Alleen het begin van een melding (TomTom zet er ook een rondje aan het eind)
+    filter: ['all', ['!', ['has', 'cluster_id']], ['!=', ['get', 'poi_type'], 'end_poi']],
+    layout: { visibility: 'none', 'icon-image': ['match', incCat, [1, 6, 7, 8, 9], ['concat', 'inc-', ['to-string', incCat]], 'inc-0'],
       'icon-size': ['interpolate', ['linear'], ['zoom'], 8, 0.7, 13, 1], 'icon-allow-overlap': true,
       'symbol-sort-key': ['-', 0, ['coalesce', ['get', 'delay'], 0]] } });
   incidentImages(m);
@@ -4881,17 +4885,18 @@ function setTrafficOn(on) {
 }
 
 // ---------- Meldingen langs de route ----------
-// TomTom geeft meldingen per vak van hooguit 10.000 km²: de route in stukken, elk stuk een vak
+// TomTom geeft meldingen per vak. Grote vakken zijn zwaar (honderden kleine stadsfiles), dus
+// smalle vakken langs de route: een nieuw vak elke 20 km, met zo'n 1 km ruimte eromheen.
 const incMemo = new Map();
 function routeBoxes(shape, from = 0, upto = Infinity, cum = null) {
-  const boxes = [], pad = 0.02;
-  let b = null;
+  const boxes = [], pad = 0.01;
+  let b = null, run = 0;
   for (let i = 0; i < shape.length; i++) {
     if (cum && (cum[i] < from - 2000 || cum[i] > upto)) continue;
     const [lon, lat] = shape[i];
-    const nb = b ? [Math.min(b[0], lon), Math.min(b[1], lat), Math.max(b[2], lon), Math.max(b[3], lat)] : [lon, lat, lon, lat];
-    const area = ((nb[3] - nb[1] + 2 * pad) * 111) * ((nb[2] - nb[0] + 2 * pad) * 111 * Math.cos(rad(lat)));
-    if (b && area > 7000) { boxes.push(b); b = [lon, lat, lon, lat]; } else b = nb;
+    if (b && i) run += dist(shape[i - 1], shape[i]);
+    if (b && run > 20000) { boxes.push(b); b = null; run = 0; }
+    b = b ? [Math.min(b[0], lon), Math.min(b[1], lat), Math.max(b[2], lon), Math.max(b[3], lat)] : [lon, lat, lon, lat];
   }
   if (b) boxes.push(b);
   return boxes.map(x => [x[0] - pad, x[1] - pad, x[2] + pad, x[3] + pad].map(v => v.toFixed(4)).join(','));
@@ -4908,7 +4913,7 @@ function incidentsIn(bbox) {
   return p;
 }
 async function incidentsAlong(shape, from, upto, cum) {
-  const boxes = routeBoxes(shape, from, upto, cum).slice(0, 24);
+  const boxes = routeBoxes(shape, from, upto, cum).slice(0, 30);
   const lists = await Promise.all(boxes.map(b => incidentsIn(b).catch(() => [])));
   const seen = new Set(), out = [];
   for (const f of lists.flat()) {
@@ -5034,14 +5039,25 @@ function previewJamLine() {
 // Detailblad van één file
 function openJamSheet(j) {
   const where = [j.from, j.to].filter(Boolean).join(' – ');
-  const body = parkSheetShell(j.roads.length ? `File ${j.roads[0]}` : 'File', where || j.desc,
+  const name = INC_NAME[j.cat] || 'Melding';
+  const body = parkSheetShell(j.roads.length ? `${name} ${j.roads[0]}` : name, where || j.desc,
     `<span class="fsq big" style="background:${incColor(j.cat)}"><i class="ti ti-${incIcon(j.cat)}" aria-hidden="true"></i></span>`);
-  const clock = t => (t ? fmtClock(new Date(t)) : '');
+  // Tijd met de dag erbij als het niet vandaag is: 'gisteren 22:26', 'morgen 05:00', 'za 28 nov 07:00'
+  const clock = t => {
+    if (!t) return '';
+    const d = new Date(t), day = x => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+    const diff = Math.round((day(d) - day(new Date())) / 86400000);
+    const pre = diff === 0 ? '' : diff === -1 ? 'gisteren ' : diff === 1 ? 'morgen '
+      : d.toLocaleDateString('nl-NL', { weekday: 'short', day: 'numeric', month: 'short' }) + ' ';
+    return pre + fmtClock(d);
+  };
   const rows = [['Wat', j.desc], ['Sinds', clock(j.start)], ['Verwacht weg', j.end && new Date(j.end) > new Date() ? 'ca. ' + clock(j.end) : '']]
     .filter(r => r[1]);
   body.innerHTML = `<div class="jbig"><div class="v"></div><div class="s"></div></div><ul class="vlist jrows"></ul><div class="psrc"></div>`;
-  body.querySelector('.v').textContent = j.delay ? '+' + minText(j.delay) : j.cat === 8 ? 'Weg dicht' : 'Langzaam';
-  body.querySelector('.s').textContent = fmtDist(j.len);
+  // Met vertraging: groot de minuten; zonder (afsluiting, werk): groot hoe lang het stuk is
+  body.querySelector('.v').textContent = j.delay ? '+' + minText(j.delay) : j.len ? fmtDist(j.len) : '';
+  body.querySelector('.s').textContent = j.delay ? fmtDist(j.len) : '';
+  body.querySelector('.jbig').hidden = !j.delay && !j.len;
   for (const [k, v] of rows) {
     const li = document.createElement('li');
     li.innerHTML = '<span class="k"></span><span class="v2"></span>';
@@ -5071,7 +5087,7 @@ function openJamList() {
 // Tik op een rondje op de kaart: de details van die melding
 async function incidentTap(f) {
   const pr = f.properties || {};
-  let j = { id: pr.id, delay: pr.delay || 0, mag: pr.magnitude || 0, cat: pr.icon_category, desc: pr.description || '', from: '', to: '',
+  let j = { id: pr.id, delay: pr.delay || 0, mag: pr.magnitude || 0, cat: pr.icon_category ?? pr.icon_category_0, desc: pr.description || pr.description_0 || '', from: '', to: '',
     len: 0, roads: [], end: pr.end_date };
   openJamSheet(j);
   if (!pr.id) return;
@@ -5092,7 +5108,7 @@ async function refreshNavJams(n) {
   tr.busy = true;
   tr.at = Date.now();
   try {
-    const inc = await incidentsAlong(n.shape, n.along, n.along + 150000, n.cum);
+    const inc = await incidentsAlong(n.shape, n.along, n.along + 80000, n.cum);
     if (state.nav !== n) return;
     const old = jamsOf(n) || [];
     const jams = jamsOnRoute(n, inc);
