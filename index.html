@@ -15,7 +15,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
-<link rel="stylesheet" href="style.css?v=200">
+<link rel="stylesheet" href="style.css?v=201">
 </head>
 <body>
 <div id="map"></div>
@@ -99,6 +99,7 @@
 
 <!-- De planner: een kaartje onderin, de routes staan op de kaart zelf -->
 <div class="card planner" id="overview" hidden>
+  <div class="grab" aria-hidden="true"></div>
   <div class="pfloats">
     <button type="button" class="pfl" id="pedit" aria-label="Route aanpassen op de kaart"><i class="ti ti-pencil" aria-hidden="true"></i></button>
   </div>
@@ -207,6 +208,6 @@
 </div>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-<script src="app.js?v=200"></script>
+<script src="app.js?v=201"></script>
 </body>
 </html>

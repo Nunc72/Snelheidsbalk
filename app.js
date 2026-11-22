@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '200';
+const VERSION = '201';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -791,6 +791,45 @@ function addRouteLayers(m, coords) {
     layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': dark ? '#3D8BFF' : '#1F6FE0', 'line-width': 8 } });
 }
 
+// ---------- Treinstations: per stad het hoofdstation al uitgezoomd, de rest dichterbij ----------
+// De lijst komt van tools/stations.py (Trainline, heel Europa); alleen spoor, geen tram- of bushaltes.
+let stationData = null;
+const stationsFC = () => stationData ||= fetch('stations.json').then(r => r.json()).then(list => ({ type: 'FeatureCollection',
+  features: list.map(([name, lat, lon, rank]) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [lon, lat] }, properties: { name, rank } })) }))
+  .catch(() => { stationData = null; return EMPTY_FC; });
+// Het treintje uit de iconenset, wit op een grijs blokje (2x scherp)
+const fontReady = document.fonts.load('40px "tabler-icons"').catch(() => {});
+async function stationImage(dark) {
+  await fontReady;
+  const c = document.createElement('canvas');
+  c.width = c.height = 36;
+  const g = c.getContext('2d');
+  g.fillStyle = dark ? '#5A6270' : '#6E7B8B';
+  g.beginPath();
+  g.roundRect(1, 1, 34, 34, 8);
+  g.fill();
+  g.fillStyle = dark ? '#E5E7EB' : '#ffffff';
+  g.font = '26px "tabler-icons"';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText('\ued96', 18, 19);
+  return g.getImageData(0, 0, 36, 36);
+}
+function addStationLayers(m) {
+  const dark = theme() === 'dark';
+  m.addSource('stations', { type: 'geojson', data: EMPTY_FC });
+  stationsFC().then(fc => { if (m.getSource('stations')) m.getSource('stations').setData(fc); });
+  stationImage(dark).then(img => { if (m.getSource('stations') && !m.hasImage('station')) m.addImage('station', img, { pixelRatio: 2 }); });
+  const paint = dark ? { 'text-color': '#B9BCC3', 'text-halo-color': 'rgba(35,38,43,0.9)', 'text-halo-width': 1.5 }
+    : { 'text-color': '#4E5866', 'text-halo-color': 'rgba(255,255,255,0.9)', 'text-halo-width': 1.5 };
+  // Hoofdstations vanaf zoom 8, het enige station van een plaats vanaf 11, de andere stations in een stad vanaf 12
+  [[0, 8, 'Noto Sans Bold', 1], [1, 11, 'Noto Sans Regular', 0.85], [2, 12, 'Noto Sans Regular', 0.85]].forEach(([rank, minzoom, font, size]) =>
+    m.addLayer({ id: 'stations-' + rank, type: 'symbol', source: 'stations', minzoom, filter: ['==', ['get', 'rank'], rank],
+      layout: { 'icon-image': 'station', 'icon-size': size, 'text-field': ['get', 'name'], 'text-font': [font], 'text-size': rank ? 11.5 : 12.5,
+        'text-anchor': 'top', 'text-offset': [0, 0.9], 'text-max-width': 9, 'text-optional': true, 'text-padding': 2 },
+      paint }));
+}
+
 // Een streepje voor de conceptroute: een effen blauw rechthoekje (2x scherp), in de lijnrichting
 function dashImage(dark) {
   const c = document.createElement('canvas');
@@ -846,6 +885,8 @@ function drawRouteEnds() {
 map.on('style.load', () => {
   addClosureLayer(map);
   addZoneLayers(map);
+  // De lege kaart tijdens het opstarten heeft geen lettertypes; dan nog geen namen
+  if (map.getStyle().glyphs) addStationLayers(map);
   addRouteLayers(map, routeCoords); addPlanLayers(map); addJamLayer(map, 8); addRouteEnds(map); addConceptLayers(map);
   addPlanEnds(map);
   addTrafficLayers(map);
@@ -2209,6 +2250,7 @@ function showPane(id) {
 function setPlanning(on) {
   if (on === planning()) return;
   document.body.classList.toggle('planning', on);
+  $('overview').classList.remove('peek');
   if (on) { closePlaceMenu(); stopFollowing(); }
   renderBar();
   syncPlanLayers();
@@ -2909,8 +2951,36 @@ map.on('click', e => {
   if (!planning() || !map.getLayer('palts-line')) return;
   const { x, y } = e.point;
   const f = map.queryRenderedFeatures([[x - 18, y - 18], [x + 18, y + 18]], { layers: ['palts-line'] })[0];
-  if (f) selectAlt(f.properties.i);
+  if (f) { selectAlt(f.properties.i); return; }
+  // Een tik op de kaart klapt de planner in (de hele kaart in beeld) en weer uit;
+  // niet als de tik een menu van lang drukken sluit
+  if (Date.now() >= lp.eatUntil && !placeMenu && !msmap && !$('overview').hidden) planPeek(!$('overview').classList.contains('peek'));
 });
+
+// Planner ingeklapt: alleen een randje met een greepje, het potlood zweeft erboven
+function planPeek(on) {
+  const card = $('overview');
+  if (card.classList.contains('peek') === on) return;
+  if (on) toggleMapMenu(false);
+  card.classList.toggle('peek', on);
+}
+$('overview').addEventListener('click', e => {
+  if (!$('overview').classList.contains('peek') || e.target.closest('.pfloats')) return;
+  e.stopPropagation();
+  e.preventDefault();
+  planPeek(false);
+}, true);
+// Omlaag vegen klapt hem in, omhoog vegen haalt hem terug
+let planY = null;
+$('overview').addEventListener('pointerdown', e => { planY = e.target.closest('.stops, .mapmenu, .pfloats') ? null : e.clientY; });
+$('overview').addEventListener('pointerup', e => {
+  if (planY == null) return;
+  const dy = e.clientY - planY;
+  planY = null;
+  if (dy < -20) planPeek(false);
+  else if (dy > 30) planPeek(true);
+});
+$('overview').addEventListener('pointercancel', () => { planY = null; });
 
 const MAX_DIST = { bicycle: 150000, pedestrian: 100000 };
 
@@ -3057,6 +3127,10 @@ function confirmPreview() {
   shownLeg = -1;
   state.lastRouteAt = Date.now();
   if (DEMO) demo.along = 0;
+  // Meteen de hele lijn; updateNav knipt het gereden stuk eraf zodra je op de route zit.
+  // Anders bleef de kaart leeg als je positie (nog) niet op de nieuwe route lag.
+  setRouteLine(nav.shape);
+  drawRouteEnds();
   setMode('nav');
   drawNavZone();
   // Vertrek uit een betaald gebied: parkeeractie gestopt?
@@ -3212,9 +3286,10 @@ function leaveMsMap(stay) {
   msMarkers();
   for (const id of MS_LAYERS) if (map.getLayer(id)) map.removeLayer(id);
   for (const id of MS_SOURCES) if (map.getSource(id)) map.removeSource(id);
-  showMainLayers(true);
   map.setMaxPitch(sv.maxPitch);
   msmap = null;
+  // Terug in de planner: daar blijft de lopende route verborgen
+  syncPlanLayers();
   $('mapsearch').classList.remove('over');
   document.body.insertBefore(map.getContainer(), document.body.firstChild);
   map.resize();
@@ -3997,6 +4072,7 @@ function placeAction(act, p, pin, el) {
     else stops[stops.length - 1] = p;
     if (stops.length < 2) stops.push(null);
     savedPick = null;
+    planPeek(false);
     renderStops();
     computePreview();
     return;
@@ -5708,6 +5784,7 @@ async function reroute() {
     state.nav = nav;
     shownLeg = -1;
     if (DEMO) demo.along = 0;
+    setRouteLine(nav.shape);
     updateNav([state.fix.lon, state.fix.lat]);
   } catch (e) {
     // volgende afwijking probeert het opnieuw

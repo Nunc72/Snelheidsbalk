@@ -782,6 +782,12 @@ body.menuopen .mapctl { z-index: 12; opacity: 1; pointer-events: auto; }
 .pfl { width: 46px; height: 46px; border-radius: 50%; background: #fff; color: #1F6FE0; display: flex; align-items: center; justify-content: center;
   box-shadow: 0 2px 10px rgba(0,0,0,.2); }
 .pfl .ti { font-size: 22px; }
+/* Ingeklapt na een tik op de kaart: alleen het randje met het greepje; het potlood zweeft mee */
+.planner { transition: transform .3s ease; }
+.planner > :not(.pfloats):not(.grab) { transition: opacity .2s; }
+.planner.peek { transform: translateY(calc(100% + 10px + env(safe-area-inset-bottom) - 24px)); cursor: pointer; }
+.planner.peek > :not(.pfloats):not(.grab) { opacity: 0; pointer-events: none; }
+.planner.peek .grab { display: block; }
 /* Zolang je plant: geen navigatiekaartjes, meldingen en terugknop; die horen bij het rijden */
 body.planning .bar { transform: translateY(-100%); }
 body.planning #instr, body.planning #bottom-idle, body.planning #bottom-nav, body.planning #bottom-next, body.planning #bottom-prev,
