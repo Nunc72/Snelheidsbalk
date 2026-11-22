@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '202';
+const VERSION = '203';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -827,12 +827,12 @@ function addStationLayers(m) {
     : { 'text-color': '#4E5866', 'text-halo-color': 'rgba(255,255,255,0.9)', 'text-halo-width': 1.5 };
   const layout = (icon, font, size) => ({ 'icon-image': icon, 'icon-size': size, 'text-field': ['get', 'name'], 'text-font': [font],
     'text-size': size < 1 ? 11.5 : 12.5, 'text-anchor': 'top', 'text-offset': [0, 0.9], 'text-max-width': 9, 'text-optional': true, 'text-padding': 2 });
-  // Luchthavens (met IATA-code) en hoofdstations vanaf zoom 10, het enige station van een plaats vanaf 11,
+  // Luchthavens (met IATA-code) vanaf zoom 8, hoofdstations vanaf 9, het enige station van een plaats vanaf 11,
   // de andere stations in een stad vanaf 12. De luchthavens van de kaartstijl zelf (pas vanaf 11, niet in donker) vervallen.
   if (m.getLayer('airport')) m.removeLayer('airport');
-  m.addLayer({ id: 'airports', type: 'symbol', source: 'openmaptiles', 'source-layer': 'aerodrome_label', minzoom: 10,
+  m.addLayer({ id: 'airports', type: 'symbol', source: 'openmaptiles', 'source-layer': 'aerodrome_label', minzoom: 8,
     filter: ['has', 'iata'], layout: layout('plane', 'Noto Sans Bold', 1), paint });
-  [[0, 10, 'Noto Sans Bold', 1], [1, 11, 'Noto Sans Regular', 0.85], [2, 12, 'Noto Sans Regular', 0.85]].forEach(([rank, minzoom, font, size]) =>
+  [[0, 9, 'Noto Sans Bold', 1], [1, 11, 'Noto Sans Regular', 0.85], [2, 12, 'Noto Sans Regular', 0.85]].forEach(([rank, minzoom, font, size]) =>
     m.addLayer({ id: 'stations-' + rank, type: 'symbol', source: 'stations', minzoom, filter: ['==', ['get', 'rank'], rank],
       layout: layout('station', font, size), paint }));
 }
