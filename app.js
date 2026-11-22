@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '203';
+const VERSION = '204';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -798,28 +798,35 @@ let stationData = null;
 const loadStations = () => stationData ||= fetch('stations.json').then(r => r.json()).catch(() => { stationData = null; return []; });
 const stationsFC = () => loadStations().then(list => ({ type: 'FeatureCollection',
   features: list.map(([name, lat, lon, rank]) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [lon, lat] }, properties: { name, rank } })) }));
-// Een icoon uit de iconenset, wit op een grijs blokje (2x scherp): het treintje en het vliegtuigje
+// Een icoon uit de iconenset in de kleur van de namen, met een rand zoals de namen (2x scherp):
+// het treintje en het vliegtuigje
 const fontReady = document.fonts.load('40px "tabler-icons"').catch(() => {});
 async function glyphImage(glyph, dark) {
   await fontReady;
   const c = document.createElement('canvas');
   c.width = c.height = 36;
   const g = c.getContext('2d');
-  g.fillStyle = dark ? '#5A6270' : '#6E7B8B';
-  g.beginPath();
-  g.roundRect(1, 1, 34, 34, 8);
-  g.fill();
-  g.fillStyle = dark ? '#E5E7EB' : '#ffffff';
-  g.font = '26px "tabler-icons"';
+  g.font = '28px "tabler-icons"';
   g.textAlign = 'center';
   g.textBaseline = 'middle';
+  g.lineJoin = 'round';
+  g.lineWidth = 5;
+  g.strokeStyle = dark ? 'rgba(35,38,43,0.9)' : 'rgba(255,255,255,0.95)';
+  g.strokeText(glyph, 18, 19);
+  g.fillStyle = dark ? '#C9CDD4' : '#4E5866';
   g.fillText(glyph, 18, 19);
   return g.getImageData(0, 0, 36, 36);
 }
+// De luchthavens uit airports.json (dezelfde lijst als bij zoeken): de kaarttegels hebben Brussel
+// en andere grote luchthavens soms pas vanaf zoom 10
+const airportsFC = () => loadAirports().then(({ a }) => ({ type: 'FeatureCollection',
+  features: Object.values(a).map(([name, , , lat, lon, rank]) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [lon, lat] }, properties: { name, rank: rank || 0 } })) }));
 function addStationLayers(m) {
   const dark = theme() === 'dark';
   m.addSource('stations', { type: 'geojson', data: EMPTY_FC });
+  m.addSource('airportpts', { type: 'geojson', data: EMPTY_FC });
   stationsFC().then(fc => { if (m.getSource('stations')) m.getSource('stations').setData(fc); });
+  airportsFC().then(fc => { if (m.getSource('airportpts')) m.getSource('airportpts').setData(fc); });
   for (const [id, glyph] of [['station', '\ued96'], ['plane', '\ueb6f']]) {
     glyphImage(glyph, dark).then(img => { if (m.getSource('stations') && !m.hasImage(id)) m.addImage(id, img, { pixelRatio: 2 }); });
   }
@@ -827,11 +834,11 @@ function addStationLayers(m) {
     : { 'text-color': '#4E5866', 'text-halo-color': 'rgba(255,255,255,0.9)', 'text-halo-width': 1.5 };
   const layout = (icon, font, size) => ({ 'icon-image': icon, 'icon-size': size, 'text-field': ['get', 'name'], 'text-font': [font],
     'text-size': size < 1 ? 11.5 : 12.5, 'text-anchor': 'top', 'text-offset': [0, 0.9], 'text-max-width': 9, 'text-optional': true, 'text-padding': 2 });
-  // Luchthavens (met IATA-code) vanaf zoom 8, hoofdstations vanaf 9, het enige station van een plaats vanaf 11,
-  // de andere stations in een stad vanaf 12. De luchthavens van de kaartstijl zelf (pas vanaf 11, niet in donker) vervallen.
+  // Grote luchthavens vanaf zoom 8, middelgrote vanaf 10, hoofdstations vanaf 9, het enige station van een plaats
+  // vanaf 11, de andere stations in een stad vanaf 12. De luchthavens van de kaartstijl zelf (niet in donker) vervallen.
   if (m.getLayer('airport')) m.removeLayer('airport');
-  m.addLayer({ id: 'airports', type: 'symbol', source: 'openmaptiles', 'source-layer': 'aerodrome_label', minzoom: 8,
-    filter: ['has', 'iata'], layout: layout('plane', 'Noto Sans Bold', 1), paint });
+  [[0, 8], [1, 10]].forEach(([rank, minzoom]) => m.addLayer({ id: 'airports-' + rank, type: 'symbol', source: 'airportpts', minzoom,
+    filter: ['==', ['get', 'rank'], rank], layout: layout('plane', 'Noto Sans Bold', 1), paint }));
   [[0, 9, 'Noto Sans Bold', 1], [1, 11, 'Noto Sans Regular', 0.85], [2, 12, 'Noto Sans Regular', 0.85]].forEach(([rank, minzoom, font, size]) =>
     m.addLayer({ id: 'stations-' + rank, type: 'symbol', source: 'stations', minzoom, filter: ['==', ['get', 'rank'], rank],
       layout: layout('station', font, size), paint }));

@@ -4,7 +4,8 @@
 Bron: OurAirports (publiek domein), alleen grote en middelgrote luchthavens met
 lijnvluchten. Met de stadscodes van IATA (NYC, RIO) die meerdere luchthavens dekken.
 
-  airports.json  {"a": {code: [naam, plaats, land, lat, lon]}, "m": {stadscode: [codes]}}
+  airports.json  {"a": {code: [naam, plaats, land, lat, lon, rang]}, "m": {stadscode: [codes]}}
+  rang 0: grote luchthaven, 1: middelgrote (voor de kaart: groot al verder uitgezoomd)
 
 Gebruik: python3 tools/airports.py [airports.json]
 """
@@ -43,7 +44,7 @@ def main(out):
             continue
         best[code] = r
     airports = {c: [r['name'], r['municipality'], r['iso_country'], round(float(r['latitude_deg']), 5),
-                    round(float(r['longitude_deg']), 5)] for c, r in sorted(best.items())}
+                    round(float(r['longitude_deg']), 5), RANK[r['type']]] for c, r in sorted(best.items())}
     metro = {m: [c for c in codes if c in airports] for m, codes in METRO.items()}
     with open(out, 'w', encoding='utf-8') as f:
         json.dump({'a': airports, 'm': {m: c for m, c in metro.items() if c}}, f, ensure_ascii=False, separators=(',', ':'))
