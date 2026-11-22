@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '124';
+const VERSION = '200';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -846,11 +846,14 @@ function drawRouteEnds() {
 map.on('style.load', () => {
   addClosureLayer(map);
   addZoneLayers(map);
-  addRouteLayers(map, routeCoords); addJamLayer(map, 8); addRouteEnds(map); addConceptLayers(map);
+  addRouteLayers(map, routeCoords); addPlanLayers(map); addJamLayer(map, 8); addRouteEnds(map); addConceptLayers(map);
+  addPlanEnds(map);
   addTrafficLayers(map);
-  scaleLines(map, { 'route-casing': 13, 'route-line': 8, ...(trafficReady() ? { rjam: 8 } : {}) });
+  scaleLines(map, { 'route-casing': 13, 'route-line': 8, ...PLAN_WIDTHS, ...(trafficReady() ? { rjam: 8 } : {}) });
   syncTraffic();
   drawNavJams();
+  syncPlanLayers();
+  drawPreview();
   if (msmap) { showMainLayers(false); addMsLayers(map); msDraw(); msTilt(true); }
 });
 
@@ -872,9 +875,6 @@ function setMapKind(kind) {
 
 async function applyTheme() {
   map.setStyle(await currentStyle(), { diff: false });
-  const small = await currentStyle(true);
-  // De kleine kaarten veranderen alleen mee met licht en donker
-  if (pmap && pmap._dark !== theme()) { pmap._dark = theme(); pmap.setStyle(small, { diff: false }); }
   renderBar();
 }
 darkQuery.addEventListener('change', applyTheme);
@@ -998,7 +998,8 @@ function updateCamera(p, duration = 1000) {
 // ---------- Kleurbalk ----------
 let lastTheme = '';
 // Alleen tijdens echte autonavigatie (vanaf je eigen positie), ongeacht de snelheid
-const barShown = () => !!(state.nav && state.nav.mode === 'auto');
+// Niet zolang de planner open is: dan heeft de kaart de ruimte
+const barShown = () => !!(state.nav && state.nav.mode === 'auto') && !planning();
 function renderBar() {
   const bar = $('bar'), lim = $('lim');
   document.body.classList.toggle('nobar', !barShown());
@@ -2165,28 +2166,65 @@ function updateClear() {
   $('qclear').hidden = !$('q').value && !s;
 }
 
-// ---------- Het zoekscherm: tekst zoeken, overzicht en zoeken op kaart ----------
+// ---------- Het zoekscherm: tekst zoeken, de planner en zoeken op kaart ----------
+// Tekst zoeken en zoeken op kaart vullen het scherm; de planner (id 'overview') is een kaartje
+// onderin, op de gewone kaart. Eén kaart: de routes staan op de kaart waarmee je ook rijdt.
 const PANES = ['textpane', 'overview', 'mapsearch'];
-// Linksonder op het overzicht: met een live route de rode X (stoppen), anders een grijze pijl terug
-// Een gestarte route vanaf een ander vertrekpunt (conceptroute) telt ook als live
+const planning = () => document.body.classList.contains('planning');
+// Bezig met plannen of zoeken: het zoekscherm of de planner staat open
+const inSearch = () => !$('search').hidden || !$('overview').hidden;
+// Wat er bij het openen van de planner gold: liep er een route, en hoe stond de kaart
+const plan = { live: false, sig0: '', altPicked: false, wasFollowing: false, backHome: false };
+const planSig = () => JSON.stringify([stops.map(s => s && (s.here ? 'here' : [s.lat, s.lon])), travelMode]);
+// Iets gewijzigd sinds je de planner opende (een andere route kiezen telt ook)
+const planDirty = () => plan.altPicked || planSig() !== plan.sig0;
+// Linksonder: tijdens een route de rode X (stoppen) zolang je niets wijzigt. Na een wijziging,
+// of zonder route, de grijze pijl: terug, en de wijziging is weg.
+// Een gestarte route vanaf een ander vertrekpunt (conceptroute) telt ook als route
 function syncStopBtn() {
-  const live = !!(state.nav || state.concept);
-  $('stop').classList.toggle('backbig', !live);
-  $('stop').innerHTML = `<i class="ti ti-${live ? 'x' : 'arrow-left'}" aria-hidden="true"></i>`;
-  $('stop').setAttribute('aria-label', live ? 'Route stoppen' : 'Terug naar de kaart');
+  const red = plan.live && !planDirty();
+  $('stop').classList.toggle('backbig', !red);
+  $('stop').innerHTML = `<i class="ti ti-${red ? 'x' : 'arrow-left'}" aria-hidden="true"></i>`;
+  $('stop').setAttribute('aria-label', red ? 'Route stoppen' : plan.live ? 'Wijziging weggooien' : 'Terug naar de kaart');
+  $('qok').setAttribute('aria-label', lookMode() ? 'Bekijk op de kaart' : red ? 'Doorrijden' : 'Navigatie starten');
+  // Een lege regel eerst invullen voordat er nog een bij komt
+  $('qadd').disabled = stops.some(s => !s);
+  syncOldRoute();
 }
 function showPane(id) {
   if (id !== 'mapsearch') leaveMsMap(false);
   for (const p of PANES) $(p).hidden = p !== id;
+  $('search').hidden = id === 'overview';
   toggleMapMenu(false);
-  // Vervoer en kaartinstellingen staan in het overzicht en bovenin bij zoeken op kaart
+  // Vervoer en kaartinstellingen staan bovenaan de planner en bovenin bij zoeken op kaart
   const row = $('moderow');
   if (id === 'mapsearch') $('mstop').appendChild(row);
-  else if (id === 'overview' && row.parentElement !== $('overview')) $('overview').insertBefore(row, $('preview'));
+  else if (id === 'overview' && row.parentElement !== $('overview')) $('overview').insertBefore(row, $('stops'));
+  setPlanning(id === 'overview');
   if (id === 'overview') syncStopBtn();
 }
 
+// Planner open: geen snelheidsbalk en geen navigatiekaartjes, de kaart volgt je niet meer
+// en toont de routes. Dicht: alles weer zoals het was.
+function setPlanning(on) {
+  if (on === planning()) return;
+  document.body.classList.toggle('planning', on);
+  if (on) { closePlaceMenu(); stopFollowing(); }
+  renderBar();
+  syncPlanLayers();
+  drawNavJams();
+  if (on) drawPreview();
+}
+
 function openSheet() {
+  // Begin van het plannen: onthouden wat er liep en of de kaart je volgde
+  if (!inSearch()) {
+    plan.live = !!(state.nav || state.concept);
+    plan.wasFollowing = state.following;
+  }
+  plan.sig0 = '';
+  plan.altPicked = false;
+  plan.backHome = false;
   $('search').hidden = false;
   closePlaceMenu();
   clearLook();
@@ -2274,21 +2312,28 @@ function plannedStops() {
 function editRoute() {
   openSheet();
   stops = plannedStops() || [HERE, null];
+  plan.sig0 = planSig();
   showOverview();
 }
 
 function closeSearch() {
+  const wasPlanning = planning();
   leaveMsMap(false);
   $('q').blur();
   $('search').hidden = true;
+  $('overview').hidden = true;
+  setPlanning(false);
   homeControls(true);
   previewSeq++;
   ms.seq++;
-  if (state.following && state.fix) updateCamera([state.fix.lon, state.fix.lat], 0);
-  // De routekaart blijft bestaan: opnieuw opbouwen kost op de iPhone seconden.
-  // De grote kaart om te zoeken gaat weg; die kost veel geheugen.
   previewTags.forEach(t => t.remove());
   previewTags = [];
+  if (parkTag) { parkTag.remove(); parkTag = null; }
+  // Na de planner: weer de route volgen (of de conceptroute tonen), of je positie als de kaart je volgde
+  if (wasPlanning && state.nav) follow();
+  else if (wasPlanning && state.concept) conceptView();
+  else if (state.following && state.fix) updateCamera([state.fix.lon, state.fix.lat], 0);
+  else if (wasPlanning && plan.wasFollowing) follow();
 }
 
 function describe(props) {
@@ -2619,8 +2664,8 @@ function submitSearch() {
   else if (firstResult) choose(firstResult);
 }
 
-// ---------- Overzicht: adresregels en de route ----------
-let pmap = null, previewNav = null, previewSeq = 0, previewData = null;
+// ---------- Planner: adresregels en de route ----------
+let previewNav = null, previewSeq = 0, previewData = null;
 
 const pointFeature = (pt, kind) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: pt }, properties: { kind } });
 // Begin blauw, tussenstops wit met blauwe rand, eind rood
@@ -2644,18 +2689,20 @@ function renderStops(fresh = -1) {
     li.className = 'stop';
     li.dataset.i = i;
     const kind = i === 0 ? 'start' : i === stops.length - 1 ? 'end' : 'via';
+    // Na Vanaf: de lege bestemming vraagt Waar naartoe?
+    const ask = !s && kind === 'end' && !!stops[0];
+    // Eén kruisje: de regel weghalen. Een lege regel alleen als er meer dan twee zijn.
+    const canRemove = stops.length > 2 || (stops.length > 1 && !!s);
     li.innerHTML = '<span class="grip" aria-label="Verslepen"><i class="ti ti-grip-vertical" aria-hidden="true"></i></span>'
       + `<span class="sdot k-${kind}" aria-hidden="true"></span>`
-      + `<button type="button" class="sfield${!s ? ' empty' : s.here ? ' here' : ''}${i === fresh ? ' new' : ''}"></button>`
-      + (s ? '<button type="button" class="sclr" aria-label="Locatie leegmaken"><i class="ti ti-x" aria-hidden="true"></i></button>' : '')
-      + '<button type="button" class="sbtn" aria-label="Kies op de kaart"><i class="ti ti-map-pin" aria-hidden="true"></i></button>'
-      + (stops.length > 1 ? '<button type="button" class="sbtn x" aria-label="Regel weghalen"><i class="ti ti-x" aria-hidden="true"></i></button>' : '');
+      + `<span class="sbox${i === fresh ? ' new' : ''}"><button type="button" class="sfield${!s ? ' empty' : s.here ? ' here' : ''}${ask ? ' to' : ''}"></button>`
+      + '<button type="button" class="sbtn" aria-label="Kies op de kaart"><i class="ti ti-map-pin" aria-hidden="true"></i></button></span>'
+      + (canRemove ? '<button type="button" class="sbtn x" aria-label="Regel weghalen"><i class="ti ti-x" aria-hidden="true"></i></button>' : '<span class="xgap"></span>');
     li.querySelector('.sfield').textContent = s ? withoutPostcode(s.name)
-      : i === fresh ? 'Zoek adres of kies op kaart' : kind === 'start' ? 'Vertrekpunt' : kind === 'end' ? 'Bestemming' : 'Tussenstop';
+      : ask ? 'Waar naartoe?' : kind === 'start' ? 'Vertrekpunt' : kind === 'end' ? 'Bestemming' : 'Tussenstop';
     li.querySelector('.sfield').addEventListener('click', () => { if (!li.dataset.swiped) showText(i, 'overview'); });
     li.querySelector('.sbtn').addEventListener('click', () => openMapSearch('row', 'overview', i));
     li.querySelector('.x')?.addEventListener('click', () => removeRow(i));
-    li.querySelector('.sclr')?.addEventListener('click', () => clearRow(i));
     makeDraggable(li, li.querySelector('.grip'), list => {
       const order = [...list.children].map(el => stops[+el.dataset.i]);
       const moved = order.some((s2, k) => s2 !== stops[k]);
@@ -2665,6 +2712,7 @@ function renderStops(fresh = -1) {
     });
     ul.appendChild(li);
   });
+  syncStopBtn();
 }
 
 // Weghalen: elke regel mag weg, zolang er één overblijft. Gaat het vertrekpunt weg, dan wordt
@@ -2677,21 +2725,13 @@ function removeRow(i) {
   computePreview();
 }
 
-// Het x-je in het veld: de locatie leeg, de regel blijft. Zoeken gaat dan weer rond je positie.
-function clearRow(i) {
-  stops[i] = null;
-  savedPick = null;
-  renderStops();
-  computePreview();
-}
-
 // De grijze +: een lege regel vóór de bestemming; met alleen een vertrekpunt erachter
 function addRow() {
   const at = stops.length > 1 ? stops.length - 1 : stops.length;
   stops.splice(at, 0, null);
   renderStops(at);
   const ul = $('stops');
-  ul.scrollTop = ul.scrollHeight;
+  ul.scrollTop = ul.querySelector('.stop:nth-child(' + (at + 1) + ')').offsetTop - ul.clientHeight / 2;
 }
 
 function showOverview(note) {
@@ -2720,11 +2760,11 @@ function labelPoint(route, others, taken) {
   const step = r => Math.max(1, Math.floor(r.shape.length / 80));
   const pts = others.flatMap(r => r.shape.filter((_, i) => i % step(r) === 0));
   const cands = route.shape.filter((_, i) => i % step(route) === 0)
-    .map(p => ({ p, d: pts.reduce((min, q) => Math.min(min, dist(p, q)), Infinity), px: pmap.project(p) }))
+    .map(p => ({ p, d: pts.reduce((min, q) => Math.min(min, dist(p, q)), Infinity), px: map.project(p) }))
     .sort((a, b) => b.d - a.d);
-  // Helemaal binnen de kaart (een label met percentage is zo'n 130 px breed)
-  const box = pmap.getContainer(), w = box.clientWidth, h = box.clientHeight;
-  const inside = cands.filter(c => c.px.x > 72 && c.px.x < w - 72 && c.px.y > 20 && c.px.y < h - 20);
+  // Helemaal binnen het stuk kaart boven de planner (een label met percentage is zo'n 130 px breed)
+  const pad = planPadding(), w = map.getContainer().clientWidth, h = map.getContainer().clientHeight;
+  const inside = cands.filter(c => c.px.x > 72 && c.px.x < w - 72 && c.px.y > pad.top && c.px.y < h - pad.bottom + 30);
   const pool = inside.length ? inside : cands;
   const free = pool.find(c => !taken.some(t => Math.abs(t.x - c.px.x) < 130 && Math.abs(t.y - c.px.y) < 28));
   return (free || pool[0]).p;
@@ -2739,7 +2779,7 @@ function forgetPreview() {
   previewTags.forEach(t => t.remove());
   previewTags = [];
   hideParkChip();
-  if (pmap && pmap.getSource('route')) ['route', 'alts', 'ends'].forEach(s => pmap.getSource(s).setData(EMPTY_FC));
+  for (const id of ['proute', 'palts', 'pends']) if (map.getSource(id)) map.getSource(id).setData(EMPTY_FC);
 }
 function drawAltTags() {
   previewTags.forEach(t => t.remove());
@@ -2755,7 +2795,7 @@ function drawAltTags() {
   routes.forEach((r, i) => {
     const el = document.createElement('button');
     el.type = 'button';
-    el.className = 'alttag' + (i === sel ? ' sel' : '');
+    el.className = 'alttag plantag' + (i === sel ? ' sel' : '');
     // Auto: de snelste een groen blaadje als hij ook de zuinigste is; elke andere route een blaadje
     // met hoeveel procent zuiniger (groen) of minder zuinig (oranje) dan de snelste
     let leaf = '';
@@ -2767,28 +2807,80 @@ function drawAltTags() {
     }
     el.innerHTML = leaf + fmtDuration(r.time + jamSec(jamsOf(r), 0, Infinity));
     el.addEventListener('click', e => { e.stopPropagation(); selectAlt(i); });
-    const at = labelPoint(r, routes.filter(o => o !== r), previewTags.map(t => pmap.project(t.getLngLat())));
-    previewTags.push(new maplibregl.Marker({ element: el }).setLngLat(at).addTo(pmap));
+    shield(el);
+    const at = labelPoint(r, routes.filter(o => o !== r), previewTags.map(t => map.project(t.getLngLat())));
+    previewTags.push(new maplibregl.Marker({ element: el }).setLngLat(at).addTo(map));
   });
 }
 
+// De routes van de planner op de hoofdkaart: gekozen route blauw, de andere grijs, met begin, tussenstops en eind
+const PLAN_LAYERS = ['palts-casing', 'palts-line', 'proute-casing', 'proute-line', 'pends'];
+const PLAN_WIDTHS = { 'palts-casing': 9, 'palts-line': 5.5, 'proute-casing': 11, 'proute-line': 7 };
+function addPlanLayers(m) {
+  const dark = theme() === 'dark';
+  const line = (id, src, color, w) => m.addLayer({ id, type: 'line', source: src, layout: { 'line-cap': 'round', 'line-join': 'round', visibility: 'none' },
+    paint: { 'line-color': color, 'line-width': w } });
+  m.addSource('palts', { type: 'geojson', data: EMPTY_FC });
+  m.addSource('proute', { type: 'geojson', data: EMPTY_FC });
+  line('palts-casing', 'palts', dark ? DARK_BG : '#ffffff', 9);
+  line('palts-line', 'palts', dark ? '#5A6270' : '#A9B4C2', 5.5);
+  // Tijdens een route iets gewijzigd: de lopende route gestippeld eronder, zodat je het verschil ziet
+  m.addLayer({ id: 'pold-line', type: 'line', source: 'route', layout: { 'line-cap': 'round', 'line-join': 'round', visibility: 'none' },
+    paint: { 'line-color': dark ? '#3D8BFF' : '#1F6FE0', 'line-opacity': 0.6, 'line-width': 4, 'line-dasharray': [0.6, 2] } });
+  line('proute-casing', 'proute', dark ? DARK_BG : '#ffffff', 11);
+  line('proute-line', 'proute', dark ? '#3D8BFF' : '#1F6FE0', 7);
+}
+function addPlanEnds(m) {
+  m.addSource('pends', { type: 'geojson', data: EMPTY_FC });
+  m.addLayer({ id: 'pends', type: 'circle', source: 'pends', layout: { visibility: 'none' },
+    paint: { ...endsPaint(theme() === 'dark', 10, 9, 7, 3.5), 'circle-pitch-alignment': 'map', 'circle-pitch-scale': 'viewport' } });
+}
+// Alleen zichtbaar zolang de planner open is; dan is de lopende route zelf even weg
+function syncPlanLayers() {
+  const on = planning();
+  for (const id of PLAN_LAYERS) if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
+  showMainLayers(!on && !msmap);
+  syncOldRoute();
+}
+function syncOldRoute() {
+  const on = planning() && plan.live && !!state.nav && planDirty();
+  if (map.getLayer('pold-line')) map.setLayoutProperty('pold-line', 'visibility', on ? 'visible' : 'none');
+}
+// Ruimte rond de routes: boven de veilige rand, onder het kaartje met het potlood erboven
+function planPadding() {
+  const h = map.getContainer().clientHeight;
+  const card = $('overview').getBoundingClientRect();
+  const probe = document.createElement('div');
+  probe.style.cssText = 'position:fixed;visibility:hidden;height:env(safe-area-inset-top)';
+  document.body.appendChild(probe);
+  const top = probe.offsetHeight;
+  probe.remove();
+  return { top: top + 30, bottom: Math.max(120, h - card.top + 64), left: 40, right: 40 };
+}
+
 function drawPreview() {
-  if (!pmap || !previewData || !pmap.getSource('route')) return;
-  const { coords, pts, routes, sel } = previewData;
-  pmap.getSource('route').setData(lineFeature(coords));
-  pmap.getSource('alts').setData({ type: 'FeatureCollection',
+  if (!previewData || !map.getSource('proute')) return;
+  const d = previewData, { coords, pts, routes, sel } = d;
+  map.getSource('proute').setData(lineFeature(coords));
+  map.getSource('palts').setData({ type: 'FeatureCollection',
     features: (routes || []).map((r, i) => ({ ...lineFeature(r.shape), properties: { i } })).filter((_, i) => i !== sel) });
-  pmap.getSource('ends').setData(stopPoints(pts));
-  if (pmap.getSource('rjam')) pmap.getSource('rjam').setData(previewNav ? jamFeatures(previewNav) : EMPTY_FC);
-  const all = (routes || []).flatMap(r => r.shape);
-  if (!all.length) all.push(...(coords.length ? coords : pts.map(p => [p.lon, p.lat])));
-  pmap.resize();
-  if (all.length) {
-    const b = all.reduce((bb, c) => bb.extend(c), new maplibregl.LngLatBounds(all[0], all[0]));
-    pmap.fitBounds(b, { padding: 36, duration: 0, maxZoom: 16 });
+  map.getSource('pends').setData(stopPoints(pts));
+  if (!planning()) return;
+  drawNavJams();
+  // Eén keer inzoomen op nieuwe routes; daarna blijft de kaart waar jij hem neerzet
+  if (!d.fitted) {
+    const all = (routes || []).flatMap(r => r.shape);
+    if (!all.length) all.push(...(coords.length ? coords : pts.map(p => [p.lon, p.lat])));
+    if (all.length) {
+      d.fitted = true;
+      const b = all.reduce((bb, c) => bb.extend(c), new maplibregl.LngLatBounds(all[0], all[0]));
+      map.jumpTo({ padding: { top: 0, bottom: 0, left: 0, right: 0 } });
+      map.fitBounds(b, { padding: planPadding(), duration: 700, maxZoom: 16, bearing: 0, pitch: 0 });
+    }
   }
-  drawAltTags();
-  drawParkTag();
+  // De labels pas als de kaart stilstaat, anders staan ze op de verkeerde plek
+  const tags = () => { if (previewData === d && planning()) { drawAltTags(); drawParkTag(); } };
+  if (map.isMoving()) map.once('moveend', tags); else tags();
 }
 
 function previewSummary(note, time, d) {
@@ -2806,58 +2898,30 @@ function selectAlt(i) {
   d.sel = i;
   d.coords = d.routes[i].shape;
   previewNav = d.routes[i];
+  plan.altPicked = true;
   drawPreview();
   previewSummary(d.note, previewNav.time, previewNav.total);
+  syncStopBtn();
 }
 
-async function ensurePreviewMap() {
-  if (pmap) { pmap.resize(); return; }
-  const style = await currentStyle(true);
-  if (pmap || $('search').hidden) return;
-  pmap = new maplibregl.Map({ container: 'pmap', style, interactive: false, attributionControl: false,
-    center: state.fix ? [state.fix.lon, state.fix.lat] : [5.1214, 52.0907], zoom: 12, ...SMALL_MAP });
-  pmap._dark = theme();
-  pmap.on('style.load', () => {
-    const dark = theme() === 'dark';
-    addClosureLayer(pmap);
-    addRouteLayers(pmap, []);
-    // Kleine overzichtskaart: dunnere lijnen dan tijdens het rijden
-    pmap.setPaintProperty('route-casing', 'line-width', 7);
-    pmap.setPaintProperty('route-line', 'line-width', 4);
-    addJamLayer(pmap, 4);
-    pmap.addSource('alts', { type: 'geojson', data: EMPTY_FC });
-    pmap.addLayer({ id: 'alts-casing', type: 'line', source: 'alts', layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': dark ? DARK_BG : '#ffffff', 'line-width': 6 } }, 'route-casing');
-    pmap.addLayer({ id: 'alts-line', type: 'line', source: 'alts', layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': dark ? '#5A6270' : '#A9B4C2', 'line-width': 3.5 } }, 'route-casing');
-    pmap.addSource('ends', { type: 'geojson', data: EMPTY_FC });
-    pmap.addLayer({ id: 'ends', type: 'circle', source: 'ends', paint: endsPaint(dark, 8, 8, 6, 3) });
-    drawPreview();
-  });
-}
-
-// Tik op een grijze route kiest hem; elders op de kaart: de route aanpassen op de grote kaart
-$('pmap').addEventListener('click', e => {
-  if (e.target.closest('.alttag')) return;
-  if (pmap && pmap.getLayer('alts-line')) {
-    const r = $('pmap').getBoundingClientRect();
-    const x = e.clientX - r.left, y = e.clientY - r.top;
-    const f = pmap.queryRenderedFeatures([[x - 14, y - 14], [x + 14, y + 14]], { layers: ['alts-line'] })[0];
-    if (f) { selectAlt(f.properties.i); return; }
-  }
-  openMapSearch('edit', 'overview');
+// Tik op een grijze route kiest hem (ruim raken: een lijn is smal)
+map.on('click', e => {
+  if (!planning() || !map.getLayer('palts-line')) return;
+  const { x, y } = e.point;
+  const f = map.queryRenderedFeatures([[x - 18, y - 18], [x + 18, y + 18]], { layers: ['palts-line'] })[0];
+  if (f) selectAlt(f.properties.i);
 });
 
 const MAX_DIST = { bicycle: 150000, pedestrian: 100000 };
 
 // Maar één plek (geen route): de groene knop wordt een blauwe verrekijker
-const lookMode = () => filled().length === 1 && !filled()[0].here;
+const lookMode = () => stops.length === 1 && !!stops[0] && !stops[0].here;
 function syncOk() {
   const look = lookMode(), b = $('qok');
   b.classList.toggle('okbig', !look);
   b.classList.toggle('lookbig', look);
   b.querySelector('.ti').className = 'ti ' + (look ? 'ti-binoculars' : 'ti-arrow-ramp-right');
-  b.setAttribute('aria-label', look ? 'Bekijk op de kaart' : 'Navigatie starten');
+  syncStopBtn();
 }
 
 // Verrekijker: naar het eerste (of enige) punt op de live kaart, met een pin erop
@@ -2906,11 +2970,11 @@ async function computePreview(note) {
   $('qok').disabled = true;
   previewNav = null;
   const seq = ++previewSeq;
-  await ensurePreviewMap();
-  if (seq !== previewSeq) return;
+  syncStopBtn();
   const pts = list.map(resolveStop);
-  const noRoute = msg => {
-    previewData = { coords: [], pts: pts.filter(Boolean), routes: null, sel: 0, note };
+  // wait: de route komt er zo aan, dan pas inzoomen
+  const noRoute = (msg, wait = false) => {
+    previewData = { coords: [], pts: pts.filter(Boolean), routes: null, sel: 0, note, fitted: wait };
     drawPreview();
     $('psum').textContent = msg;
     $('pjam').hidden = true;
@@ -2922,7 +2986,7 @@ async function computePreview(note) {
     $('qok').disabled = false;
     return;
   }
-  if (list.length < 2) { noRoute(list.length ? 'Vul nog een adres in' : 'Kies waar je heen wilt'); return; }
+  if (list.length < 2) { noRoute(list.length && stops.length === 1 ? 'Vul nog een adres in' : 'Of druk lang op de kaart'); return; }
   if (pts.some(p => !p)) { noRoute('Nog geen GPS-positie voor "Huidige locatie"'); return; }
   // Fietsen en lopen rekent de routedienst niet verder dan 150 en 100 km hemelsbreed
   const max = MAX_DIST[travelMode];
@@ -2932,7 +2996,7 @@ async function computePreview(note) {
     setTravelMode('auto');
     savedPick = null;
   }
-  noRoute('Route berekenen…');
+  noRoute('Route berekenen…', true);
   try {
     // Gedownloade route: alleen zonder internet uit de opslag (of als berekenen niet lukt).
     // Met internet gewoon opnieuw, met alternatieven: misschien is er nu een betere.
@@ -3049,6 +3113,11 @@ async function openMapSearch(kind, back, row = 0, pois = null) {
     ms.pts = list.map(resolveStop).filter(Boolean);
   }
   showPane('mapsearch');
+  // Eén regel kiezen: onderin alleen die regel, met het adres onder de pin; geen vervoer bovenin
+  const rowPick = kind === 'row' && !pois;
+  $('mapsearch').classList.toggle('rowpick', rowPick);
+  $('msrow').hidden = !rowPick;
+  if (rowPick) $('msrowdot').className = 'sdot k-' + (row === 0 ? 'start' : row === stops.length - 1 ? 'end' : 'via');
   ensureMsMap();
   if (!msmap) return;
   // Waar de kaart begint
@@ -3077,7 +3146,23 @@ async function openMapSearch(kind, back, row = 0, pois = null) {
   msDraw();
   msMarkers();
   ms.legs.forEach((l, i) => { if (!l) computeLeg(i); });
+  if (rowPick) msRowName();
 }
+
+// Het adres onder de pin, zodra de kaart even stilstaat
+let msRowSeq = 0, msRowTimer = 0;
+function msRowName() {
+  clearTimeout(msRowTimer);
+  const seq = ++msRowSeq;
+  $('msrowtxt').textContent = 'Adres zoeken…';
+  msRowTimer = setTimeout(async () => {
+    if (!msmap || $('msrow').hidden) return;
+    const c = msmap.getCenter();
+    const name = await placeName(c.lat, c.lng);
+    if (seq === msRowSeq && msmap) $('msrowtxt').textContent = withoutPostcode(name);
+  }, 450);
+}
+map.on('moveend', () => { if (msmap && !$('msrow').hidden) msRowName(); });
 
 // Zoeken op de kaart gebruikt de hoofdkaart zelf: die verhuist zolang naar het zoekscherm.
 // Geen tweede kaart die moet laden (geen flits) en geen extra geheugen.
@@ -3311,7 +3396,7 @@ function msUi(force) {
   // Aan het toevoegen: + blauw en ✓ groen
   const adding = ms.adding && ms.kind !== 'row';
   $('msadd').className = 'roundbtn ' + (adding ? 'viewbig' : 'addbig');
-  $('msok').className = 'roundbtn ' + (adding || h.type === 'poi' ? 'okbig' : 'addbig');
+  $('msok').className = 'roundbtn ' + (adding || h.type === 'poi' || (ms.kind === 'row' && !ms.pois) ? 'okbig' : 'addbig');
   $('msadd').hidden = ms.kind === 'row' || !!a || h.type !== 'free';
   const card = $('actcard');
   card.replaceChildren();
@@ -3574,11 +3659,21 @@ $('qmap').addEventListener('click', () => {
 // Een conceptroute stoppen: de kaart blijft op dezelfde plek
 // Rode knop: de route annuleren; vertrekpunt, bestemming en tussenstops zijn weg
 $('stop').addEventListener('click', () => {
-  // Geen route live: de grijze pijl gaat terug naar de gezochte plek (met Nabij, Vanaf, Route en Start).
-  // Er wordt niets geannuleerd.
-  if (!state.nav && !state.concept) {
-    const back = [...stops].reverse().find(s => s && !s.here);
+  // Tijdens een route iets gewijzigd: de grijze pijl gooit de wijziging weg, de route loopt door
+  if (plan.live && planDirty()) {
     setTravelMode(modeAtOpen);
+    stops = [];
+    savedPick = null;
+    forgetPreview();
+    closeSearch();
+    return;
+  }
+  // Geen route live: de grijze pijl gaat terug naar de gezochte plek (met Nabij, Vanaf, Route en Start).
+  // Er wordt niets geannuleerd. Kwam je via lang drukken, dan terug naar de kaart.
+  if (!plan.live) {
+    const back = !plan.backHome && [...stops].reverse().find(s => s && !s.here);
+    setTravelMode(modeAtOpen);
+    forgetPreview();
     closeSearch();
     if (back) { stopFollowing(); showFound(cleanPlace(resolveStop(back) || back)); }
     return;
@@ -3594,8 +3689,12 @@ $('stop').addEventListener('click', () => {
   setHomeStart(false);
 });
 $('qadd').addEventListener('click', addRow);
-$('qok').addEventListener('click', () => (lookMode() ? lookAt() : confirmPreview()));
-$('pmapedit').addEventListener('click', e => { e.stopPropagation(); openMapSearch('edit', 'overview'); });
+// Groene knop: niets gewijzigd tijdens een route, dan gewoon doorrijden; anders de (nieuwe) route starten
+$('qok').addEventListener('click', () => {
+  if (plan.live && !planDirty()) { closeSearch(); return; }
+  if (lookMode()) lookAt(); else confirmPreview();
+});
+$('pedit').addEventListener('click', e => { e.stopPropagation(); openMapSearch('edit', 'overview'); });
 $('msback').addEventListener('click', msBack);
 $('msadd').addEventListener('click', msAdd);
 $('msok').addEventListener('click', msOk);
@@ -3626,14 +3725,15 @@ function toggleMapMenu(open) {
 function fitMapMenu() {
   const el = $('mapmenu');
   el.style.maxHeight = '';
-  const top = el.getBoundingClientRect().top;
-  // Ruimte voor de streep onderin de iPhone (de 'safe area')
+  const r = el.getBoundingClientRect();
+  // In de planner klapt het menu omhoog; ruimte voor de rand boven- of onderin de iPhone (de 'safe area')
+  const up = !!el.closest('.planner');
   const probe = document.createElement('div');
-  probe.style.cssText = 'position:fixed;visibility:hidden;height:env(safe-area-inset-bottom)';
+  probe.style.cssText = `position:fixed;visibility:hidden;height:env(safe-area-inset-${up ? 'top' : 'bottom'})`;
   document.body.appendChild(probe);
   const safe = probe.offsetHeight;
   probe.remove();
-  el.style.maxHeight = Math.max(160, innerHeight - top - 12 - safe) + 'px';
+  el.style.maxHeight = Math.max(160, up ? r.bottom - 12 - safe : innerHeight - r.top - 12 - safe) + 'px';
 }
 
 // Legenda van de wandelroutes: alleen de soorten die in dit kaartdeel voorkomen
@@ -3732,7 +3832,7 @@ function peek(on) {
   idle.classList.toggle('peek', on);
   placeRecenter();
 }
-map.on('dragstart', e => { if (e.originalEvent && $('search').hidden && !$('bottom-idle').hidden) peek(true); });
+map.on('dragstart', e => { if (e.originalEvent && !inSearch() && !$('bottom-idle').hidden) peek(true); });
 // Ingeklapt: een tik op het randje haalt hem terug, niet de knoppen eronder
 $('bottom-idle').addEventListener('click', e => {
   if (!$('bottom-idle').classList.contains('peek')) return;
@@ -3784,13 +3884,15 @@ $('fromrow').addEventListener('click', () => {
     padding: camPadding(), duration: 1200, essential: true });
 });
 setHomeStart(false);
-// Hier vandaan: de plek wordt het vertrekpunt, daarna de bestemming zoeken
+// Vanaf: de plek wordt het vertrekpunt; in de planner eronder Waar naartoe?
 $('foundfrom').addEventListener('click', () => {
   const p = found;
   clearLook();
-  setHomeStart(p);
+  openSheet();
+  stops = [p, null];
+  showOverview();
 });
-// Hier naartoe: meteen het overzicht, vanaf je eigen positie
+// Route: meteen de planner, vanaf je eigen positie (die komt erboven)
 $('foundto').addEventListener('click', () => {
   const p = found;
   clearLook();
@@ -3798,6 +3900,8 @@ $('foundto').addEventListener('click', () => {
   stops = [HERE, p];
   showOverview();
 });
+// Tik op de gevonden plek: een andere plaats zoeken
+$('foundfield').addEventListener('click', () => { clearLook(); openSearch(); });
 // Nabij: In de buurt rond deze plek; wat je kiest vervangt de plek (via het vertrekpunt-kiezen)
 let nearFrom = null;  // de plek waar Nabij vandaan kwam: terug zonder kiezen = weer die plek
 $('foundnear').addEventListener('click', () => {
@@ -3885,14 +3989,26 @@ function placeAction(act, p, pin, el) {
   }
   closePlaceMenu();
   if (act === 'del') { removePin(pin.id); return; }
-  if (act === 'start') { setHomeStart(p); peek(false); return; }
-  // Route hier naartoe: een extra bestemming achter wat er al gepland staat (ook als dat alleen
-  // een vertrekpunt is); niets gepland of nog geen vertrekpunt: vanaf je eigen positie. Meteen het overzicht.
-  openSheet();
-  const planned = plannedStops();
-  stops = [...(planned && planned[0] ? planned : [HERE]), p];
-  showOverview();
   if (p.naming) p.naming.then(() => { delete p.naming; if (!$('overview').hidden && stops.includes(p)) renderStops(); });
+  // In de planner: de plek vervangt de bestemming of het vertrekpunt
+  if (planning()) {
+    if (act === 'start') stops[0] = p;
+    else if (stops.length < 2) stops.push(p);
+    else stops[stops.length - 1] = p;
+    if (stops.length < 2) stops.push(null);
+    savedPick = null;
+    renderStops();
+    computePreview();
+    return;
+  }
+  // Vertrekpunt: de planner met de plek bovenaan en Waar naartoe? eronder.
+  // Route hier naartoe: de planner vanaf het vertrekpunt van wat er gepland staat, anders vanaf je eigen positie.
+  // Terug (grijze pijl) gaat dan naar de kaart.
+  const planned = plannedStops();
+  openSheet();
+  plan.backHome = true;
+  stops = act === 'start' ? [p, null] : [(planned && planned[0]) || HERE, p];
+  showOverview();
 }
 
 // Lang drukken: 0,55 s stil op één plek. Met de muis werkt rechtsklikken ook.
@@ -4404,14 +4520,15 @@ async function updateParkChip() {
 // Hetzelfde label klein op de kaart, bij de bestemming
 function drawParkTag() {
   if (parkTag) { parkTag.remove(); parkTag = null; }
-  if (!parkData || !pmap) return;
+  if (!parkData || !planning()) return;
   const el = document.createElement('button');
   el.type = 'button';
-  el.className = 'ptag ' + parkData.lab.cls;
+  el.className = 'ptag plantag ' + parkData.lab.cls;
+  shield(el);
   el.innerHTML = '<span class="psq">P</span><span></span>';
   el.lastChild.textContent = parkData.lab.text;
   el.addEventListener('click', e => { e.stopPropagation(); openParkSheet(); });
-  parkTag = new maplibregl.Marker({ element: el, anchor: 'left', offset: [12, 0] }).setLngLat([parkData.dest.lon, parkData.dest.lat]).addTo(pmap);
+  parkTag = new maplibregl.Marker({ element: el, anchor: 'left', offset: [12, 0] }).setLngLat([parkData.dest.lon, parkData.dest.lat]).addTo(map);
 }
 
 function closeParkSheet() { document.querySelectorAll('.pdim, .psheet').forEach(el => el.remove()); }
@@ -4773,7 +4890,7 @@ async function loadClosures() {
     const list = await ndwGet('closures.json');
     if (!Array.isArray(list)) return;
     closures = list;
-    for (const m of [map, pmap]) if (m && m.getSource('closures')) m.getSource('closures').setData(closureData());
+    if (map.getSource('closures')) map.getSource('closures').setData(closureData());
   } catch (e) { /* volgende keer opnieuw */ }
 }
 loadClosures();
@@ -5151,9 +5268,12 @@ async function refreshNavJams(n) {
     drawNavJams();
   } catch (e) { /* volgende keer opnieuw */ } finally { tr.busy = false; }
 }
+// In de planner de files op de gekozen route, anders die op de lopende route
 function drawNavJams() {
   const src = map.getSource('rjam');
-  if (src) src.setData(state.nav ? jamFeatures(state.nav, state.nav.along) : EMPTY_FC);
+  if (!src) return;
+  if (planning()) src.setData(previewNav ? jamFeatures(previewNav) : EMPTY_FC);
+  else src.setData(state.nav ? jamFeatures(state.nav, state.nav.along) : EMPTY_FC);
 }
 function jamToast({ title, sub, cls = '', icon = 'car', ttl = 8000 }) {
   const el = $('jtoast');

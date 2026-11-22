@@ -149,11 +149,6 @@ body.legback #bottom-next { transform: translateX(calc(200% + 12px)); }
 #results .recent.here .ti { color: #1F6FE0; }
 .sheet #results:empty { display: none; }
 .pane { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-.preview { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 12px 16px calc(env(safe-area-inset-bottom) + 16px); gap: 10px; }
-.pmap { position: relative; flex: 1; min-height: 160px; border-radius: 16px; overflow: hidden; background: #EDEBE6; }
-.pmapedit { position: absolute; right: 8px; top: 8px; z-index: 2; width: 38px; height: 38px; border-radius: 50%; background: #fff; color: #1F6FE0;
-  display: flex; align-items: center; justify-content: center; box-shadow: 0 1px 6px rgba(0,0,0,.2); }
-.pmapedit .ti { font-size: 20px; }
 .psum { text-align: center; font-size: 16px; color: #3a3a3c; }
 .pbtns { display: flex; justify-content: space-between; align-items: center; padding: 0 8px; }
 .roundbtn { width: 64px; height: 64px; border-radius: 50%; color: #fff; display: flex; align-items: center; justify-content: center; }
@@ -190,10 +185,6 @@ body.legback #bottom-next { transform: translateX(calc(200% + 12px)); }
 .sbtn { flex: none; width: 38px; height: 40px; display: flex; align-items: center; justify-content: center; color: #1F6FE0; }
 .sbtn .ti { font-size: 22px; }
 .sbtn.x { color: #8E8E93; width: 34px; }
-.sfield:has(+ .sclr) { padding-right: 38px; }
-.sclr { flex: none; width: 24px; height: 24px; margin-left: -32px; margin-right: 8px; border-radius: 50%; position: relative;
-  background: #8E8E93; color: #fff; display: flex; align-items: center; justify-content: center; }
-.sclr .ti { font-size: 14px; }
 
 /* In de buurt: categorieën */
 .cats { display: flex; gap: 3px; padding: 10px 10px; border-bottom: 1px solid #eee; overflow-x: auto; flex: none; }
@@ -229,7 +220,7 @@ body.legback #bottom-next { transform: translateX(calc(200% + 12px)); }
 .msmap { position: absolute; inset: 0; z-index: 0; background: #EDEBE6; }
 .mstop { position: absolute; left: 0; right: 0; top: 0; z-index: 3; }
 .mstop .moderow { background: #fff; }
-.mshint { position: absolute; left: 50%; top: 68px; transform: translateX(-50%); z-index: 3; max-width: calc(100% - 32px);
+.mshint { position: absolute; left: 50%; top: 68px; transform: translateX(-50%); z-index: 3; width: max-content; max-width: calc(100% - 32px);
   background: rgba(28,28,30,.88); color: #fff; font-size: 14px; padding: 8px 12px; border-radius: 10px; text-align: center; pointer-events: none; }
 .mapsearch .pickme { bottom: auto; top: 66px; right: 12px; z-index: 3; }
 .mapsearch .mshint:not([hidden]) ~ .pickme { top: 110px; }
@@ -375,6 +366,12 @@ body.menuopen .mapctl { z-index: 12; opacity: 1; pointer-events: auto; }
 #fromx .ti, #foundx .ti { font-size: 19px; }
 #foundx { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; color: #8a8a8a; }
 .found .fromrow > .ti { color: #E5484D; }
+/* Gevonden plek: een ingevuld veld, tik erop om opnieuw te zoeken */
+.foundfield { display: flex; align-items: center; background: #F1F0EC; border-radius: 12px; margin: 0 0 10px; }
+.foundtxt { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 12px 4px 12px 14px; font-size: 18px; text-align: left; }
+.foundtxt .ti { font-size: 22px; color: #E5484D; flex: none; }
+.foundtxt span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+.foundfield #foundx { width: 44px; height: 44px; flex: none; }
 /* Gevonden plek: links blauw Hier vandaan, rechts groen Hier naartoe */
 .foundbtns { display: flex; gap: 8px; }
 /* Vier knoppen: icoon boven de tekst, dan passen ze ook op een iPhone SE */
@@ -616,7 +613,6 @@ body.menuopen .mapctl { z-index: 12; opacity: 1; pointer-events: auto; }
   .stops, .cats { border-bottom-color: #2c2c2e; }
   .stop { background: #000; }
   .cats button { background: #1c1c1e; color: #c7c7cc; }
-  .pmapedit { background: #2c2c2e; color: #5EA0FF; }
   .mstop .moderow { background: #000; }
   .actcard { background: #1c1c1e; box-shadow: 0 2px 14px rgba(0,0,0,.6); }
   .actcard .lbltxt { color: #c7c7cc; }
@@ -660,7 +656,6 @@ body.menuopen .mapctl { z-index: 12; opacity: 1; pointer-events: auto; }
   #results .recent > .row { background: #000; }
   #results li.recent:active > .row { background: #1c1c1e; }
   #results .rename { background: #1c1c1e; }
-  .pmap { background: #23262B; }
   .pickme { background: #2c2c2e; color: #5EA0FF; box-shadow: 0 2px 8px rgba(0,0,0,.5); }
   .psum { color: #c7c7cc; }
   .setbtn { background: #2c2c2e; color: #c7c7cc; }
@@ -759,4 +754,55 @@ body.menuopen .mapctl { z-index: 12; opacity: 1; pointer-events: auto; }
   .jbig .s { color: #c7c7cc; }
   .jrows .v2 { color: #f2f2f7; }
   .jrows .k { color: #a1a1a6; }
+}
+
+/* ---------- Eén kaart: de planner is een kaartje onderin, de kaart erboven blijft bedienbaar ---------- */
+.planner { left: 10px; right: 10px; bottom: calc(env(safe-area-inset-bottom) + 10px); z-index: 7; padding: 10px 12px 12px;
+  display: flex; flex-direction: column; gap: 8px; box-shadow: 0 2px 14px rgba(0,0,0,.16); }
+.planner .moderow { padding: 0; border: 0; }
+.planner .modes button { padding: 8px 0; }
+.planner .mapmenu { top: auto; bottom: 48px; }
+.planner .stops { padding: 0; border: 0; gap: 6px; max-height: 214px; }
+.planner .stop { background: transparent; gap: 4px; }
+.planner .stop .grip { width: 20px; }
+.planner .sdot { margin-right: 2px; }
+.sbox { flex: 1; min-width: 0; display: flex; align-items: center; background: #F1F0EC; border-radius: 11px; }
+.sbox .sfield { background: none; padding: 10px 4px 10px 12px; }
+.sbox .sbtn { width: 38px; }
+.sbox.new { box-shadow: inset 0 0 0 2px #1F6FE0; }
+.sfield.to { color: #1F6FE0; font-weight: 600; }
+.planner .sbtn.x { width: 28px; }
+.xgap { width: 28px; flex: none; }
+.planner .psum { font-size: 15px; }
+.planner .pbtns { padding: 0 4px; }
+.planner .roundbtn { width: 56px; height: 56px; }
+.planner .roundbtn .ti { font-size: 27px; }
+/* Zwevend boven het kaartje: het potlood om de gekozen route aan te passen */
+.pfloats { position: absolute; right: 0; bottom: calc(100% + 10px); display: flex; gap: 10px; }
+.pfl { width: 46px; height: 46px; border-radius: 50%; background: #fff; color: #1F6FE0; display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 2px 10px rgba(0,0,0,.2); }
+.pfl .ti { font-size: 22px; }
+/* Zolang je plant: geen navigatiekaartjes, meldingen en terugknop; die horen bij het rijden */
+body.planning .bar { transform: translateY(-100%); }
+body.planning #instr, body.planning #bottom-idle, body.planning #bottom-nav, body.planning #bottom-next, body.planning #bottom-prev,
+body.planning .injam, body.planning .jtoast, body.planning .ptoast, body.planning #recenter { display: none !important; }
+body:not(.planning) .plantag { display: none; }
+/* Eén adresregel kiezen op de kaart: onderin die regel met het adres onder de pin */
+.msrow { position: absolute; left: 16px; right: 16px; bottom: calc(env(safe-area-inset-bottom) + 100px); z-index: 3; background: #fff; border-radius: 14px;
+  padding: 13px 14px; display: flex; align-items: center; gap: 10px; font-size: 16px; box-shadow: inset 0 0 0 2px #1F6FE0, 0 2px 14px rgba(0,0,0,.18); }
+.msrow .sdot { margin: 0; }
+.msrowtxt { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mapsearch.rowpick .mstop { display: none; }
+.mapsearch.rowpick .mshint { top: 12px; }
+.mapsearch.rowpick .pickme { top: 12px; }
+.mapsearch.rowpick .mshint:not([hidden]) ~ .pickme { top: 56px; }
+@media (prefers-color-scheme: dark) {
+  .foundfield, .sbox { background: #2c2c2e; }
+  .foundtxt { color: #f2f2f7; }
+  .sbox .sfield { background: none; }
+  .sbox.new { box-shadow: inset 0 0 0 2px #5EA0FF; }
+  .sfield.to { color: #5EA0FF; }
+  .planner .stop { background: transparent; }
+  .pfl { background: #2c2c2e; color: #5EA0FF; box-shadow: 0 2px 10px rgba(0,0,0,.5); }
+  .msrow { background: #1c1c1e; color: #f2f2f7; box-shadow: inset 0 0 0 2px #5EA0FF, 0 2px 14px rgba(0,0,0,.5); }
 }
