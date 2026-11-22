@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '204';
+const VERSION = '205';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -798,23 +798,25 @@ let stationData = null;
 const loadStations = () => stationData ||= fetch('stations.json').then(r => r.json()).catch(() => { stationData = null; return []; });
 const stationsFC = () => loadStations().then(list => ({ type: 'FeatureCollection',
   features: list.map(([name, lat, lon, rank]) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [lon, lat] }, properties: { name, rank } })) }));
-// Een icoon uit de iconenset in de kleur van de namen, met een rand zoals de namen (2x scherp):
-// het treintje en het vliegtuigje
-const fontReady = document.fonts.load('40px "tabler-icons"').catch(() => {});
-async function glyphImage(glyph, dark) {
-  await fontReady;
+// Dichte iconen (Material Icons, Apache 2.0): de voorkant van een trein en een vliegtuig, in de kleur
+// van de namen en met een rand zoals de namen (2x scherp)
+const ICON_PATHS = {
+  station: 'M12 2c-4 0-8 .5-8 4v9.5C4 17.43 5.57 19 7.5 19L6 20.5v.5h2.23l2-2H14l2 2h2v-.5L16.5 19c1.93 0 3.5-1.57 3.5-3.5V6c0-3.5-3.58-4-8-4zM7.5 17c-.83 0-1.5-.67-1.5-1.5S6.67 14 7.5 14s1.5.67 1.5 1.5S8.33 17 7.5 17zm3.5-7H6V6h5v4zm2 0V6h5v4h-5zm3.5 7c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z',
+  plane: 'M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z',
+};
+function iconImage(id, dark) {
   const c = document.createElement('canvas');
   c.width = c.height = 36;
   const g = c.getContext('2d');
-  g.font = '28px "tabler-icons"';
-  g.textAlign = 'center';
-  g.textBaseline = 'middle';
+  g.translate(3, 3);
+  g.scale(1.25, 1.25);
+  const path = new Path2D(ICON_PATHS[id]);
   g.lineJoin = 'round';
-  g.lineWidth = 5;
+  g.lineWidth = 2.6;
   g.strokeStyle = dark ? 'rgba(35,38,43,0.9)' : 'rgba(255,255,255,0.95)';
-  g.strokeText(glyph, 18, 19);
+  g.stroke(path);
   g.fillStyle = dark ? '#C9CDD4' : '#4E5866';
-  g.fillText(glyph, 18, 19);
+  g.fill(path);
   return g.getImageData(0, 0, 36, 36);
 }
 // De luchthavens uit airports.json (dezelfde lijst als bij zoeken): de kaarttegels hebben Brussel
@@ -827,22 +829,40 @@ function addStationLayers(m) {
   m.addSource('airportpts', { type: 'geojson', data: EMPTY_FC });
   stationsFC().then(fc => { if (m.getSource('stations')) m.getSource('stations').setData(fc); });
   airportsFC().then(fc => { if (m.getSource('airportpts')) m.getSource('airportpts').setData(fc); });
-  for (const [id, glyph] of [['station', '\ued96'], ['plane', '\ueb6f']]) {
-    glyphImage(glyph, dark).then(img => { if (m.getSource('stations') && !m.hasImage(id)) m.addImage(id, img, { pixelRatio: 2 }); });
-  }
+  for (const id of ['station', 'plane']) if (!m.hasImage(id)) m.addImage(id, iconImage(id, dark), { pixelRatio: 2 });
+  m.addSource('iconsel', { type: 'geojson', data: EMPTY_FC });
   const paint = dark ? { 'text-color': '#B9BCC3', 'text-halo-color': 'rgba(35,38,43,0.9)', 'text-halo-width': 1.5 }
     : { 'text-color': '#4E5866', 'text-halo-color': 'rgba(255,255,255,0.9)', 'text-halo-width': 1.5 };
-  const layout = (icon, font, size) => ({ 'icon-image': icon, 'icon-size': size, 'text-field': ['get', 'name'], 'text-font': [font],
-    'text-size': size < 1 ? 11.5 : 12.5, 'text-anchor': 'top', 'text-offset': [0, 0.9], 'text-max-width': 9, 'text-optional': true, 'text-padding': 2 });
+  // Namen pas vanaf zoom 11; daarvoor alleen het icoon, en de naam na een tik erop (laag iconsel)
+  const text = font => ({ 'text-font': [font], 'text-size': font === 'Noto Sans Bold' ? 12.5 : 11.5, 'text-anchor': 'top', 'text-offset': [0, 0.9],
+    'text-max-width': 9, 'text-padding': 2 });
+  const layout = (icon, font, size) => ({ 'icon-image': icon, 'icon-size': size, 'text-field': ['step', ['zoom'], '', ICON_NAMES_Z, ['get', 'name']],
+    'text-optional': true, ...text(font) });
   // Grote luchthavens vanaf zoom 8, middelgrote vanaf 10, hoofdstations vanaf 9, het enige station van een plaats
   // vanaf 11, de andere stations in een stad vanaf 12. De luchthavens van de kaartstijl zelf (niet in donker) vervallen.
   if (m.getLayer('airport')) m.removeLayer('airport');
-  [[0, 8], [1, 10]].forEach(([rank, minzoom]) => m.addLayer({ id: 'airports-' + rank, type: 'symbol', source: 'airportpts', minzoom,
-    filter: ['==', ['get', 'rank'], rank], layout: layout('plane', 'Noto Sans Bold', 1), paint }));
   [[0, 9, 'Noto Sans Bold', 1], [1, 11, 'Noto Sans Regular', 0.85], [2, 12, 'Noto Sans Regular', 0.85]].forEach(([rank, minzoom, font, size]) =>
     m.addLayer({ id: 'stations-' + rank, type: 'symbol', source: 'stations', minzoom, filter: ['==', ['get', 'rank'], rank],
       layout: layout('station', font, size), paint }));
+  // Luchthavens boven de stations: ligt er een station vlak naast (Schiphol), dan wint de luchthaven
+  [[0, 8], [1, 10]].forEach(([rank, minzoom]) => m.addLayer({ id: 'airports-' + rank, type: 'symbol', source: 'airportpts', minzoom,
+    filter: ['==', ['get', 'rank'], rank], layout: layout('plane', 'Noto Sans Bold', 1), paint }));
+  m.addLayer({ id: 'iconsel', type: 'symbol', source: 'iconsel', maxzoom: ICON_NAMES_Z,
+    layout: { 'text-field': ['get', 'name'], 'text-allow-overlap': true, 'text-ignore-placement': true, ...text('Noto Sans Bold') }, paint });
 }
+const ICON_NAMES_Z = 11;
+const ICON_LAYERS = ['airports-0', 'airports-1', 'stations-0', 'stations-1', 'stations-2'];
+// Tik op een station of luchthaven (uitgezoomd, zonder naam): de naam verschijnt eronder. Een tik ernaast haalt hem weg.
+// e.iconTap: de andere tikken op de kaart (planner inklappen) laten deze tik dan met rust.
+map.on('click', e => {
+  const src = map.getSource('iconsel');
+  if (!src) return;
+  const { x, y } = e.point;
+  const layers = ICON_LAYERS.filter(id => map.getLayer(id));
+  const f = map.getZoom() < ICON_NAMES_Z && layers.length && map.queryRenderedFeatures([[x - 14, y - 14], [x + 14, y + 14]], { layers })[0];
+  src.setData(f ? { type: 'FeatureCollection', features: [{ type: 'Feature', geometry: f.geometry, properties: { name: f.properties.name } }] } : EMPTY_FC);
+  if (f) e.iconTap = true;
+});
 
 // Treinstations die bij de getypte woorden passen ("utr cen", "amersfoort"); hoofdstations en dichtbij eerst
 async function stationMatches(v) {
@@ -3017,7 +3037,7 @@ map.on('click', e => {
   if (f) { selectAlt(f.properties.i); return; }
   // Een tik op de kaart klapt de planner in (de hele kaart in beeld) en weer uit;
   // niet als de tik een menu van lang drukken sluit
-  if (Date.now() >= lp.eatUntil && !placeMenu && !msmap && !$('overview').hidden) planPeek(!$('overview').classList.contains('peek'));
+  if (!e.iconTap && Date.now() >= lp.eatUntil && !placeMenu && !msmap && !$('overview').hidden) planPeek(!$('overview').classList.contains('peek'));
 });
 
 // Planner ingeklapt: alleen een randje met een greepje, het potlood zweeft erboven
