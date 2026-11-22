@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '201';
+const VERSION = '202';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -794,12 +794,13 @@ function addRouteLayers(m, coords) {
 // ---------- Treinstations: per stad het hoofdstation al uitgezoomd, de rest dichterbij ----------
 // De lijst komt van tools/stations.py (Trainline, heel Europa); alleen spoor, geen tram- of bushaltes.
 let stationData = null;
-const stationsFC = () => stationData ||= fetch('stations.json').then(r => r.json()).then(list => ({ type: 'FeatureCollection',
-  features: list.map(([name, lat, lon, rank]) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [lon, lat] }, properties: { name, rank } })) }))
-  .catch(() => { stationData = null; return EMPTY_FC; });
-// Het treintje uit de iconenset, wit op een grijs blokje (2x scherp)
+// [naam, lat, lon, rang, land]; rang 0 = hoofdstation, 1 = enige station van de plaats, 2 = ander station in de stad
+const loadStations = () => stationData ||= fetch('stations.json').then(r => r.json()).catch(() => { stationData = null; return []; });
+const stationsFC = () => loadStations().then(list => ({ type: 'FeatureCollection',
+  features: list.map(([name, lat, lon, rank]) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [lon, lat] }, properties: { name, rank } })) }));
+// Een icoon uit de iconenset, wit op een grijs blokje (2x scherp): het treintje en het vliegtuigje
 const fontReady = document.fonts.load('40px "tabler-icons"').catch(() => {});
-async function stationImage(dark) {
+async function glyphImage(glyph, dark) {
   await fontReady;
   const c = document.createElement('canvas');
   c.width = c.height = 36;
@@ -812,22 +813,49 @@ async function stationImage(dark) {
   g.font = '26px "tabler-icons"';
   g.textAlign = 'center';
   g.textBaseline = 'middle';
-  g.fillText('\ued96', 18, 19);
+  g.fillText(glyph, 18, 19);
   return g.getImageData(0, 0, 36, 36);
 }
 function addStationLayers(m) {
   const dark = theme() === 'dark';
   m.addSource('stations', { type: 'geojson', data: EMPTY_FC });
   stationsFC().then(fc => { if (m.getSource('stations')) m.getSource('stations').setData(fc); });
-  stationImage(dark).then(img => { if (m.getSource('stations') && !m.hasImage('station')) m.addImage('station', img, { pixelRatio: 2 }); });
+  for (const [id, glyph] of [['station', '\ued96'], ['plane', '\ueb6f']]) {
+    glyphImage(glyph, dark).then(img => { if (m.getSource('stations') && !m.hasImage(id)) m.addImage(id, img, { pixelRatio: 2 }); });
+  }
   const paint = dark ? { 'text-color': '#B9BCC3', 'text-halo-color': 'rgba(35,38,43,0.9)', 'text-halo-width': 1.5 }
     : { 'text-color': '#4E5866', 'text-halo-color': 'rgba(255,255,255,0.9)', 'text-halo-width': 1.5 };
-  // Hoofdstations vanaf zoom 8, het enige station van een plaats vanaf 11, de andere stations in een stad vanaf 12
-  [[0, 8, 'Noto Sans Bold', 1], [1, 11, 'Noto Sans Regular', 0.85], [2, 12, 'Noto Sans Regular', 0.85]].forEach(([rank, minzoom, font, size]) =>
+  const layout = (icon, font, size) => ({ 'icon-image': icon, 'icon-size': size, 'text-field': ['get', 'name'], 'text-font': [font],
+    'text-size': size < 1 ? 11.5 : 12.5, 'text-anchor': 'top', 'text-offset': [0, 0.9], 'text-max-width': 9, 'text-optional': true, 'text-padding': 2 });
+  // Luchthavens (met IATA-code) en hoofdstations vanaf zoom 10, het enige station van een plaats vanaf 11,
+  // de andere stations in een stad vanaf 12. De luchthavens van de kaartstijl zelf (pas vanaf 11, niet in donker) vervallen.
+  if (m.getLayer('airport')) m.removeLayer('airport');
+  m.addLayer({ id: 'airports', type: 'symbol', source: 'openmaptiles', 'source-layer': 'aerodrome_label', minzoom: 10,
+    filter: ['has', 'iata'], layout: layout('plane', 'Noto Sans Bold', 1), paint });
+  [[0, 10, 'Noto Sans Bold', 1], [1, 11, 'Noto Sans Regular', 0.85], [2, 12, 'Noto Sans Regular', 0.85]].forEach(([rank, minzoom, font, size]) =>
     m.addLayer({ id: 'stations-' + rank, type: 'symbol', source: 'stations', minzoom, filter: ['==', ['get', 'rank'], rank],
-      layout: { 'icon-image': 'station', 'icon-size': size, 'text-field': ['get', 'name'], 'text-font': [font], 'text-size': rank ? 11.5 : 12.5,
-        'text-anchor': 'top', 'text-offset': [0, 0.9], 'text-max-width': 9, 'text-optional': true, 'text-padding': 2 },
-      paint }));
+      layout: layout('station', font, size), paint }));
+}
+
+// Treinstations die bij de getypte woorden passen ("utr cen", "amersfoort"); hoofdstations en dichtbij eerst
+async function stationMatches(v) {
+  const words = fold(v).split(/[\s,]+/).filter(w => w && w !== 'station');
+  if (!words.length || words.join('').length < 3) return [];
+  const list = await loadStations();
+  const c = nearCentre();
+  return list.filter(([name]) => { const parts = fold(name).split(/[^\p{L}\p{N}]+/u); return words.every(w => parts.some(p => p.startsWith(w))); })
+    .map(s => ({ s, d: dist([c.lon, c.lat], [s[2], s[1]]) }))
+    .sort((a, b) => a.s[3] - b.s[3] || a.d - b.d).slice(0, 3)
+    .map(({ s: [name, lat, lon, , cc] }) => ({ station: true, properties: { name, country: cc === 'NL' ? '' : (regionNames && regionNames.of(cc)) || cc,
+      osm_key: 'railway', osm_value: 'station' }, geometry: { coordinates: [lon, lat] } }));
+}
+// Stations rond een punt voor In de buurt, dichtstbij eerst (tot 25 km)
+async function stationsNear(at, want) {
+  const list = await loadStations();
+  const dLat = 0.25, dLon = dLat / Math.cos(rad(at.lat));
+  return list.filter(s => Math.abs(s[1] - at.lat) < dLat && Math.abs(s[2] - at.lon) < dLon)
+    .map(([name, lat, lon, rank]) => ({ lat, lon, title: name, sub: rank === 0 ? 'Hoofdstation' : 'Treinstation', name, d: dist([at.lon, at.lat], [lon, lat]) }))
+    .filter(p => p.d <= 25000).sort((a, b) => a.d - b.d).slice(0, Math.max(want, 10));
 }
 
 // Een streepje voor de conceptroute: een effen blauw rechthoekje (2x scherp), in de lijnrichting
@@ -1699,6 +1727,8 @@ const NEAR = {
   culture: { label: 'Cultuur', icon: 'ti-building-arch',
     tags: { tourism: ['museum', 'gallery', 'attraction'], amenity: ['theatre', 'arts_centre', 'cinema'],
       historic: ['castle', 'monument', 'ruins', 'archaeological_site', 'fort', 'manor', 'city_gate', 'memorial'], man_made: ['windmill'] } },
+  // Treinstations uit de eigen stationslijst (geen tram- of bushaltes), zie stationsNear
+  train: { label: 'Trein', icon: 'ti-train', tags: {} },
 };
 const KIND_NL = {
   fuel: 'Tankstation', charging_station: 'Laadpaal', restaurant: 'Restaurant', cafe: 'Café', fast_food: 'Snackbar', pub: 'Kroeg',
@@ -1889,6 +1919,7 @@ function renderCats() {
   el.hidden = listTab !== 'near';
   if (el.hidden || el.childElementCount) {
     el.querySelectorAll('button').forEach(b => b.setAttribute('aria-checked', String(b.dataset.cat === nearCat)));
+    showCat();
     return;
   }
   for (const [key, c] of Object.entries(NEAR)) {
@@ -1906,6 +1937,15 @@ function renderCats() {
     });
     el.appendChild(b);
   }
+  showCat();
+}
+// Past de rij niet op het scherm, dan schuift hij: de gekozen soort altijd in beeld
+function showCat() {
+  const el = $('cats'), b = el.querySelector('[aria-checked="true"]');
+  if (!b || el.hidden) return;
+  const l = b.offsetLeft - el.offsetLeft, r = l + b.offsetWidth;
+  if (l < el.scrollLeft) el.scrollLeft = l - 10;
+  else if (r > el.scrollLeft + el.clientWidth) el.scrollLeft = r - el.clientWidth + 10;
 }
 
 // Plekken rond één punt: eerst binnen 4 km, is daar weinig dan binnen 25 km
@@ -1914,6 +1954,7 @@ function nearList(cat, at, want = 5) {
   const key = cat + '|' + want + '|' + at.lat.toFixed(3) + '|' + at.lon.toFixed(3) + (cat === 'charging' ? '|' + Math.floor(Date.now() / NDW_FRESH) : '');
   if (!nearMemo.has(key)) {
     nearMemo.set(key, (async () => {
+      if (cat === 'train') return stationsNear(at, want);
       // Laadpalen: die van NDW (met vrij of bezet) én die van de kaart. NDW mist er veel,
       // bijvoorbeeld alle openbare laadpalen van de gemeente Amsterdam.
       if (cat === 'charging') {
@@ -2000,7 +2041,8 @@ async function rankMid(cat, bp) {
     const [x1, y1] = tileAt(q.lon - dLon, q.lat + dLat, POI_Z), [x2, y2] = tileAt(q.lon + dLon, q.lat - dLat, POI_Z);
     for (let x = x1; x <= x2; x++) for (let y = y1; y <= y2; y++) ids.add(x + '/' + y);
   }
-  let found = tileItems(cat, await Promise.all([...ids].map(k => poiTile(...k.split('/').map(Number)))), bp);
+  let found = cat === 'train' ? await stationsNear(bp, 50)
+    : tileItems(cat, await Promise.all([...ids].map(k => poiTile(...k.split('/').map(Number)))), bp);
   // Laadpalen: ook die van NDW (met vrij of bezet) in het vak rond dit stuk route
   if (cat === 'charging') {
     const lats = near.map(c => c[1]), lons = near.map(c => c[0]), dLon = dLat / Math.cos(rad(bp.lat));
@@ -2010,7 +2052,7 @@ async function rankMid(cat, bp) {
   }
   let cands = found.map(p => ({ ...p, r: toRoute(p) })).filter(p => p.r <= 1000);
   // Weinig langs de route: ook Photon, iets verder van de weg
-  if (cands.length < 5) {
+  if (cands.length < 5 && cat !== 'train') {
     const seen = new Set(cands.map(p => p.lat.toFixed(4) + '|' + p.lon.toFixed(4)));
     const more = (await Promise.all([0, -8, 8].map(km => photonNear(cat, alongPoint(n, bp.along + km * 1000), 4.5).catch(() => [])))).flat();
     for (const p of more) {
@@ -2518,28 +2560,27 @@ async function search() {
   const params = new URLSearchParams({ q, limit: '12' });
   focusParams(params);
   const airports = airportMatches(v).catch(() => []);
+  const stationsP = stationMatches(v).catch(() => []);
   try {
     const res = await fetch(`${PHOTON}?${params}`);
     const data = await res.json();
     const found = await airports;
+    const trains = await stationsP;
     if (seq !== searchSeq) return;
     // Hetzelfde gebouw als uit de kaart (zelfde naam, vlakbij) niet nog een keer
     const same = f => local.some(d => d.name.toLowerCase() === describe(f.properties).title.toLowerCase() && dist([d.lon, d.lat], f.geometry.coordinates) < 300);
     const features = dedupe(data.features)
       .filter(f => { const { title, sub } = describe(f.properties); return !known.has([title, sub].filter(Boolean).join(', ')) && !same(f); })
+      // Een station dat al uit de stationslijst komt niet nog een keer
+      .filter(f => !trains.some(t => dist(t.geometry.coordinates, f.geometry.coordinates) < 600
+        && (isStationF(f) || fold(describe(f.properties).title) === fold(t.properties.name))))
       .slice(0, 8 - local.length);
     firstResult = features[0] || null;
     if (!firstResult && local.length) firstResult = local[0].feature;
-    if (!features.length && !recents.length && !local.length && !found.length) { ul.innerHTML = '<li class="empty">Niets gevonden</li>'; return; }
-    const item = f => {
-      const { title, sub } = describe(f.properties);
-      const li = document.createElement('li');
-      li.innerHTML = `<div class="r1"></div><div class="r2"></div>`;
-      li.querySelector('.r1').textContent = title;
-      li.querySelector('.r2').textContent = sub;
-      li.addEventListener('click', () => choose(f));
-      return li;
-    };
+    if (!firstResult && trains.length) firstResult = trains[0];
+    if (!features.length && !recents.length && !local.length && !found.length && !trains.length) { ul.innerHTML = '<li class="empty">Niets gevonden</li>'; return; }
+    // Stations en luchthavens van Photon krijgen ook hun icoontje
+    const item = f => (isStationF(f) ? iconItem(f, 'ti-train') : isAirportF(f) ? iconItem(f, 'ti-plane-departure') : plainItem(f));
     if (found.length) {
       // Luchthavens bovenaan, ook boven de recente. Kleine letters kunnen ook een plaatsnaam
       // zijn ("oss"): een plaats met precies die naam blijft dan de eerste.
@@ -2552,8 +2593,10 @@ async function search() {
       firstRecent = null;
       firstResult = top[0] || found[0];
     }
-    if (features.length + local.length + found.length > 1) ul.appendChild(resultsMapLink([...found, ...local.map(d => d.feature), ...features]));
-    for (const f of features) ul.appendChild(item(f));
+    if (features.length + local.length + found.length + trains.length > 1) ul.appendChild(resultsMapLink([...found, ...local.map(d => d.feature), ...trains, ...features]));
+    // Stations boven de andere resultaten; een plaats met precies de getypte naam blijft bovenaan
+    const city = features[0] && ['place', 'boundary'].includes(features[0].properties.osm_key) ? [features.shift()] : [];
+    for (const f of [...city, ...trains, ...features]) ul.appendChild(f.station ? iconItem(f, 'ti-train') : item(f));
   } catch (e) {
     if (seq === searchSeq) ul.innerHTML = '<li class="empty">Zoeken lukt nu niet. Controleer je verbinding.</li>';
   }
@@ -2672,13 +2715,26 @@ async function chooseAirport(code) {
   firstRecent = null;
   firstResult = list[0];
 }
-function airportItem(f) {
+const airportItem = f => iconItem(f, 'ti-plane-departure');
+const isStationF = f => f.properties.osm_key === 'railway' && ['station', 'halt'].includes(f.properties.osm_value)
+  || f.properties.osm_key === 'public_transport' && f.properties.osm_value === 'station' && /\b(trein|train|bahnhof|gare|station)\b/i.test(f.properties.name || '');
+const isAirportF = f => f.properties.osm_key === 'aeroway' && f.properties.osm_value === 'aerodrome';
+function plainItem(f) {
+  const { title, sub } = describe(f.properties);
+  const li = document.createElement('li');
+  li.innerHTML = `<div class="r1"></div><div class="r2"></div>`;
+  li.querySelector('.r1').textContent = title;
+  li.querySelector('.r2').textContent = sub;
+  li.addEventListener('click', () => choose(f));
+  return li;
+}
+function iconItem(f, icon) {
   const { title, sub } = describe(f.properties);
   const li = document.createElement('li');
   li.className = 'recent airport';
-  li.innerHTML = '<div class="row"><i class="ti ti-plane-departure" aria-hidden="true"></i><div class="rtext"><div class="r1"></div><div class="r2"></div></div></div>';
+  li.innerHTML = `<div class="row"><i class="ti ${icon}" aria-hidden="true"></i><div class="rtext"><div class="r1"></div><div class="r2"></div></div></div>`;
   li.querySelector('.r1').textContent = title;
-  li.querySelector('.r2').textContent = sub;
+  li.querySelector('.r2').textContent = sub || (f.station ? 'Treinstation' : '');
   li.addEventListener('click', () => choose(f));
   return li;
 }

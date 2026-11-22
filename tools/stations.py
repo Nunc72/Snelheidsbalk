@@ -4,7 +4,7 @@
 Bron: Trainline stations (open data, ODbL), alleen stations met een UIC-code (spoor,
 geen bushaltes). Stations met hetzelfde eerste woord dicht bij elkaar horen bij één stad.
 
-  stations.json  [[naam, lat, lon, rang], ...]
+  stations.json  [[naam, lat, lon, rang, land], ...]
   rang 0: hoofdstation van een stad (Utrecht Centraal), al uitgezoomd te zien
   rang 1: het enige station van een plaats (Bunnik)
   rang 2: de andere stations in een stad (Utrecht Zuilen), pas dichterbij
@@ -44,7 +44,7 @@ def main(out):
         if key in seen:
             continue
         seen.add(key)
-        stations.append([r['name'], lat, lon, r['is_main_station'] == 't'])
+        stations.append([r['name'], lat, lon, r['is_main_station'] == 't', r['country']])
     # Per stad: stations met hetzelfde eerste woord, elk binnen 8 km van een ander (Utrecht Centraal, Utrecht Zuilen)
     groups = {}
     for s in stations:
@@ -59,13 +59,13 @@ def main(out):
     for city, gs in groups.items():
         for g in gs:
             if len(g) == 1:
-                out_list.append(g[0][:3] + [1])
+                out_list.append(g[0][:3] + [1, g[0][4]])
                 continue
             # Het hoofdstation: zo aangemerkt, de kale plaatsnaam, of Centraal/Hbf in de naam
             main = next((s for s in g if s[3]), None) or next((s for s in g if s[0] == city), None) \
                 or next((s for s in g if MAIN.search(s[0])), None)
             for s in g:
-                out_list.append(s[:3] + [0 if s is main else 2 if main else 1])
+                out_list.append(s[:3] + [0 if s is main else 2 if main else 1, s[4]])
     out_list.sort(key=lambda s: s[3])
     with open(out, 'w', encoding='utf-8') as f:
         json.dump(out_list, f, ensure_ascii=False, separators=(',', ':'))
