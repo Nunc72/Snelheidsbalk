@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '217';
+const VERSION = '218';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -3398,6 +3398,9 @@ function msGoTo(p, at) {
   ms.snapSub = '';
   msmap.easeTo({ center: p ? ll(p) : at, duration: 350 });
 }
+// Kiest een tik op de kaart nu een plek? Bij één adresregel, en op de wijzigkaart bij plus of verplaatsen
+const msTapPick = () => !!msmap && !ms.pois && (ms.kind === 'row' ? !ms.action
+  : ms.action ? ms.action.type !== 'remove' : ms.adding);
 // Staat de pin nog op de gekozen plek?
 function msSnapped() {
   if (!ms.snap) return null;
@@ -3706,8 +3709,8 @@ function msUi(force) {
     }
   }
   card.hidden = !card.childElementCount;
-  const hint = a && a.type === 'insert' ? 'Schuif de kaart naar het nieuwe punt'
-    : a && a.type === 'move' ? 'Schuif de kaart naar de nieuwe plek'
+  const hint = a && a.type === 'insert' ? 'Tik op het nieuwe punt of schuif de kaart'
+    : a && a.type === 'move' ? 'Tik op de nieuwe plek of schuif de kaart'
     : ms.pois ? (h.type === 'poi' ? '' : 'Tik op een plek of schuif de kaart')
     : !ms.pts.some(p => !p.here) ? 'Schuif de kaart tot de pin goed staat' : '';
   $('mshint').textContent = hint;
@@ -3741,8 +3744,11 @@ function msCancel() {
   msDraw();
 }
 
-// Een nieuw punt op de plek van de pin; de naam (het adres) komt erachteraan
+// Een nieuw punt op de plek van de pin; de naam (het adres) komt erachteraan.
+// Getikt op een POI, plaats of eigen pin: die naam.
 function pinPlace() {
+  const snap = msSnapped();
+  if (snap) return { lat: snap.lat, lon: snap.lon, name: snap.name };
   const { lng: lon, lat } = msmap.getCenter();
   return placeAt(lat, lon);
 }
@@ -4360,8 +4366,8 @@ map.on('click', e => {
   clearTimeout(tapTimer);
   if (Date.now() < lp.eatUntil) return;
   if (placeMenu) { closePlaceMenu(); return; }
-  // Eén adresregel kiezen op de kaart: de getikte plek (of de POI of plaats eronder) onder de pin
-  if (msmap && !$('msrow').hidden && !ms.action) {
+  // Een plek kiezen op de kaart (adresregel, plus of verplaatsen): de getikte plek (of de POI of plaats eronder) onder de pin
+  if (msTapPick()) {
     if (e.msTap) return;
     const p = snapAt(e.point), at = e.lngLat;
     tapTimer = setTimeout(() => { if (msmap) msGoTo(p, at); }, 250);
@@ -4447,7 +4453,19 @@ function drawPin(pin) {
   ['pointerup', 'pointercancel', 'pointerleave'].forEach(t => el.addEventListener(t, () => clearTimeout(held)));
   el.addEventListener('contextmenu', e => e.preventDefault());
   el.addEventListener('click', () => {
-    if (eat || msmap || !$('search').hidden) return;
+    if (eat) return;
+    const at = { lat: pin.lat, lon: pin.lon, name: pin.label || withoutPostcode(pin.name) };
+    // Een plek aan het kiezen op de kaart: de pin wordt die plek
+    if (msTapPick()) { msGoTo(at); return; }
+    // Planner met een lege regel (Waar naartoe?): naar de kaart om die regel te kiezen, op deze pin
+    const row = stops.findIndex(s => !s);
+    if (!msmap && planning() && !$('overview').hidden && !$('overview').classList.contains('peek') && row >= 0 && !placeMenu) {
+      ms.keep = true;
+      openMapSearch('row', 'overview', row);
+      if (msmap) msGoTo(at);
+      return;
+    }
+    if (msmap || !$('search').hidden) return;
     if (homeIdle() && !placeMenu) {
       stopFollowing();
       showFound({ lat: pin.lat, lon: pin.lon, name: pin.label || pin.name }, false);
