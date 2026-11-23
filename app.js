@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '209';
+const VERSION = '210';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -2474,16 +2474,31 @@ const isStreet = p => !p.housenumber && p.name && (p.type === 'street' || p.osm_
 
 // Dubbele resultaten samenvoegen (een straat met meerdere postcodes, of een gracht
 // met dezelfde naam als de straat); de straat krijgt voorrang.
+// Dezelfde plek twee keer (plaats en gemeentegrens, straatdelen): één keer tonen.
+// Alleen binnen 30 km: Eindhoven in Chili is niet hetzelfde als Eindhoven hier.
 function dedupe(features) {
-  const byKey = new Map();
+  const out = [];
   for (const f of features) {
     const p = f.properties;
-    const key = (describe(p).title + '|' + (p.housenumber ? p.postcode : '') + '|' + (p.city || p.town || p.village || '')).toLowerCase();
-    const have = byKey.get(key);
-    if (!have) byKey.set(key, f);
-    else if (!isStreet(have.properties) && isStreet(p)) byKey.set(key, f);
+    const key = (describe(p).title + '|' + (p.housenumber ? p.postcode : '') + '|' + (p.city || p.town || p.village || '') + '|' + (p.countrycode || '')).toLowerCase();
+    const i = out.findIndex(g => g.key === key && dist(g.f.geometry.coordinates, f.geometry.coordinates) < 30000);
+    if (i < 0) out.push({ key, f });
+    else if (!isStreet(out[i].f.properties) && isStreet(p)) out[i].f = f;
   }
-  return [...byKey.values()];
+  return out.map(g => g.f);
+}
+
+// Verre plekken onderaan: eerst alles binnen 300 km, dan binnen 1500 km, dan de rest (verder op volgorde van Photon).
+// Staat het land in wat je typt ("Eindhoven, Chile"), dan telt de afstand niet.
+function nearFirst(features, q) {
+  const at = ll(searchFocus()), fq = fold(q);
+  const tier = f => {
+    const c = f.properties.country;
+    if (c && fq.includes(fold(c))) return 0;
+    const d = dist(at, f.geometry.coordinates);
+    return d < 300000 ? 0 : d < 1500000 ? 1 : 2;
+  };
+  return features.map((f, i) => ({ f, i, t: tier(f) })).sort((a, b) => a.t - b.t || a.i - b.i).map(x => x.f);
 }
 
 // Bij een straat zonder huisnummer kun je het nummer er nog achter typen;
@@ -2611,7 +2626,7 @@ async function search() {
     if (seq !== searchSeq) return;
     // Hetzelfde gebouw als uit de kaart (zelfde naam, vlakbij) niet nog een keer
     const same = f => local.some(d => d.name.toLowerCase() === describe(f.properties).title.toLowerCase() && dist([d.lon, d.lat], f.geometry.coordinates) < 300);
-    const features = dedupe(data.features)
+    const features = nearFirst(dedupe(data.features), q)
       .filter(f => { const { title, sub } = describe(f.properties); return !known.has([title, sub].filter(Boolean).join(', ')) && !same(f); })
       // Een station dat al uit de stationslijst komt niet nog een keer
       .filter(f => !trains.some(t => dist(t.geometry.coordinates, f.geometry.coordinates) < 600
@@ -2638,7 +2653,7 @@ async function search() {
     if (features.length + local.length + found.length + trains.length > 1) ul.appendChild(resultsMapLink([...found, ...local.map(d => d.feature), ...trains, ...features]));
     // Stations boven de andere resultaten; een plaats met precies de getypte naam blijft bovenaan
     const city = features[0] && ['place', 'boundary'].includes(features[0].properties.osm_key) ? [features.shift()] : [];
-    for (const f of [...city, ...trains, ...features]) ul.appendChild(f.station ? iconItem(f, 'mi-station') : item(f));
+    for (const f of [...city, ...nearFirst([...trains, ...features], q)]) ul.appendChild(f.station ? iconItem(f, 'mi-station') : item(f));
   } catch (e) {
     if (seq === searchSeq) ul.innerHTML = '<li class="empty">Zoeken lukt nu niet. Controleer je verbinding.</li>';
   }
