@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '216';
+const VERSION = '217';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -3224,7 +3224,7 @@ async function computePreview(note) {
     $('qok').disabled = false;
     return;
   }
-  if (list.length < 2) { noRoute(list.length && stops.length === 1 ? 'Vul nog een adres in' : 'Of druk lang op de kaart'); return; }
+  if (list.length < 2) { noRoute(list.length && stops.length === 1 ? 'Vul nog een adres in' : ''); return; }
   if (pts.some(p => !p)) { noRoute('Nog geen GPS-positie voor "Huidige locatie"'); return; }
   // Fietsen en lopen rekent de routedienst niet verder dan 150 en 100 km hemelsbreed
   const max = MAX_DIST[travelMode];

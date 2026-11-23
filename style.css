@@ -485,6 +485,8 @@ body.menuopen .mapctl { z-index: 12; opacity: 1; pointer-events: auto; }
 .psq.big { width: 32px; height: 32px; border-radius: 7px; font-size: 21px; }
 .psumrow { display: flex; align-items: center; justify-content: center; gap: 10px; min-width: 0; }
 .psumrow .psum { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Niets te melden (nog geen bestemming): geen lege regel */
+.psumrow:has(.psum:empty):has(.pchip[hidden]) { display: none; }
 .pchip { flex: none; display: inline-flex; align-items: center; gap: 5px; padding: 4px 4px 4px 5px; border-radius: 10px; background: #E8F0FD; color: #1F6FE0;
   font-size: 15px; font-weight: 600; white-space: nowrap; }
 .pchip .ti { font-size: 16px; margin-left: -2px; }
