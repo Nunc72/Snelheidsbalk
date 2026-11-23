@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '213';
+const VERSION = '214';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -3107,9 +3107,9 @@ map.on('click', e => {
   if (f) { selectAlt(f.properties.i); return; }
   // Een tik op de kaart klapt de planner in (de hele kaart in beeld) en weer uit;
   // niet als de tik een menu van lang drukken sluit
-  if (e.iconTap || Date.now() < lp.eatUntil || placeMenu || msmap || $('overview').hidden) return;
+  if (Date.now() < lp.eatUntil || placeMenu || msmap || $('overview').hidden) return;
   // Nog een lege regel (Vanaf: Waar naartoe?): de tik kiest die plek op de kaart, net als het pinnetje,
-  // maar de kaart blijft waar hij staat
+  // maar de kaart blijft waar hij staat. Ook een tik op een station of luchthaven.
   const row = stops.findIndex(s => !s);
   if (row >= 0 && !$('overview').classList.contains('peek')) {
     const p = snapAt(e.point);
@@ -3119,6 +3119,7 @@ map.on('click', e => {
     if (msmap) msGoTo(p, e.lngLat);
     return;
   }
+  if (e.iconTap) return;
   planPeek(!$('overview').classList.contains('peek'));
 });
 
