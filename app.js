@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '214';
+const VERSION = '215';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -2894,7 +2894,8 @@ function renderStops(fresh = -1) {
     li.querySelector('.sfield').textContent = s ? withoutPostcode(s.name)
       : ask ? 'Waar naartoe?' : kind === 'start' ? 'Vertrekpunt' : kind === 'end' ? 'Bestemming' : 'Tussenstop';
     li.querySelector('.sfield').addEventListener('click', () => { if (!li.dataset.swiped) showText(i, 'overview'); });
-    li.querySelector('.sbtn').addEventListener('click', () => openMapSearch('row', 'overview', i));
+    // Een lege regel (Waar naartoe?): de kaart blijft waar hij staat; een ingevulde regel: naar die plek
+    li.querySelector('.sbtn').addEventListener('click', () => { ms.keep = !stops[i]; openMapSearch('row', 'overview', i); });
     li.querySelector('.x')?.addEventListener('click', () => removeRow(i));
     makeDraggable(li, li.querySelector('.grip'), list => {
       const order = [...list.children].map(el => stops[+el.dataset.i]);
@@ -3925,7 +3926,7 @@ $('qback').addEventListener('click', () => {
 $('qmap').addEventListener('click', () => {
   $('q').blur();
   // Vanaf het beginscherm opent de kaart waar je hem het laatst bekeek
-  if (textFrom !== 'overview') ms.keep = true;
+  if (textFrom !== 'overview' || !stops[editRow]) ms.keep = true;
   if (textFrom === 'overview') openMapSearch('row', 'text', editRow);
   else if (textFrom === 'start') { ms.nextStartPick = true; openMapSearch('row', 'text', 0); }
   else openMapSearch('build', 'text');
