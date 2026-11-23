@@ -797,10 +797,15 @@ body.planning #instr, body.planning #bottom-idle, body.planning #bottom-nav, bod
 body.planning .injam, body.planning .jtoast, body.planning .ptoast, body.planning #recenter { display: none !important; }
 body:not(.planning) .plantag { display: none; }
 /* Eén adresregel kiezen op de kaart: onderin die regel met het adres onder de pin */
-.msrow { position: absolute; left: 16px; right: 16px; bottom: calc(env(safe-area-inset-bottom) + 100px); z-index: 3; background: #fff; border-radius: 14px;
-  padding: 13px 14px; display: flex; align-items: center; gap: 10px; font-size: 16px; box-shadow: inset 0 0 0 2px #1F6FE0, 0 2px 14px rgba(0,0,0,.18); }
+/* Klein kaartje, net als bij een plek uit In de buurt: vet de plek, klein de plaats */
+.msrow { position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom) + 96px); z-index: 3;
+  max-width: calc(100% - 32px); box-sizing: border-box; background: #fff; border-radius: 20px; padding: 10px 18px 10px 16px;
+  display: flex; align-items: center; gap: 10px; font-size: 15px; box-shadow: 0 2px 14px rgba(0,0,0,.18); }
 .msrow .sdot { margin: 0; }
-.msrowtxt { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.msrow .pt { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.msrow b, .msrow small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msrow b { font-weight: 600; color: #1c1c1e; }
+.msrow small { font-size: 13px; color: #8a8a8a; }
 .mapsearch.rowpick .mstop { display: none; }
 .mapsearch.rowpick .mshint { top: 12px; }
 .mapsearch.rowpick .pickme { top: 12px; }
@@ -813,7 +818,8 @@ body:not(.planning) .plantag { display: none; }
   .sfield.to { color: #5EA0FF; }
   .planner .stop { background: transparent; }
   .pfl { background: #2c2c2e; color: #5EA0FF; box-shadow: 0 2px 10px rgba(0,0,0,.5); }
-  .msrow { background: #1c1c1e; color: #f2f2f7; box-shadow: inset 0 0 0 2px #5EA0FF, 0 2px 14px rgba(0,0,0,.5); }
+  .msrow { background: #1c1c1e; box-shadow: 0 2px 14px rgba(0,0,0,.6); }
+  .msrow b { color: #f2f2f7; }
 }
 /* Eigen iconen (trein, vliegtuig) naast die uit de iconenset: even groot, in de tekstkleur */
 svg.mi { width: 1em; height: 1em; fill: currentColor; flex: none; display: inline-block; vertical-align: -0.125em; }
