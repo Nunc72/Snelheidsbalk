@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '208';
+const VERSION = '209';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -4239,8 +4239,8 @@ map.on('contextmenu', e => {
   openPlaceMenu({ lat: e.lngLat.lat, lon: e.lngLat.lng });
 });
 // Een tik op de kaart vanaf het beginscherm: die plek met Nabij, Vanaf, Route en Start (het kaartje klapt uit).
-// Een station, luchthaven, gebouw of eigen pin vlak bij de vinger wordt die plek zelf; uitgezoomd het centrum van de plaats.
-// Staat er al een plek, dan haalt de tik die weg (weer Zoek plaats); de volgende tik kiest een nieuwe.
+// Tik je op een station, luchthaven, gebouw, eigen pin of plaatsnaam, dan wordt het die plek zelf (een plaats: het centrum).
+// Staat er al een plek, dan haalt een tik ernaast die weg (weer Zoek plaats); de volgende tik kiest een nieuwe.
 // Even wachten: een dubbele tik is inzoomen.
 const homeIdle = () => !planning() && $('search').hidden && !msmap && !state.nav && !state.concept;
 let tapTimer = 0;
@@ -4249,7 +4249,8 @@ map.on('click', e => {
   if (Date.now() < lp.eatUntil) return;
   if (placeMenu) { closePlaceMenu(); return; }
   if (homeIdle() && !(map.getLayer('tinc') && map.queryRenderedFeatures(e.point, { layers: ['tinc'] }).length)) {
-    const p = !found && (snapAt(e.point) || placeAt(e.lngLat.lat, e.lngLat.lng));
+    // Op een POI of plaatsnaam getikt: meteen die plek, ook als er al een plek stond
+    const p = snapAt(e.point) || (!found && placeAt(e.lngLat.lat, e.lngLat.lng));
     tapTimer = setTimeout(() => {
       if (!homeIdle()) return;
       if (p) { stopFollowing(); showFound(p, false); } else clearLook();
@@ -4261,39 +4262,37 @@ map.on('click', e => {
 });
 map.on('movestart', e => { if (e.originalEvent) clearTimeout(tapTimer); });
 
-// Wat er vlak bij een tik op de kaart ligt: een eigen pin, station, luchthaven of gebouw (POI).
-// Het dichtstbijzijnde binnen een vingerbreedte; anders null.
+// Wat er onder een tik op de kaart ligt: een eigen pin, station, luchthaven, gebouw (POI) of plaatsnaam.
+// Alleen als je er echt op tikt (op het icoontje of de naam); anders null.
 function snapAt(pt) {
-  const R = 22;
+  const PLACES = ['city', 'town', 'village', 'suburb', 'quarter'];
   let best = null;
-  const take = (lon, lat, name, dy = 0) => {
-    const q = map.project([lon, lat]);
-    const d = Math.hypot(q.x - pt.x, q.y - dy - pt.y);
-    if (name && d <= R && (!best || d < best.d)) best = { d, p: { lat, lon, name } };
-  };
+  const take = (lon, lat, name, d) => { if (name && (!best || d < best.d)) best = { d, p: { lat, lon, name } }; };
+  const near = (lon, lat, dy = 0) => { const q = map.project([lon, lat]); return Math.hypot(q.x - pt.x, q.y - dy - pt.y); };
   // Een pin staat boven zijn punt: de kop telt
-  for (const pin of loadPins()) take(pin.lon, pin.lat, pin.label || withoutPostcode(pin.name), 26);
-  const poi = (map.getStyle().layers || []).filter(l => l.type === 'symbol' && l['source-layer'] === 'poi').map(l => l.id);
-  const layers = [...ICON_LAYERS, ...poi].filter(id => map.getLayer(id));
+  for (const pin of loadPins()) {
+    const d = near(pin.lon, pin.lat, 26);
+    if (d <= 20) take(pin.lon, pin.lat, pin.label || withoutPostcode(pin.name), d);
+  }
+  // Icoontjes en namen op de kaart: geraakt als de tik binnen hun vakje valt (met een paar pixels speling)
+  const ids = (map.getStyle().layers || []).filter(l => l.type === 'symbol' && ['poi', 'place'].includes(l['source-layer'])).map(l => l.id);
+  const layers = [...ICON_LAYERS, ...ids].filter(id => map.getLayer(id));
+  const S = 6;
   if (layers.length) {
-    for (const f of map.queryRenderedFeatures([[pt.x - R, pt.y - R], [pt.x + R, pt.y + R]], { layers })) {
-      if (f.geometry.type !== 'Point') continue;
+    for (const f of map.queryRenderedFeatures([[pt.x - S, pt.y - S], [pt.x + S, pt.y + S]], { layers })) {
+      if (f.geometry.type !== 'Point' || (f.sourceLayer === 'place' && !PLACES.includes(f.properties.class))) continue;
       const [lon, lat] = f.geometry.coordinates;
-      take(lon, lat, f.properties['name:nl'] || f.properties.name);
+      take(lon, lat, f.properties['name:nl'] || f.properties.name, near(lon, lat));
     }
   }
   if (best) return best.p;
-  // Plaatsnamen: op de naam getikt, of uitgezoomd (onder zoom 13) de dichtstbijzijnde stad of dorp,
-  // ook als de naam niet op de kaart past (uit de geladen tegels)
-  const far = map.getZoom() < 13;
-  const feats = far ? map.querySourceFeatures('openmaptiles', { sourceLayer: 'place' })
-    : map.queryRenderedFeatures([[pt.x - R, pt.y - R], [pt.x + R, pt.y + R]]).filter(f => f.sourceLayer === 'place');
-  for (const f of feats) {
-    if (f.geometry.type !== 'Point' || !['city', 'town', 'village', 'suburb', 'quarter'].includes(f.properties.class)) continue;
-    if (far && !['city', 'town', 'village'].includes(f.properties.class)) continue;
-    const [lon, lat] = f.geometry.coordinates, q = map.project([lon, lat]);
-    const d = Math.hypot(q.x - pt.x, q.y - pt.y);
-    if (d <= (far ? 150 : R) && (!best || d < best.d)) best = { d, p: { lat, lon, name: f.properties['name:nl'] || f.properties.name } };
+  // Uitgezoomd past niet elke plaatsnaam op de kaart: vlak bij het punt van zo'n plaats telt ook
+  if (map.getZoom() < 13) {
+    for (const f of map.querySourceFeatures('openmaptiles', { sourceLayer: 'place' })) {
+      if (f.geometry.type !== 'Point' || !['city', 'town', 'village'].includes(f.properties.class)) continue;
+      const [lon, lat] = f.geometry.coordinates, d = near(lon, lat);
+      if (d <= 18) take(lon, lat, f.properties['name:nl'] || f.properties.name, d);
+    }
   }
   return best && best.p;
 }
@@ -4319,7 +4318,7 @@ function drawPin(pin) {
     el.appendChild(l);
   }
   shield(el);
-  // Kort tikken op het beginscherm: de pin wordt de gevonden plek (Nabij, Vanaf, Route, Start).
+  // Kort tikken op het beginscherm: de pin wordt de gevonden plek (Nabij, Vanaf, Route, Start), ook als er al een plek stond.
   // Lang drukken (of elders tikken): dezelfde keuzes als lang drukken op de kaart, met verwijderen.
   let held = 0, eat = false;
   el.addEventListener('pointerdown', () => { eat = false; held = setTimeout(() => { eat = true; if (!msmap && $('search').hidden) openPlaceMenu(pin, pin); }, 550); });
@@ -4328,8 +4327,8 @@ function drawPin(pin) {
   el.addEventListener('click', () => {
     if (eat || msmap || !$('search').hidden) return;
     if (homeIdle() && !placeMenu) {
-      if (found) clearLook();
-      else { stopFollowing(); showFound({ lat: pin.lat, lon: pin.lon, name: pin.label || pin.name }, false); }
+      stopFollowing();
+      showFound({ lat: pin.lat, lon: pin.lon, name: pin.label || pin.name }, false);
       peek(false);
       return;
     }
