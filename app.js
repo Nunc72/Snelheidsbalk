@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '212';
+const VERSION = '213';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -3061,15 +3061,8 @@ function drawPreview() {
   if (!planning()) return;
   drawNavJams();
   // Eén keer inzoomen op nieuwe routes; daarna blijft de kaart waar jij hem neerzet
-  // Vanaf een gevonden plek, nog zonder bestemming: de kaart blijft staan; alleen als het punt
-  // onder de planner valt, schuift hij het in beeld (zonder te zoomen)
-  if (!d.fitted && plan.cam && !(routes || []).length && !coords.length && pts.length === 1) {
-    d.fitted = true;
-    const q = map.project([pts[0].lon, pts[0].lat]), pad = planPadding(), c = map.getContainer();
-    if (q.y < pad.top || q.y > c.clientHeight - pad.bottom || q.x < 20 || q.x > c.clientWidth - 20) {
-      map.easeTo({ center: [pts[0].lon, pts[0].lat], padding: pad, duration: 600 });
-    }
-  }
+  // Eén punt zonder route (Vanaf, Vertrekpunt): de kaart blijft precies staan
+  if (!d.fitted && !(routes || []).length && !coords.length && pts.length === 1) d.fitted = true;
   if (!d.fitted) {
     const all = (routes || []).flatMap(r => r.shape);
     if (!all.length) all.push(...(coords.length ? coords : pts.map(p => [p.lon, p.lat])));
@@ -3417,19 +3410,15 @@ function msRowShow(title, sub) {
   $('msrowsub').textContent = sub || '';
   $('msrowsub').hidden = !sub;
 }
-// Het adres onder de pin, zodra de kaart even stilstaat. Schuif je de pin op een POI of
-// plaatsnaam, dan springt hij erop.
+// Het kaartje onderin. Getikt op een POI of plaatsnaam: meteen, met die naam. Geschoven of
+// ernaast getikt: pas als de kaart 2 s stilstaat het adres (✓ kan ook meteen).
 let msRowSeq = 0, msRowTimer = 0;
 function msRowName() {
   clearTimeout(msRowTimer);
   const seq = ++msRowSeq;
-  let snap = msSnapped();
-  if (!snap) {
-    const cv = msmap.getCanvas(), p = snapAt({ x: cv.clientWidth / 2, y: cv.clientHeight / 2 });
-    if (p) { msGoTo(p); return; }
-  }
+  const snap = msSnapped();
+  $('msrow').classList.toggle('wait', !snap);
   if (snap) msRowShow(snap.name, ms.snapSub);
-  else msRowShow('Adres zoeken…');
   msRowTimer = setTimeout(async () => {
     if (!msmap || $('msrow').hidden) return;
     const c = msmap.getCenter();
@@ -3441,8 +3430,10 @@ function msRowName() {
       ms.snapSub = sub && sub !== snap.name ? sub : '';
       msRowShow(snap.name, ms.snapSub);
     } else msRowShow(title, rest.join(', '));
-  }, 450);
+    $('msrow').classList.remove('wait');
+  }, snap ? 0 : 2000);
 }
+map.on('movestart', () => { if (msmap && !$('msrow').hidden) { clearTimeout(msRowTimer); msRowSeq++; $('msrow').classList.add('wait'); } });
 map.on('moveend', () => { if (msmap && !$('msrow').hidden) msRowName(); });
 
 // Zoeken op de kaart gebruikt de hoofdkaart zelf: die verhuist zolang naar het zoekscherm.
