@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '207';
+const VERSION = '208';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -4238,8 +4238,9 @@ map.on('contextmenu', e => {
   lp.opened = true;
   openPlaceMenu({ lat: e.lngLat.lat, lon: e.lngLat.lng });
 });
-// Een tik op de kaart vanaf het beginscherm: die plek met Nabij, Vanaf, Route en Start.
-// Een station, luchthaven, gebouw of eigen pin vlak bij de vinger wordt die plek zelf.
+// Een tik op de kaart vanaf het beginscherm: die plek met Nabij, Vanaf, Route en Start (het kaartje klapt uit).
+// Een station, luchthaven, gebouw of eigen pin vlak bij de vinger wordt die plek zelf; uitgezoomd het centrum van de plaats.
+// Staat er al een plek, dan haalt de tik die weg (weer Zoek plaats); de volgende tik kiest een nieuwe.
 // Even wachten: een dubbele tik is inzoomen.
 const homeIdle = () => !planning() && $('search').hidden && !msmap && !state.nav && !state.concept;
 let tapTimer = 0;
@@ -4248,8 +4249,12 @@ map.on('click', e => {
   if (Date.now() < lp.eatUntil) return;
   if (placeMenu) { closePlaceMenu(); return; }
   if (homeIdle() && !(map.getLayer('tinc') && map.queryRenderedFeatures(e.point, { layers: ['tinc'] }).length)) {
-    const p = snapAt(e.point) || placeAt(e.lngLat.lat, e.lngLat.lng);
-    tapTimer = setTimeout(() => { if (homeIdle()) { stopFollowing(); showFound(p, false); } }, 280);
+    const p = !found && (snapAt(e.point) || placeAt(e.lngLat.lat, e.lngLat.lng));
+    tapTimer = setTimeout(() => {
+      if (!homeIdle()) return;
+      if (p) { stopFollowing(); showFound(p, false); } else clearLook();
+      peek(false);
+    }, 280);
     return;
   }
   if (!found) clearLook();
@@ -4276,6 +4281,19 @@ function snapAt(pt) {
       const [lon, lat] = f.geometry.coordinates;
       take(lon, lat, f.properties['name:nl'] || f.properties.name);
     }
+  }
+  if (best) return best.p;
+  // Plaatsnamen: op de naam getikt, of uitgezoomd (onder zoom 13) de dichtstbijzijnde stad of dorp,
+  // ook als de naam niet op de kaart past (uit de geladen tegels)
+  const far = map.getZoom() < 13;
+  const feats = far ? map.querySourceFeatures('openmaptiles', { sourceLayer: 'place' })
+    : map.queryRenderedFeatures([[pt.x - R, pt.y - R], [pt.x + R, pt.y + R]]).filter(f => f.sourceLayer === 'place');
+  for (const f of feats) {
+    if (f.geometry.type !== 'Point' || !['city', 'town', 'village', 'suburb', 'quarter'].includes(f.properties.class)) continue;
+    if (far && !['city', 'town', 'village'].includes(f.properties.class)) continue;
+    const [lon, lat] = f.geometry.coordinates, q = map.project([lon, lat]);
+    const d = Math.hypot(q.x - pt.x, q.y - pt.y);
+    if (d <= (far ? 150 : R) && (!best || d < best.d)) best = { d, p: { lat, lon, name: f.properties['name:nl'] || f.properties.name } };
   }
   return best && best.p;
 }
@@ -4309,7 +4327,12 @@ function drawPin(pin) {
   el.addEventListener('contextmenu', e => e.preventDefault());
   el.addEventListener('click', () => {
     if (eat || msmap || !$('search').hidden) return;
-    if (homeIdle() && !placeMenu) { stopFollowing(); showFound({ lat: pin.lat, lon: pin.lon, name: pin.label || pin.name }, false); return; }
+    if (homeIdle() && !placeMenu) {
+      if (found) clearLook();
+      else { stopFollowing(); showFound({ lat: pin.lat, lon: pin.lon, name: pin.label || pin.name }, false); }
+      peek(false);
+      return;
+    }
     closePlaceMenu();
     openPlaceMenu(pin, pin);
   });

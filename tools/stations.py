@@ -33,10 +33,13 @@ def km(a, b):
 
 def main(out):
     req = urllib.request.Request(SOURCE, headers={'User-Agent': 'VeloVerde (github.com/Nunc72/Snelheidsbalk)'})
-    rows = csv.DictReader(io.StringIO(urllib.request.urlopen(req, timeout=120).read().decode('utf-8')), delimiter=';')
+    rows = list(csv.DictReader(io.StringIO(urllib.request.urlopen(req, timeout=120).read().decode('utf-8')), delimiter=';'))
+    # Een 'stad' met eigen stations eronder (Paris, Lille) is geen station; een stad zonder
+    # (Eindhoven Centraal staat er zo in) is gewoon het station zelf
+    parents = {r['parent_station_id'] for r in rows if r['uic'] and r['parent_station_id']}
     seen, stations = set(), []
     for r in rows:
-        if not r['uic'] or r['is_city'] == 't' or not r['latitude'] or not r['longitude']:
+        if not r['uic'] or (r['is_city'] == 't' and r['id'] in parents) or not r['latitude'] or not r['longitude']:
             continue
         lat, lon = round(float(r['latitude']), 4), round(float(r['longitude']), 4)
         # Hetzelfde station staat er soms dubbel in (per vervoerder)
