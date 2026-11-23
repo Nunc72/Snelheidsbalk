@@ -392,7 +392,7 @@ body.menuopen .mapctl { z-index: 12; opacity: 1; pointer-events: auto; }
 .pmenu.below { flex-direction: column-reverse; }
 .pcard { width: 236px; background: #fff; border-radius: 14px; box-shadow: 0 4px 20px rgba(0,0,0,.22); padding: 6px; }
 .ptitle { font-size: 13px; color: #8a8a8a; padding: 6px 10px 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pcard button[data-act] { display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 10px; border-radius: 9px; font-size: 16px; text-align: left; color: #1c1c1e; }
+.pcard button[data-act] { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px; border-radius: 9px; font-size: 16px; text-align: left; color: #1c1c1e; }
 .pcard button[data-act] .ti { font-size: 21px; color: #1F6FE0; }
 .pcard button[data-act]:active { background: #F1F0EC; }
 .pcard button.del, .pcard button.del .ti { color: #D93036; }

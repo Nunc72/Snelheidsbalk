@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '206';
+const VERSION = '207';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -2297,7 +2297,8 @@ const planning = () => document.body.classList.contains('planning');
 // Bezig met plannen of zoeken: het zoekscherm of de planner staat open
 const inSearch = () => !$('search').hidden || !$('overview').hidden;
 // Wat er bij het openen van de planner gold: liep er een route, en hoe stond de kaart
-const plan = { live: false, sig0: '', altPicked: false, wasFollowing: false, backHome: false };
+// from: de gevonden plek waar de planner vandaan kwam (Vanaf, Route): terug gaat weer naar die plek
+const plan = { live: false, sig0: '', altPicked: false, wasFollowing: false, backHome: false, from: null };
 const planSig = () => JSON.stringify([stops.map(s => s && (s.here ? 'here' : [s.lat, s.lon])), travelMode]);
 // Iets gewijzigd sinds je de planner opende (een andere route kiezen telt ook)
 const planDirty = () => plan.altPicked || planSig() !== plan.sig0;
@@ -2349,6 +2350,7 @@ function openSheet() {
   plan.sig0 = '';
   plan.altPicked = false;
   plan.backHome = false;
+  plan.from = null;
   $('search').hidden = false;
   closePlaceMenu();
   clearLook();
@@ -3050,7 +3052,19 @@ map.on('click', e => {
   if (f) { selectAlt(f.properties.i); return; }
   // Een tik op de kaart klapt de planner in (de hele kaart in beeld) en weer uit;
   // niet als de tik een menu van lang drukken sluit
-  if (!e.iconTap && Date.now() >= lp.eatUntil && !placeMenu && !msmap && !$('overview').hidden) planPeek(!$('overview').classList.contains('peek'));
+  if (e.iconTap || Date.now() < lp.eatUntil || placeMenu || msmap || $('overview').hidden) return;
+  // Nog een lege regel (Vanaf: Waar naartoe?): de tik kiest die plek op de kaart, net als het pinnetje,
+  // maar de kaart blijft waar hij staat
+  const row = stops.findIndex(s => !s);
+  if (row >= 0 && !$('overview').classList.contains('peek')) {
+    const p = snapAt(e.point);
+    const at = p ? [p.lon, p.lat] : e.lngLat.toArray();
+    ms.keep = true;
+    openMapSearch('row', 'overview', row);
+    if (msmap) msmap.easeTo({ center: at, duration: 350 });
+    return;
+  }
+  planPeek(!$('overview').classList.contains('peek'));
 });
 
 // Planner ingeklapt: alleen een randje met een greepje, het potlood zweeft erboven
@@ -3105,10 +3119,11 @@ function syncFound() {
   if (found) $('foundname').textContent = withoutPostcode(found.name);
   placeRecenter();
 }
-function showFound(p) {
+// fly: false bij een tik op de kaart (de kaart blijft staan)
+function showFound(p, fly = true) {
   setHomeStart(false);
   if (p.naming) p.naming.then(() => { delete p.naming; if (found === p) syncFound(); });
-  lookPin(p);
+  lookPin(p, fly);
   found = p;
   syncFound();
 }
@@ -3122,13 +3137,13 @@ function lookAt() {
   stopFollowing();
   showFound(cleanPlace(p));
 }
-function lookPin(p) {
+function lookPin(p, fly = true) {
   const el = document.createElement('div');
   el.className = 'lookpin';
   el.innerHTML = '<svg viewBox="0 0 36 48" aria-hidden="true"><path d="M18 46.5C18 46.5 34 28.5 34 17A16 16 0 0 0 2 17C2 28.5 18 46.5 18 46.5Z"/><circle cx="18" cy="17" r="6"/></svg>';
   clearLook();
   lookMarker = new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat([p.lon, p.lat]).addTo(map);
-  map.flyTo({ center: [p.lon, p.lat], zoom: 16, bearing: 0, pitch: camPitch(), padding: camPadding(), duration: 1600, essential: true });
+  if (fly) map.flyTo({ center: [p.lon, p.lat], zoom: 16, bearing: 0, pitch: camPitch(), padding: camPadding(), duration: 1600, essential: true });
 }
 
 async function computePreview(note) {
@@ -3842,7 +3857,7 @@ $('stop').addEventListener('click', () => {
   // Geen route live: de grijze pijl gaat terug naar de gezochte plek (met Nabij, Vanaf, Route en Start).
   // Er wordt niets geannuleerd. Kwam je via lang drukken, dan terug naar de kaart.
   if (!plan.live) {
-    const back = !plan.backHome && [...stops].reverse().find(s => s && !s.here);
+    const back = !plan.backHome && (plan.from || [...stops].reverse().find(s => s && !s.here));
     setTravelMode(modeAtOpen);
     forgetPreview();
     closeSearch();
@@ -4056,27 +4071,24 @@ $('fromrow').addEventListener('click', () => {
 });
 setHomeStart(false);
 // Vanaf: de plek wordt het vertrekpunt; in de planner eronder Waar naartoe?
-$('foundfrom').addEventListener('click', () => {
-  const p = found;
+function placeFrom(p) {
   clearLook();
   openSheet();
+  plan.from = p;
   stops = [p, null];
   showOverview();
-});
+}
 // Route: meteen de planner, vanaf je eigen positie (die komt erboven)
-$('foundto').addEventListener('click', () => {
-  const p = found;
+function placeTo(p, from = HERE) {
   clearLook();
   openSheet();
-  stops = [HERE, p];
+  plan.from = p;
+  stops = [from, p];
   showOverview();
-});
-// Tik op de gevonden plek: een andere plaats zoeken
-$('foundfield').addEventListener('click', () => { clearLook(); openSearch(); });
+}
 // Nabij: In de buurt rond deze plek; wat je kiest vervangt de plek (via het vertrekpunt-kiezen)
 let nearFrom = null;  // de plek waar Nabij vandaan kwam: terug zonder kiezen = weer die plek
-$('foundnear').addEventListener('click', () => {
-  const p = found;
+function placeNear(p) {
   openSheet();
   forgetPreview();
   stops = [p];
@@ -4087,18 +4099,24 @@ $('foundnear').addEventListener('click', () => {
   document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === 'near')));
   field().blur();
   showRecent();
-});
+}
 // Start: meteen navigeren, vanaf je eigen positie. Lukt de route niet, dan blijft het overzicht staan.
-$('foundgo').addEventListener('click', async () => {
-  const p = found;
+async function placeGo(p) {
   clearLook();
   openSheet();
+  plan.from = p;
   stops = [HERE, p];
   showPane('overview');
   renderStops();
   await computePreview();
-  if (previewNav && !$('search').hidden) confirmPreview();
-});
+  if (previewNav && planning()) confirmPreview();
+}
+$('foundfrom').addEventListener('click', () => placeFrom(found));
+$('foundto').addEventListener('click', () => placeTo(found));
+$('foundnear').addEventListener('click', () => placeNear(found));
+$('foundgo').addEventListener('click', () => placeGo(found));
+// Tik op de gevonden plek: een andere plaats zoeken
+$('foundfield').addEventListener('click', () => { clearLook(); openSearch(); });
 $('foundx').addEventListener('click', clearLook);
 
 // ---------- Lang drukken op de kaart: route, vertrekpunt of een pin ----------
@@ -4118,8 +4136,10 @@ function openPlaceMenu(at, pin = null) {
   const el = document.createElement('div');
   el.className = 'pmenu';
   el.innerHTML = '<div class="pcard"><div class="ptitle"></div>'
+    + '<button type="button" data-act="go"><i class="ti ti-arrow-ramp-right" aria-hidden="true"></i>Start navigatie</button>'
     + '<button type="button" data-act="route"><i class="ti ti-route" aria-hidden="true"></i>Route hier naartoe</button>'
     + '<button type="button" data-act="start"><i class="ti ti-flag" aria-hidden="true"></i>Vertrekpunt</button>'
+    + '<button type="button" data-act="near"><i class="ti ti-map-search" aria-hidden="true"></i>Zoek nabij</button>'
     + (pin ? '<button type="button" data-act="del" class="del"><i class="ti ti-trash" aria-hidden="true"></i>Pin verwijderen</button>'
       : '<button type="button" data-act="pin"><i class="ti ti-map-pin-plus" aria-hidden="true"></i>Plaats pin</button>')
     + '<form class="pinform" hidden><input type="text" enterkeyhint="done" placeholder="Naam van de pin" autocomplete="off" autocorrect="off" autocapitalize="sentences">'
@@ -4131,7 +4151,7 @@ function openPlaceMenu(at, pin = null) {
   title.textContent = pin ? pin.label || withoutPostcode(pin.name) : 'Adres zoeken…';
   if (p.naming) p.naming.then(() => { title.textContent = withoutPostcode(p.name); });
   // Bovenaan het scherm klapt het menu naar onderen
-  const below = map.project([at.lon, at.lat]).y < 240;
+  const below = map.project([at.lon, at.lat]).y < 300;
   el.classList.toggle('below', below);
   placeMenu = new maplibregl.Marker({ element: el, anchor: below ? 'top' : 'bottom' }).setLngLat([at.lon, at.lat]).addTo(map);
   // Niet buiten het scherm: het kaartje schuift opzij, het puntje blijft op de plek
@@ -4160,6 +4180,8 @@ function placeAction(act, p, pin, el) {
   }
   closePlaceMenu();
   if (act === 'del') { removePin(pin.id); return; }
+  if (act === 'go') { placeGo(p); return; }
+  if (act === 'near') { placeNear(p); return; }
   if (p.naming) p.naming.then(() => { delete p.naming; if (!$('overview').hidden && stops.includes(p)) renderStops(); });
   // In de planner: de plek vervangt de bestemming of het vertrekpunt
   if (planning()) {
@@ -4216,7 +4238,47 @@ map.on('contextmenu', e => {
   lp.opened = true;
   openPlaceMenu({ lat: e.lngLat.lat, lon: e.lngLat.lng });
 });
-map.on('click', () => { if (Date.now() >= lp.eatUntil) { closePlaceMenu(); if (!found) clearLook(); } });
+// Een tik op de kaart vanaf het beginscherm: die plek met Nabij, Vanaf, Route en Start.
+// Een station, luchthaven, gebouw of eigen pin vlak bij de vinger wordt die plek zelf.
+// Even wachten: een dubbele tik is inzoomen.
+const homeIdle = () => !planning() && $('search').hidden && !msmap && !state.nav && !state.concept;
+let tapTimer = 0;
+map.on('click', e => {
+  clearTimeout(tapTimer);
+  if (Date.now() < lp.eatUntil) return;
+  if (placeMenu) { closePlaceMenu(); return; }
+  if (homeIdle() && !(map.getLayer('tinc') && map.queryRenderedFeatures(e.point, { layers: ['tinc'] }).length)) {
+    const p = snapAt(e.point) || placeAt(e.lngLat.lat, e.lngLat.lng);
+    tapTimer = setTimeout(() => { if (homeIdle()) { stopFollowing(); showFound(p, false); } }, 280);
+    return;
+  }
+  if (!found) clearLook();
+});
+map.on('movestart', e => { if (e.originalEvent) clearTimeout(tapTimer); });
+
+// Wat er vlak bij een tik op de kaart ligt: een eigen pin, station, luchthaven of gebouw (POI).
+// Het dichtstbijzijnde binnen een vingerbreedte; anders null.
+function snapAt(pt) {
+  const R = 22;
+  let best = null;
+  const take = (lon, lat, name, dy = 0) => {
+    const q = map.project([lon, lat]);
+    const d = Math.hypot(q.x - pt.x, q.y - dy - pt.y);
+    if (name && d <= R && (!best || d < best.d)) best = { d, p: { lat, lon, name } };
+  };
+  // Een pin staat boven zijn punt: de kop telt
+  for (const pin of loadPins()) take(pin.lon, pin.lat, pin.label || withoutPostcode(pin.name), 26);
+  const poi = (map.getStyle().layers || []).filter(l => l.type === 'symbol' && l['source-layer'] === 'poi').map(l => l.id);
+  const layers = [...ICON_LAYERS, ...poi].filter(id => map.getLayer(id));
+  if (layers.length) {
+    for (const f of map.queryRenderedFeatures([[pt.x - R, pt.y - R], [pt.x + R, pt.y + R]], { layers })) {
+      if (f.geometry.type !== 'Point') continue;
+      const [lon, lat] = f.geometry.coordinates;
+      take(lon, lat, f.properties['name:nl'] || f.properties.name);
+    }
+  }
+  return best && best.p;
+}
 
 // ---------- Eigen pins: blijven staan tot je ze verwijdert ----------
 function loadPins() {
@@ -4239,8 +4301,18 @@ function drawPin(pin) {
     el.appendChild(l);
   }
   shield(el);
-  // Kort tikken: dezelfde keuzes, met verwijderen in plaats van plaatsen
-  el.addEventListener('click', () => { if (!msmap && $('search').hidden) openPlaceMenu(pin, pin); });
+  // Kort tikken op het beginscherm: de pin wordt de gevonden plek (Nabij, Vanaf, Route, Start).
+  // Lang drukken (of elders tikken): dezelfde keuzes als lang drukken op de kaart, met verwijderen.
+  let held = 0, eat = false;
+  el.addEventListener('pointerdown', () => { eat = false; held = setTimeout(() => { eat = true; if (!msmap && $('search').hidden) openPlaceMenu(pin, pin); }, 550); });
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach(t => el.addEventListener(t, () => clearTimeout(held)));
+  el.addEventListener('contextmenu', e => e.preventDefault());
+  el.addEventListener('click', () => {
+    if (eat || msmap || !$('search').hidden) return;
+    if (homeIdle() && !placeMenu) { stopFollowing(); showFound({ lat: pin.lat, lon: pin.lon, name: pin.label || pin.name }, false); return; }
+    closePlaceMenu();
+    openPlaceMenu(pin, pin);
+  });
   pinMarkers.set(pin.id, new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat([pin.lon, pin.lat]).addTo(map));
 }
 // Elke pin staat ook bij Favorieten (met zijn naam als label)
