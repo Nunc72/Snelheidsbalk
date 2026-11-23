@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '215';
+const VERSION = '216';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -3916,8 +3916,18 @@ $('wheremap').addEventListener('click', () => {
   openMapSearch('build', 'home');
 });
 $('edit').addEventListener('click', editRoute);
+// Regel leeggemaakt met het x-je en zonder kiezen terug: de oude route hoort er dan niet meer bij
+let rowCleared = false;
 $('qback').addEventListener('click', () => {
-  if (textFrom === 'overview') { $('q').blur(); showPane('overview'); renderStops(); return; }
+  const cleared = rowCleared;
+  rowCleared = false;
+  if (textFrom === 'overview') {
+    $('q').blur();
+    showPane('overview');
+    renderStops();
+    if (cleared) computePreview();
+    return;
+  }
   setTravelMode(modeAtOpen);
   closeSearch();
   if (textFrom === 'start' && nearFrom) showFound(nearFrom, false);
@@ -4490,6 +4500,7 @@ $('qclear').addEventListener('click', () => {
   if (!$('q').value && stops[editRow] && textFrom !== 'start') {
     stops[editRow] = null;
     savedPick = null;
+    rowCleared = true;
     $('q').placeholder = rowPlaceholder(editRow, textFrom);
     updateClear();
     showRecent();
