@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '210';
+const VERSION = '211';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -825,10 +825,14 @@ const airportsFC = () => loadAirports().then(({ a }) => ({ type: 'FeatureCollect
   features: Object.values(a).map(([name, , , lat, lon, rank]) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [lon, lat] }, properties: { name, rank: rank || 0 } })) }));
 function addStationLayers(m) {
   const dark = theme() === 'dark';
-  m.addSource('stations', { type: 'geojson', data: EMPTY_FC });
-  m.addSource('airportpts', { type: 'geojson', data: EMPTY_FC });
-  stationsFC().then(fc => { if (m.getSource('stations')) m.getSource('stations').setData(fc); });
-  airportsFC().then(fc => { if (m.getSource('airportpts')) m.getSource('airportpts').setData(fc); });
+  // Punten worden alleen tot zoom 12 in tegels gezet (daarboven geschaald): minder rekenwerk
+  m.addSource('stations', { type: 'geojson', data: EMPTY_FC, maxzoom: 12 });
+  m.addSource('airportpts', { type: 'geojson', data: EMPTY_FC, maxzoom: 12 });
+  // Pas als de kaart zelf er staat: de stations (bijna 1 MB) wachten niet voor de kaarttegels
+  m.once('idle', () => {
+    stationsFC().then(fc => { if (m.getSource('stations')) m.getSource('stations').setData(fc); });
+    airportsFC().then(fc => { if (m.getSource('airportpts')) m.getSource('airportpts').setData(fc); });
+  });
   for (const id of ['station', 'plane']) if (!m.hasImage(id)) m.addImage(id, iconImage(id, dark), { pixelRatio: 2 });
   m.addSource('iconsel', { type: 'geojson', data: EMPTY_FC });
   const paint = dark ? { 'text-color': '#B9BCC3', 'text-halo-color': 'rgba(35,38,43,0.9)', 'text-halo-width': 1.5 }
@@ -2618,11 +2622,15 @@ async function search() {
   focusParams(params);
   const airports = airportMatches(v).catch(() => []);
   const stationsP = stationMatches(v).catch(() => []);
+  const exoP = exonymMatches(v).catch(() => []);
   try {
     const res = await fetch(`${PHOTON}?${params}`);
     const data = await res.json();
     const found = await airports;
     const trains = await stationsP;
+    // Een stad die Photon zelf ook vond (binnen 30 km) niet nog een keer
+    const isPlace = f => ['place', 'boundary'].includes(f.properties.osm_key);
+    const exos = (await exoP).filter(x => !data.features.some(f => isPlace(f) && dist(x.geometry.coordinates, f.geometry.coordinates) < 30000));
     if (seq !== searchSeq) return;
     // Hetzelfde gebouw als uit de kaart (zelfde naam, vlakbij) niet nog een keer
     const same = f => local.some(d => d.name.toLowerCase() === describe(f.properties).title.toLowerCase() && dist([d.lon, d.lat], f.geometry.coordinates) < 300);
@@ -2635,7 +2643,11 @@ async function search() {
     firstResult = features[0] || null;
     if (!firstResult && local.length) firstResult = local[0].feature;
     if (!firstResult && trains.length) firstResult = trains[0];
-    if (!features.length && !recents.length && !local.length && !found.length && !trains.length) { ul.innerHTML = '<li class="empty">Niets gevonden</li>'; return; }
+    // Precies 'Parijs' getypt en geen plaats met die naam van Photon: Enter kiest Parijs
+    const exoExact = exos[0] && fold(exos[0].properties.name) === fold(v.trim());
+    const photonExact = features[0] && isPlace(features[0]) && fold(describe(features[0].properties).title) === fold(v.trim());
+    if (exoExact && !photonExact) firstResult = exos[0];
+    if (!features.length && !recents.length && !local.length && !found.length && !trains.length && !exos.length) { ul.innerHTML = '<li class="empty">Niets gevonden</li>'; return; }
     // Stations en luchthavens van Photon krijgen ook hun icoontje
     const item = f => (isStationF(f) ? iconItem(f, 'mi-station') : isAirportF(f) ? iconItem(f, 'mi-plane') : plainItem(f));
     if (found.length) {
@@ -2650,10 +2662,11 @@ async function search() {
       firstRecent = null;
       firstResult = top[0] || found[0];
     }
-    if (features.length + local.length + found.length + trains.length > 1) ul.appendChild(resultsMapLink([...found, ...local.map(d => d.feature), ...trains, ...features]));
-    // Stations boven de andere resultaten; een plaats met precies de getypte naam blijft bovenaan
-    const city = features[0] && ['place', 'boundary'].includes(features[0].properties.osm_key) ? [features.shift()] : [];
-    for (const f of [...city, ...nearFirst([...trains, ...features], q)]) ul.appendChild(f.station ? iconItem(f, 'mi-station') : item(f));
+    if (features.length + local.length + found.length + trains.length + exos.length > 1) ul.appendChild(resultsMapLink([...found, ...local.map(d => d.feature), ...exos, ...trains, ...features]));
+    // Stations boven de andere resultaten; een plaats met precies de getypte naam blijft bovenaan,
+    // daaronder de buitenlandse stad met die naam in onze taal (Bergen: eerst Bergen NH, dan Mons)
+    const city = features[0] && isPlace(features[0]) ? [features.shift()] : [];
+    for (const f of [...city, ...exos, ...nearFirst([...trains, ...features], q)]) ul.appendChild(f.station ? iconItem(f, 'mi-station') : item(f));
   } catch (e) {
     if (seq === searchSeq) ul.innerHTML = '<li class="empty">Zoeken lukt nu niet. Controleer je verbinding.</li>';
   }
@@ -2710,8 +2723,26 @@ const terminalCache = new Map();
 function loadAirports() {
   return airportData ||= fetch('airports.json').then(r => r.json()).catch(() => { airportData = null; return { a: {}, m: {} }; });
 }
+// De taal van de app (lang op <html>): bepaalt landnamen en welke stadsnamen we kennen (Parijs, Keulen)
+const APP_LANG = (document.documentElement.lang || 'nl').slice(0, 2);
 let regionNames = null;
-try { regionNames = new Intl.DisplayNames(['nl'], { type: 'region' }); } catch (e) {}
+try { regionNames = new Intl.DisplayNames([APP_LANG], { type: 'region' }); } catch (e) {}
+
+// Buitenlandse steden in de taal van de app (tools/exonyms.py): Photon kent alleen de eigen naam
+// (Paris), niet 'Parijs'. Pas geladen bij het eerste zoeken. [naam, lat, lon, land, inwoners], grootste eerst.
+let exonymData = null;
+const loadExonyms = () => exonymData ||= fetch(`exonyms/${APP_LANG}.json`).then(r => r.json()).catch(() => { exonymData = null; return []; });
+async function exonymMatches(v) {
+  const words = fold(v).split(/[\s,]+/).filter(Boolean);
+  if (!words.length || words.join('').length < 3) return [];
+  const list = await loadExonyms();
+  const whole = fold(v.trim());
+  return list.filter(([name]) => { const parts = fold(name).split(/[^\p{L}\p{N}]+/u); return words.every(w => parts.some(p => p.startsWith(w))); })
+    // Precies de getypte naam eerst, dan de grootste stad
+    .sort((a, b) => (fold(b[0]) === whole) - (fold(a[0]) === whole) || b[4] - a[4]).slice(0, 2)
+    .map(([name, lat, lon, cc]) => ({ exonym: true, properties: { name, country: (regionNames && regionNames.of(cc)) || cc,
+      osm_key: 'place', osm_value: 'city' }, geometry: { coordinates: [lon, lat] } }));
+}
 
 // De terminals rond een luchthaven, gesorteerd (T1, T2, … of A, B, C)
 function terminalsOf(code, ap) {

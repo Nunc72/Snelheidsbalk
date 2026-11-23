@@ -14,6 +14,19 @@ self.addEventListener('fetch', e => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin !== location.origin && !SHELL_HOSTS.includes(url.hostname)) return;
+  // Grote datalijsten (stations, luchthavens, stadsnamen): meteen uit de opslag, en op de
+  // achtergrond vernieuwd voor de volgende keer. Zo wacht het opstarten niet op een megabyte.
+  if (url.origin === location.origin && url.pathname.endsWith('.json') && !url.pathname.endsWith('manifest.json')) {
+    const fresh = fetch(req).then(res => {
+      if (res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(req, copy)); }
+      return res;
+    });
+    e.respondWith(caches.match(req).then(hit => {
+      if (hit) { e.waitUntil(fresh.catch(() => {})); return hit; }
+      return fresh;
+    }));
+    return;
+  }
   e.respondWith(
     fetch(req)
       .then(res => {
