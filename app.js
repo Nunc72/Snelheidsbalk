@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '222';
+const VERSION = '223';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -5530,54 +5530,175 @@ function setTrafficOn(on) {
   syncTraffic();
 }
 
-// ---------- Meldingen langs de route ----------
-// TomTom geeft meldingen per vak. Elk verzoek kost tegoed, dus vaste vakken van een halve graad
-// (zo'n 55 x 35 km): de routes in het overzicht delen ze, en hetzelfde vak is bij Cloudflare
-// een minuut bewaard (ook voor een volgende route of een ander toestel). Alleen de soorten die
-// voor files tellen: ongeluk, file, rijstrook dicht, weg dicht, werkzaamheden, gestremd.
-const incMemo = new Map();
-const INC_CELL = 0.5, MAX_CELLS = 16;
-function incCells(shape, from = 0, upto = Infinity, cum = null) {
-  const cells = new Set();
-  const add = ([lon, lat]) => cells.add(Math.floor(lon / INC_CELL) + ',' + Math.floor(lat / INC_CELL));
+// ---------- Files langs de route, uit de verkeerslaag ----------
+// De verkeerstegels (de gekleurde lijnen op de kaart) geven per stuk weg hoe hard het verkeer
+// nu gaat, als deel van de normale snelheid. Langs de route opgeteld: de vertraging. Dat kost
+// alleen kaarttegels (ruim budget bij TomTom), geen losse filemeldingen. Dezelfde adressen als
+// de kaartlaag, dus de worker kan ze delen.
+const FLOW_Z = 11, FLOW_MAX = 80;
+const flowMemo = new Map();
+function flowTile(x, y) {
+  const key = x + '/' + y, hit = flowMemo.get(key);
+  if (hit && Date.now() - hit.at < 5 * 60 * 1000) return hit.p;
+  const p = fetch(`${TT}/map/4/tile/flow/relative/${FLOW_Z}/${x}/${y}.pbf?roadTypes=[0,1,2,3,4,5]&tags=[traffic_level,road_closure]`)
+    .then(r => (r.ok ? r.arrayBuffer() : Promise.reject(new Error('TomTom ' + r.status))))
+    .then(buf => decodeFlow(new Uint8Array(buf), x, y));
+  p.catch(() => flowMemo.delete(key));
+  if (flowMemo.size > 200) flowMemo.delete(flowMemo.keys().next().value);
+  flowMemo.set(key, { at: Date.now(), p });
+  return p;
+}
+// Verkeerstegel (vector) uitlezen: alleen de trage stukken en afsluitingen, als lijnen in lon/lat.
+// De lijnen liggen per rijbaan en wijzen in de rijrichting.
+function decodeFlow(b, tx, ty) {
+  let pos = 0;
+  const varint = () => { let r = 0, m = 1, x; do { x = b[pos++]; r += (x & 0x7f) * m; m *= 128; } while (x & 0x80); return r; };
+  const skip = wt => { if (wt === 0) varint(); else if (wt === 1) pos += 8; else if (wt === 2) pos += varint(); else if (wt === 5) pos += 4; };
+  const str = () => { const len = varint(), t = utf8.decode(b.subarray(pos, pos + len)); pos += len; return t; };
+  const zz = v => (v % 2 ? -(v + 1) / 2 : v / 2);
+  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const value = end => {
+    let v = null;
+    while (pos < end) {
+      const k = varint(), t = k >> 3, w = k & 7;
+      if (t === 1 && w === 2) v = str();
+      else if (t === 2 && w === 5) { v = dv.getFloat32(pos, true); pos += 4; }
+      else if (t === 3 && w === 1) { v = dv.getFloat64(pos, true); pos += 8; }
+      else if (t === 6 && w === 0) v = zz(varint());
+      else if (t === 7 && w === 0) v = !!varint();
+      else if (w === 0) v = varint();
+      else skip(w);
+    }
+    return v;
+  };
+  const n = 2 ** FLOW_Z, out = [];
+  while (pos < b.length) {
+    const key = varint();
+    if (key >> 3 !== 3 || (key & 7) !== 2) { skip(key & 7); continue; }
+    const end = varint() + pos;
+    let extent = 4096;
+    const keys = [], vals = [], feats = [];
+    while (pos < end) {
+      const k = varint(), t = k >> 3, w = k & 7;
+      if (t === 2 && w === 2) { const l = varint(); feats.push([pos, pos + l]); pos += l; }
+      else if (t === 3 && w === 2) keys.push(str());
+      else if (t === 4 && w === 2) { const l = varint(); vals.push(value(pos + l)); }
+      else if (t === 5 && w === 0) extent = varint();
+      else skip(w);
+    }
+    for (const [s, e] of feats) {
+      pos = s;
+      const tags = [], g = [];
+      while (pos < e) {
+        const k = varint(), t = k >> 3, w = k & 7;
+        if (t === 2 && w === 2) { const ee = varint() + pos; while (pos < ee) tags.push(varint()); }
+        else if (t === 4 && w === 2) { const ee = varint() + pos; while (pos < ee) g.push(varint()); }
+        else skip(w);
+      }
+      const pr = {};
+      for (let i = 0; i + 1 < tags.length; i += 2) pr[keys[tags[i]]] = vals[tags[i + 1]];
+      const lvl = +pr.traffic_level, closed = pr.road_closure === true || pr.road_closure === 'true';
+      if (!(lvl < 0.75) && !closed) continue;
+      const toLL = (px, py) => [(tx + px / extent) / n * 360 - 180, Math.atan(Math.sinh(Math.PI * (1 - 2 * (ty + py / extent) / n))) * 180 / Math.PI];
+      let cx = 0, cy = 0, i = 0, cur = null;
+      while (i < g.length) {
+        const cmd = g[i] & 7, cnt = g[i] >> 3;
+        i++;
+        if (cmd === 7) continue;
+        for (let c = 0; c < cnt && i + 1 < g.length + 1; c++) {
+          cx += zz(g[i++]); cy += zz(g[i++]);
+          if (cmd === 1) { cur = [toLL(cx, cy)]; out.push({ pts: cur, lvl: closed ? 0 : lvl, closed }); }
+          else if (cur) cur.push(toLL(cx, cy));
+        }
+      }
+    }
+    pos = end;
+  }
+  return out.filter(l => l.pts.length > 1);
+}
+
+// De tegels waar de route (van from tot upto meter) doorheen gaat, in volgorde
+function flowTiles(shape, from = 0, upto = Infinity, cum = null) {
+  const n = 2 ** FLOW_Z, seen = new Set(), out = [];
+  const add = ([lon, lat]) => {
+    const x = Math.floor((lon + 180) / 360 * n), y = Math.floor((1 - Math.asinh(Math.tan(lat * Math.PI / 180)) / Math.PI) / 2 * n);
+    const k = x + '/' + y;
+    if (!seen.has(k)) { seen.add(k); out.push([x, y]); }
+  };
   for (let i = 0; i < shape.length; i++) {
-    if (cum && (cum[i] < from - 2000 || cum[i] > upto)) continue;
+    if (cum && (cum[i] < from - 500 || cum[i] > upto)) continue;
     add(shape[i]);
-    // Lange rechte stukken: tussenpunten, anders slaat de lijn soms een vak over
     const b = shape[i + 1];
     if (b) {
-      const k = Math.floor(dist(shape[i], b) / 10000);
+      const k = Math.floor(dist(shape[i], b) / 3000);
       for (let t = 1; t <= k; t++) add([shape[i][0] + (b[0] - shape[i][0]) * t / (k + 1), shape[i][1] + (b[1] - shape[i][1]) * t / (k + 1)]);
     }
   }
-  return [...cells].map(c => { const [x, y] = c.split(',').map(Number); return [x * INC_CELL, y * INC_CELL, (x + 1) * INC_CELL, (y + 1) * INC_CELL].map(v => v.toFixed(2)).join(','); });
+  return out.slice(0, FLOW_MAX);
 }
-const INC_FIELDS = '{incidents{type,geometry{type,coordinates},properties{id,iconCategory,magnitudeOfDelay,events{description,code,iconCategory},startTime,endTime,from,to,length,delay,roadNumbers}}}';
-function incidentsIn(bbox) {
-  const hit = incMemo.get(bbox);
-  if (hit && Date.now() - hit.at < 5 * 60 * 1000) return hit.p;
-  const url = `${TT}/services/5/incidentDetails?bbox=${bbox}&fields=${encodeURIComponent(INC_FIELDS)}&language=nl-NL&categoryFilter=1,6,7,8,9,14&timeValidityFilter=present`;
-  const p = fetch(url).then(r => (r.ok ? r.json() : Promise.reject(new Error('TomTom ' + r.status)))).then(j => j.incidents || []);
-  p.catch(() => incMemo.delete(bbox));
-  if (incMemo.size > 60) incMemo.delete(incMemo.keys().next().value);
-  incMemo.set(bbox, { at: Date.now(), p });
-  return p;
-}
-// Alle meldingen in deze vakken; lukte er een niet (geen tegoed, geen verbinding), dan staat .failed aan
-async function incidentsInCells(cells) {
+// Alle trage stukken in die tegels; lukte er een niet, dan staat .failed aan
+async function flowAlong(shape, from, upto, cum) {
   let failed = false;
-  const lists = await Promise.all(cells.slice(0, MAX_CELLS).map(b => incidentsIn(b).catch(() => { failed = true; return []; })));
-  const seen = new Set(), out = [];
-  for (const f of lists.flat()) {
-    const id = f.properties && f.properties.id;
-    if (!f.geometry || f.geometry.type !== 'LineString' || seen.has(id)) continue;
-    seen.add(id);
-    out.push(f);
-  }
+  const lists = await Promise.all(flowTiles(shape, from, upto, cum).map(([x, y]) => flowTile(x, y).catch(() => { failed = true; return []; })));
+  const out = lists.flat();
   out.failed = failed;
   return out;
 }
-const incidentsAlong = (shape, from, upto, cum) => incidentsInCells(incCells(shape, from, upto, cum));
+// Normale snelheid (m/s) op elke plek van de route, uit de tijden van de route zelf
+function routeSpeed(r, at) {
+  const m = r.maneuvers.find(q => r.cum[q.end_shape_index] >= at) || r.maneuvers[r.maneuvers.length - 1];
+  return m && m.time ? Math.max(3, (m.length * 1000) / m.time) : 14;
+}
+// De weg op die plek: een wegnummer als dat er is (A4), anders de straatnaam
+function routeRoad(r, at) {
+  const m = r.maneuvers.find(q => r.cum[q.end_shape_index] >= at);
+  const names = (m && (m.street_names || m.begin_street_names)) || [];
+  return names.find(x => /^[ANE]\d+$/.test(x)) || '';
+}
+// Files op de route uit de trage stukken: per 100 m van de route de traagste snelheid in jouw rijrichting,
+// aaneengesloten stukken (gaten tot 300 m) worden één file. Vertraging: de normale tijd van dat stuk
+// keer hoeveel trager het nu gaat (op de helft van de snelheid kost het twee keer zo lang).
+const FLOW_BIN = 100;
+function flowJams(r, lines, from = 0) {
+  const bins = new Map();
+  for (const l of lines) {
+    for (const s of resample(l.pts, 50)) {
+      // Vlak op de route (een ventweg ernaast telt niet)
+      const h = onRoute(r, s.p, s.dir);
+      if (!h || h.d > 20 || h.at < from) continue;
+      const k = Math.floor(h.at / FLOW_BIN), b = bins.get(k);
+      if (!b || l.lvl < b.lvl) bins.set(k, { lvl: l.lvl, closed: l.closed });
+    }
+  }
+  const keys = [...bins.keys()].sort((a, b) => a - b);
+  const jams = [];
+  let cur = null;
+  for (const k of keys) {
+    const b = bins.get(k), a = k * FLOW_BIN;
+    const t = FLOW_BIN / routeSpeed(r, a);
+    const delay = b.closed ? 0 : t * (1 / Math.max(0.1, b.lvl) - 1);
+    if (cur && a - cur.b <= 300) {
+      cur.b = a + FLOW_BIN; cur.delay += delay; cur.min = Math.min(cur.min, b.lvl); cur.closed = cur.closed || b.closed;
+    } else {
+      cur = { a, b: a + FLOW_BIN, delay, min: b.lvl, closed: b.closed };
+      jams.push(cur);
+    }
+  }
+  // Alleen echte files: echt langzaam (onder de helft van de normale snelheid), een minuut of meer,
+  // op een genummerde weg of een doorgaande weg (50+). Stoplichten in de stad zijn geen file:
+  // die zitten al in de reistijd van de route.
+  return jams.map(j => ({ ...j, road: routeRoad(r, (j.a + j.b) / 2), v: routeSpeed(r, (j.a + j.b) / 2) }))
+    .filter(j => j.closed || (j.min < 0.5 && j.delay >= 60 && j.b - j.a >= 300 && (j.road || j.v >= 13.9))).map(j => {
+    const road = j.road;
+    return { id: 'flow:' + (road || '') + ':' + Math.round(j.a / 2000), a: j.a, b: j.b, delay: Math.round(j.delay),
+      mag: j.closed ? 4 : j.min < 0.15 ? 3 : j.min < 0.35 ? 2 : 1, cat: j.closed ? 8 : 6,
+      desc: j.closed ? 'Weg afgesloten' : j.min < 0.15 ? 'Stilstaand verkeer' : 'Langzaam verkeer',
+      from: '', to: '', len: j.b - j.a, roads: road ? [road] : [], flow: true };
+  });
+}
+
+// ---------- Losse meldingen (alleen bij een tik op een melding op de kaart) ----------
+const INC_FIELDS = '{incidents{type,geometry{type,coordinates},properties{id,iconCategory,magnitudeOfDelay,events{description,code,iconCategory},startTime,endTime,from,to,length,delay,roadNumbers}}}';
 
 // Welke meldingen liggen op deze route, in dezelfde rijrichting? Punten van de melding om de
 // 150 m; elk punt moet binnen 25 m van de route liggen en dezelfde kant op gaan.
@@ -5620,28 +5741,6 @@ function resample(line, step = 150) {
   if (line.length > 1) out.push({ p: line[line.length - 1], dir: bearing(line[line.length - 2], line[line.length - 1]) });
   return out;
 }
-function jamsOnRoute(r, incidents) {
-  const jams = [];
-  for (const f of incidents) {
-    const pr = f.properties || {};
-    if (!pr.delay && pr.iconCategory !== 8) continue;
-    const hits = resample(f.geometry.coordinates).map(s => onRoute(r, s.p, s.dir));
-    const ok = hits.filter(Boolean);
-    if (ok.length < Math.max(2, hits.length * 0.6)) continue;
-    const a = Math.min(...ok.map(h => h.at)), b = Math.max(...ok.map(h => h.at));
-    if (b - a < 100) continue;
-    const ev = (pr.events || [])[0] || {};
-    jams.push({ id: pr.id, a, b, delay: pr.delay || 0, mag: pr.magnitudeOfDelay || 0, cat: pr.iconCategory, desc: ev.description || '',
-      from: pr.from || '', to: pr.to || '', len: pr.length || b - a, roads: pr.roadNumbers || [], start: pr.startTime, end: pr.endTime });
-  }
-  // Dezelfde file soms twee keer gemeld: bij meer dan de helft overlap alleen de grootste
-  const kept = [];
-  for (const j of jams.sort((x, y) => y.delay - x.delay)) {
-    const dup = kept.some(k => Math.min(k.b, j.b) - Math.max(k.a, j.a) > 0.5 * Math.min(k.b - k.a, j.b - j.a));
-    if (!dup) kept.push(j);
-  }
-  return kept.sort((x, y) => x.a - y.a);
-}
 // Vertraging tussen twee plekken op de route (een file waar je al in staat telt naar rato)
 function jamSec(jams, from, upto) {
   let s = 0;
@@ -5662,10 +5761,10 @@ let previewJamSeq = 0;
 async function previewJams() {
   const d = previewData, seq = ++previewJamSeq;
   if (!plan.jams || !trafficReady() || !d || !d.routes || travelMode !== 'auto' || !jamWorth(d)) return;
-  // Eén keer de vakken van alle routes samen (de alternatieven liggen grotendeels in dezelfde vakken)
-  const inc = await incidentsInCells([...new Set(d.routes.flatMap(r => incCells(r.shape)))]);
-  d.jamFail = inc.failed;
-  const all = d.routes.map(r => jamsOnRoute(r, inc));
+  // Eén keer de tegels van alle routes samen (de alternatieven liggen grotendeels in dezelfde tegels)
+  const lists = await Promise.all(d.routes.map(r => flowAlong(r.shape, 0, Infinity, r.cum)));
+  d.jamFail = lists.some(l => l.failed);
+  const all = d.routes.map((r, i) => flowJams(r, lists[i]));
   // Altijd bij de routes bewaren: ook als je intussen al bent gaan rijden, telt de file mee
   // (maar niet over nieuwere files heen die de navigatie onderweg zelf al heeft opgehaald)
   d.routes.forEach((r, i) => { if (!(r === state.nav && navJams.has(r))) navJams.set(r, all[i]); });
@@ -5751,7 +5850,8 @@ function openJamSheet(j) {
       : d.toLocaleDateString('nl-NL', { weekday: 'short', day: 'numeric', month: 'short' }) + ' ';
     return pre + fmtClock(d);
   };
-  const rows = [['Wat', j.desc], ['Sinds', clock(j.start)], ['Verwacht weg', j.end && new Date(j.end) > new Date() ? 'ca. ' + clock(j.end) : '']]
+  // Geschat uit de verkeerslaag: de omschrijving staat al bovenaan
+  const rows = [['Wat', j.flow ? '' : j.desc], ['Sinds', clock(j.start)], ['Verwacht weg', j.end && new Date(j.end) > new Date() ? 'ca. ' + clock(j.end) : '']]
     .filter(r => r[1]);
   body.innerHTML = `<div class="jbig"><div class="v"></div><div class="s"></div></div><ul class="vlist jrows"></ul><div class="psrc"></div>`;
   // Met vertraging: groot de minuten; zonder (afsluiting, werk): groot hoe lang het stuk is
@@ -5765,7 +5865,7 @@ function openJamSheet(j) {
     li.lastChild.textContent = v;
     body.querySelector('.jrows').appendChild(li);
   }
-  body.querySelector('.psrc').textContent = 'Bron: TomTom · ' + fmtClock(new Date());
+  body.querySelector('.psrc').textContent = (j.flow ? 'Geschat uit de verkeerslaag van TomTom · ' : 'Bron: TomTom · ') + fmtClock(new Date());
 }
 function openJamList() {
   const jams = (jamsOf(previewNav) || []).filter(j => j.delay >= 60);
@@ -5808,7 +5908,7 @@ async function refreshNavJams(n) {
   tr.busy = true;
   tr.at = Date.now();
   try {
-    const inc = await incidentsAlong(n.shape, n.along, n.along + 80000, n.cum);
+    const inc = await flowAlong(n.shape, n.along, n.along + 80000, n.cum);
     if (state.nav !== n) return;
     // Eén keer per rit zeggen dat files nu niet gemeld kunnen worden
     if (inc.failed && tr.failNav !== n) {
@@ -5817,7 +5917,7 @@ async function refreshNavJams(n) {
     }
     if (inc.failed && !inc.length) return;
     const old = jamsOf(n) || [];
-    const jams = jamsOnRoute(n, inc);
+    const jams = flowJams(n, inc, n.along - 2000);
     navJams.set(n, jams);
     // Opgelost terwijl hij nog voor je lag
     for (const [id, delay] of tr.told) {
