@@ -580,6 +580,9 @@ body.menuopen .mapctl { z-index: 12; opacity: 1; pointer-events: auto; }
 .tstart + .px { margin-left: 8px; }
 .psheet.tsheet { transition: transform .25s ease; }
 .tsheet.low { overflow: hidden; }
+/* Opzij geveegd: het volgende pad schuift van die kant binnen */
+.tsheet.in { animation: tin .28s ease-out; }
+@keyframes tin { from { transform: translateX(var(--dx)); } }
 /* Zolang het detailblad er is: niet het kaartje van het beginscherm eronder */
 body.trailview #bottom-idle, body.trailview #recenter { visibility: hidden; }
 .tsheet.low .phead { cursor: pointer; }
