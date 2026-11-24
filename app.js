@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '218';
+const VERSION = '219';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -2382,8 +2382,6 @@ function showText(row, from) {
   const q = $('q');
   q.value = '';
   q.placeholder = s ? withoutPostcode(s.name) : rowPlaceholder(row, from);
-  $('q-postcode').value = '';
-  $('q-city').value = '';
   streetCtx = null;
   updateClear();
   document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === listTab)));
@@ -2524,6 +2522,7 @@ const zoomOf = p => (['place', 'boundary'].includes(p.osm_key) ? PLACE_ZOOM[p.os
 
 function choose(f) {
   if (f.airport) { chooseAirport(f.airport); return; }
+  if (f.trail) { chooseTrail(f.trail); return; }
   const p = f.properties;
   const { title, sub } = describe(p);
   const [lon, lat] = f.geometry.coordinates;
@@ -2563,9 +2562,7 @@ function focusParams(params) {
 
 function searchQuery() {
   let q = field().value.trim();
-  const extra = [$('q-postcode').value, $('q-city').value].map(v => v.trim()).filter(Boolean);
-  if (extra.length) q = [q, ...extra].join(' ');
-  else if (streetCtx && streetCtx.city && !q.toLowerCase().includes(streetCtx.city.toLowerCase())) q += ', ' + streetCtx.city;
+  if (streetCtx && streetCtx.city && !q.toLowerCase().includes(streetCtx.city.toLowerCase())) q += ', ' + streetCtx.city;
   return q;
 }
 
@@ -2630,6 +2627,7 @@ async function search() {
   const airports = airportMatches(v).catch(() => []);
   const stationsP = stationMatches(v).catch(() => []);
   const exoP = exonymMatches(v).catch(() => []);
+  const trailP = trailMatches(v).catch(() => []);
   try {
     const res = await fetch(`${PHOTON}?${params}`);
     const data = await res.json();
@@ -2638,6 +2636,7 @@ async function search() {
     // Een stad die Photon zelf ook vond (binnen 30 km) niet nog een keer
     const isPlace = f => ['place', 'boundary'].includes(f.properties.osm_key);
     const exos = (await exoP).filter(x => !data.features.some(f => isPlace(f) && dist(x.geometry.coordinates, f.geometry.coordinates) < 30000));
+    const trails = await trailP;
     if (seq !== searchSeq) return;
     // Hetzelfde gebouw als uit de kaart (zelfde naam, vlakbij) niet nog een keer
     const same = f => local.some(d => d.name.toLowerCase() === describe(f.properties).title.toLowerCase() && dist([d.lon, d.lat], f.geometry.coordinates) < 300);
@@ -2654,7 +2653,9 @@ async function search() {
     const exoExact = exos[0] && fold(exos[0].properties.name) === fold(v.trim());
     const photonExact = features[0] && isPlace(features[0]) && fold(describe(features[0].properties).title) === fold(v.trim());
     if (exoExact && !photonExact) firstResult = exos[0];
-    if (!features.length && !recents.length && !local.length && !found.length && !trains.length && !exos.length) { ul.innerHTML = '<li class="empty">Niets gevonden</li>'; return; }
+    // Getypt als een pad (GR 1, Pieterpad): Enter kiest het wandelpad
+    if (trails.length && trailish(v)) firstResult = trails[0];
+    if (!features.length && !recents.length && !local.length && !found.length && !trains.length && !exos.length && !trails.length) { ul.innerHTML = '<li class="empty">Niets gevonden</li>'; return; }
     // Stations en luchthavens van Photon krijgen ook hun icoontje
     const item = f => (isStationF(f) ? iconItem(f, 'mi-station') : isAirportF(f) ? iconItem(f, 'mi-plane') : plainItem(f));
     if (found.length) {
@@ -2674,6 +2675,11 @@ async function search() {
     // daaronder de buitenlandse stad met die naam in onze taal (Bergen: eerst Bergen NH, dan Mons)
     const city = features[0] && isPlace(features[0]) ? [features.shift()] : [];
     for (const f of [...city, ...exos, ...nearFirst([...trains, ...features], q)]) ul.appendChild(f.station ? iconItem(f, 'mi-station') : item(f));
+    // Wandelpaden: bovenaan als je een pad typt, anders onderaan
+    if (trails.length) {
+      const items = [sectHead('Wandelpaden'), ...trails.map(trailItem)];
+      if (trailish(v)) ul.prepend(...items); else ul.append(...items);
+    }
   } catch (e) {
     if (seq === searchSeq) ul.innerHTML = '<li class="empty">Zoeken lukt nu niet. Controleer je verbinding.</li>';
   }
@@ -2697,6 +2703,107 @@ function resultsMapLink(features) {
     openMapSearch('row', 'near', editRow, { list, cat: 'search' });
   });
   return head;
+}
+
+// ---------- Wandelpaden (proef): Waymarked Trails, uit OpenStreetMap ----------
+// Zoeken op naam of nummer (GR 1, Pieterpad); kiezen zet het hele pad op de kaart, met het begin als gevonden plek.
+const TRAILS = 'https://hiking.waymarkedtrails.org/api/v1';
+const TRAIL_GROUP = { INT: 'Internationaal wandelpad', NAT: 'Nationaal wandelpad', REG: 'Regionaal wandelpad', LOC: 'Lokaal wandelpad' };
+const trailish = v => /\b(gr|law|lap|sl|pr|e)\s*-?\s*\d|pad\b|trail|sendero|camino|senda|wanderweg|chemin|wandel/i.test(v);
+async function trailMatches(v) {
+  if (v.trim().length < 3) return [];
+  const data = await (await fetch(`${TRAILS}/list/search?${new URLSearchParams({ query: v.trim(), limit: '12' })}`)).json();
+  // Hele paden eerst; etappes en deelstukken (Sendero Histórico: Asturias, Senda Pirenaica - E04) daarna
+  const part = t => /:|\bE\d+\b|\b(deel|etappe|stage|tramo|etapa)\b/i.test(t.name);
+  const rank = t => (part(t) ? 10 : 0) + (['INT', 'NAT', 'REG', 'LOC'].indexOf(t.group) + 1 || 5);
+  const seen = new Set();
+  return (data.results || []).filter(t => t.type === 'relation' && t.name)
+    .sort((a, b) => rank(a) - rank(b))
+    .filter(t => { const k = fold(`${t.ref || ''}|${t.name}`); if (seen.has(k)) return false; seen.add(k); return true; })
+    .slice(0, 3)
+    .map(t => ({ trail: t, properties: { name: trailTitle(t) } }));
+}
+const trailTitle = t => (t.ref && !fold(t.name).includes(fold(t.ref)) ? `${t.ref} · ${t.name}` : t.name);
+function sectHead(text) {
+  const li = document.createElement('li');
+  li.className = 'sect';
+  li.innerHTML = '<span class="st"></span>';
+  li.firstChild.textContent = text;
+  return li;
+}
+function trailItem(f) {
+  const t = f.trail;
+  const li = document.createElement('li');
+  li.className = 'recent airport';
+  li.innerHTML = `<div class="row">${iconHtml('ti-trekking')}<div class="rtext"><div class="r1"></div><div class="r2"></div></div></div>`;
+  li.querySelector('.r1').textContent = trailTitle(t);
+  li.querySelector('.r2').textContent = [TRAIL_GROUP[t.group] || 'Wandelpad', (t.itinerary || []).join(' – ')].filter(Boolean).join(' · ');
+  li.addEventListener('click', () => choose(f));
+  return li;
+}
+// Waymarked Trails geeft de lijnen in webmercator (meters)
+const merc = ([x, y]) => [x / 6378137 * 180 / Math.PI, (2 * Math.atan(Math.exp(y / 6378137)) - Math.PI / 2) * 180 / Math.PI];
+// Losse wegstukken achter elkaar tot doorlopende lijnen: anders blijven er uitgezoomd alleen stipjes over
+function joinLines(lines) {
+  const eq = (a, b) => a[0] === b[0] && a[1] === b[1];
+  const out = [];
+  for (const l of lines) {
+    const cur = out[out.length - 1];
+    if (cur && eq(cur.at(-1), l[0])) cur.push(...l.slice(1));
+    else if (cur && eq(cur.at(-1), l.at(-1))) cur.push(...l.slice(0, -1).reverse());
+    else if (cur && cur.one && eq(cur[0], l[0])) { cur.reverse(); cur.push(...l.slice(1)); }
+    else if (cur && cur.one && eq(cur[0], l.at(-1))) { cur.reverse(); cur.push(...l.slice(0, -1).reverse()); }
+    else { const n = [...l]; n.one = true; out.push(n); continue; }
+    cur.one = false;
+  }
+  return out;
+}
+let trail = null;
+function clearTrail() {
+  trail = null;
+  if (map.getSource('trail')) map.getSource('trail').setData(EMPTY_FC);
+}
+async function chooseTrail(t) {
+  field().blur();
+  toast('Wandelpad laden…', 8000);
+  let d;
+  try { d = await (await fetch(`${TRAILS}/details/relation/${t.id}`)).json(); } catch (e) { toast('Wandelpad laden lukt nu niet.'); return; }
+  // Alle wegstukken van het pad (en zijn deelroutes); de hoofdroute eerst, dan de zijpaden
+  const main = [], side = [];
+  const walk = (n, out) => {
+    if (n.geometry && n.geometry.type === 'LineString') out.push(n.geometry.coordinates.map(merc));
+    for (const [k, v] of Object.entries(n)) {
+      if (Array.isArray(v)) for (const c of v) if (c && c.route_type) walk(c, k === 'appendices' ? side : out);
+    }
+  };
+  if (d.route) walk(d.route, main);
+  if (!main.length) { toast('Van dit pad is geen lijn bekend.'); return; }
+  main.splice(0, main.length, ...joinLines(main));
+  const start = main[0][0], end = main[main.length - 1].at(-1);
+  const title = trailTitle(t);
+  const km = d.route.length ? ` (${fmtDist(d.route.length)})` : '';
+  toast(`${title}${km}`, 4000);
+  if (!map.getSource('trail')) {
+    map.addSource('trail', { type: 'geojson', data: EMPTY_FC });
+    const before = map.getLayer('route-casing') ? 'route-casing' : undefined;
+    map.addLayer({ id: 'trail-casing', type: 'line', source: 'trail', layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': theme() === 'dark' ? '#1c1c1e' : '#fff', 'line-width': 7, 'line-opacity': 0.9 } }, before);
+    map.addLayer({ id: 'trail-line', type: 'line', source: 'trail', layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#D7263D', 'line-width': ['case', ['get', 'side'], 2.5, 4] } }, before);
+  }
+  map.getSource('trail').setData({ type: 'FeatureCollection', features: [
+    { type: 'Feature', properties: { side: true }, geometry: { type: 'MultiLineString', coordinates: joinLines(side) } },
+    { type: 'Feature', properties: { side: false }, geometry: { type: 'MultiLineString', coordinates: main } }] });
+  trail = { name: `Begin ${title}`, lat: start[1], lon: start[0], end };
+  useChoice({ lat: trail.lat, lon: trail.lon, name: trail.name });
+  // Het hele pad in beeld (niet inzoomen op het begin)
+  if (!planning()) {
+    const all = main.flat();
+    const b = all.reduce((bb, c) => bb.extend(c), new maplibregl.LngLatBounds(all[0], all[0]));
+    // De padding komt bovenop die van de kaart: die eerst op nul (het kaartje onderin zit in de onderste marge)
+    map.jumpTo({ padding: { top: 0, bottom: 0, left: 0, right: 0 } });
+    map.fitBounds(b, { padding: { top: 70, bottom: 230, left: 40, right: 40 }, duration: 1200, maxZoom: 14 });
+  }
 }
 
 // Publieke gebouwen op de kaart waarvan de naam past, dichtstbij eerst
@@ -2840,8 +2947,6 @@ function onSearchInput() {
   updateClear();
   clearTimeout(searchTimer);
   if (!v.trim()) {
-    $('q-postcode').value = '';
-    $('q-city').value = '';
     showRecent();
     return;
   }
@@ -3179,6 +3284,7 @@ function syncFound() {
 // fly: false bij een tik op de kaart (de kaart blijft staan)
 function showFound(p, fly = true) {
   setHomeStart(false);
+  if (trail && p.name !== trail.name) clearTrail();
   if (p.naming) p.naming.then(() => { delete p.naming; if (found === p) syncFound(); });
   lookPin(p, fly);
   found = p;
@@ -4235,7 +4341,7 @@ $('foundnear').addEventListener('click', () => placeNear(found));
 $('foundgo').addEventListener('click', () => placeGo(found));
 // Tik op de gevonden plek: een andere plaats zoeken
 $('foundfield').addEventListener('click', () => { clearLook(); openSearch(); });
-$('foundx').addEventListener('click', clearLook);
+$('foundx').addEventListener('click', () => { clearLook(); clearTrail(); });
 
 // ---------- Lang drukken op de kaart: route, vertrekpunt of een pin ----------
 // Tikken in een menu of op een pin is niet ook een tik (of sleep) op de kaart
@@ -4525,8 +4631,6 @@ $('qclear').addEventListener('click', () => {
     return;
   }
   $('q').value = '';
-  $('q-postcode').value = '';
-  $('q-city').value = '';
   streetCtx = null;
   updateClear();
   showRecent();
@@ -4534,7 +4638,7 @@ $('qclear').addEventListener('click', () => {
 });
 $('q').addEventListener('focus', () => { if (!$('q').value.trim() && !$('textpane').hidden) showRecent(); });
 $('qform').addEventListener('submit', e => { e.preventDefault(); submitSearch(); });
-for (const id of ['q', 'q-postcode', 'q-city']) $(id).addEventListener('input', onSearchInput);
+$('q').addEventListener('input', onSearchInput);
 document.querySelectorAll('.modes button').forEach(b => b.addEventListener('click', () => {
   if (b.dataset.mode === travelMode) return;
   setTravelMode(b.dataset.mode);

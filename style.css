@@ -293,7 +293,9 @@ body.legback #bottom-next { transform: translateX(calc(200% + 12px)); }
 .alttag .ti { font-size: 14px; color: #2E9E4F; }
 .alttag .ecopct { color: #2E9E4F; }
 .alttag .worse { color: #E8850C; }
-.af { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; border: 0; padding: 0; }
+/* Zoekveld (type=search): zonder het eigen kruisje en de ronde vorm van Safari; wij hebben een eigen x-je */
+#q { -webkit-appearance: none; appearance: none; }
+#q::-webkit-search-cancel-button, #q::-webkit-search-decoration { -webkit-appearance: none; display: none; }
 .moderow { display: flex; gap: 8px; align-items: center; padding: 10px 16px; border-bottom: 1px solid #eee; }
 .modes { flex: 1; display: flex; gap: 8px; }
 .modes button { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 9px 0; border-radius: 10px; background: #F1F0EC; color: #3a3a3c; font-size: 15px; }

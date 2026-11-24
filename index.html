@@ -15,7 +15,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
-<link rel="stylesheet" href="style.css?v=218">
+<link rel="stylesheet" href="style.css?v=219">
 </head>
 <body>
 <div id="map"></div>
@@ -141,16 +141,13 @@
 <div class="sheet" id="search" hidden>
   <!-- Tekst zoeken: vult één adresregel -->
   <div class="pane" id="textpane">
-    <form class="sheet-head" id="qform" autocomplete="on">
+    <form class="sheet-head" id="qform" autocomplete="off" role="search">
       <button type="button" class="icon-btn" id="qback" aria-label="Terug"><i class="ti ti-arrow-left" aria-hidden="true"></i></button>
       <div class="qwrap">
-        <input id="q" name="address" type="text" placeholder="Zoek adres of plaats" autocomplete="street-address" autocorrect="off" autocapitalize="words" enterkeyhint="go">
+        <input id="q" name="q" type="search" placeholder="Zoek adres of plaats" autocomplete="off" autocorrect="off" autocapitalize="words" spellcheck="false" enterkeyhint="go">
         <button type="button" class="qclear" id="qclear" aria-label="Veld leegmaken" hidden><i class="ti ti-x" aria-hidden="true"></i></button>
       </div>
       <button type="button" class="icon-btn" id="qmap" aria-label="Zoek op kaart"><i class="ti ti-map-pin" aria-hidden="true"></i></button>
-      <!-- Onzichtbare velden zodat iOS bij 'Thuis'/'Werk' ook postcode en plaats invult -->
-      <input class="af" id="q-postcode" name="postal-code" autocomplete="postal-code" tabindex="-1" aria-hidden="true">
-      <input class="af" id="q-city" name="city" autocomplete="address-level2" tabindex="-1" aria-hidden="true">
     </form>
     <div class="tabs" role="tablist" aria-label="Bestemmingen">
       <button type="button" role="tab" data-tab="recent" aria-selected="true"><i class="ti ti-history" aria-hidden="true"></i>Recent</button>
@@ -208,6 +205,6 @@
 </div>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-<script src="app.js?v=218"></script>
+<script src="app.js?v=219"></script>
 </body>
 </html>
