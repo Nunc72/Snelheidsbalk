@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '223';
+const VERSION = '224';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -1039,9 +1039,24 @@ function follow() {
   peek(false);
   showCar();
   clearLook();
-  if (state.fix) updateCamera([state.fix.lon, state.fix.lat], 600);
   // De terugvlucht eerst afmaken: nieuwe GPS-metingen zouden hem steeds opnieuw laten beginnen
   state.easeUntil = Date.now() + 650;
+  if (state.fix) {
+    const to = [state.fix.lon, state.fix.lat], c = map.getCenter(), d = dist([c.lng, c.lat], to);
+    // Ver weg: in een boog terug (uitzoomen, overvliegen, inzoomen); dichtbij gewoon schuiven
+    if (d > 1500) {
+      farJump(to);
+      const ms = Math.min(4500, 1400 + Math.log2(d / 1500) * 450);
+      showCar();
+      map.flyTo({ center: to, zoom: state.zoom, bearing: camBearing(), pitch: camPitch(), padding: camPadding(),
+        duration: ms, curve: 1.42, essential: true });
+      state.easeUntil = Date.now() + ms + 50;
+    } else {
+      state.easeUntil = 0;
+      updateCamera(to, 600);
+      state.easeUntil = Date.now() + 650;
+    }
+  }
   // Bekeek je een ander etappe-kaartje, dan terug naar het huidige
   if (legView !== null) { legView = null; renderCards(); }
 }
@@ -3483,7 +3498,8 @@ async function openMapSearch(kind, back, row = 0, pois = null) {
   if (keep) msTilt(false, msmap.getPitch());
   else msmap.jumpTo({ pitch: 0, bearing: 0 });
   if (keep) { /* niets verschuiven */ }
-  else if (target) msmap.jumpTo({ center: ll(target), zoom: 15.5 });
+  // Ruim uitgezoomd: eerst overzicht, inzoomen doe je zelf
+  else if (target) msmap.jumpTo({ center: ll(target), zoom: 12.5 });
   else if (all.length) {
     const b = all.reduce((bb, c) => bb.extend(c), new maplibregl.LngLatBounds(all[0], all[0]));
     // Tarieflabels zijn breder dan een nummer
