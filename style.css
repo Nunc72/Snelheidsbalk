@@ -543,6 +543,37 @@ body.menuopen .mapctl { z-index: 12; opacity: 1; pointer-events: auto; }
 .plegend .sw.free { background: #E6F4EA; }
 .plegend .sw.arr { background: #E5484D; width: 3px; }
 .psrc { font-size: 11.5px; color: #8a8a8a; margin-top: 12px; }
+/* Wandelpaden: lijst (In de buurt → Wandel) en detailblad over de kaart */
+.tsym { width: 30px; height: 30px; flex: none; border-radius: 7px; background: #F1F0EC; box-shadow: 0 0 0 2px var(--c); display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.tsym img { width: 24px; height: 24px; object-fit: contain; }
+.tsym:empty { background: var(--c); }
+.tsym.big { width: 36px; height: 36px; border-radius: 8px; }
+.tsym.big img { width: 30px; height: 30px; }
+.psheet.tsheet { z-index: 30; max-height: 52vh; }
+.tsheet .phead .t1 { white-space: normal; font-size: 17px; line-height: 1.2; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.tchips { display: flex; flex-wrap: wrap; gap: 5px; margin: 12px 0 6px; }
+.tchips span { font-size: 13px; padding: 3px 8px; border-radius: 8px; background: #F1F0EC; color: #3a3a3c; display: inline-flex; align-items: center; gap: 4px; }
+.tchips span.b { background: var(--c); color: #fff; font-weight: 600; }
+.tchips .ti { font-size: 14px; }
+.trows { list-style: none; margin: 4px 0 0; padding: 0; font-size: 14px; }
+.trows li { display: flex; gap: 10px; padding: 8px 0; border-top: 1px solid #f0f0f0; line-height: 1.35; }
+.trows .k { color: #8a8a8a; width: 78px; flex: none; }
+.trows .v { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.trows .et { display: flex; gap: 7px; }
+.trows .et b { width: 16px; flex: none; text-align: right; color: var(--c); }
+.trows .et span:last-child { margin-left: auto; color: #8a8a8a; white-space: nowrap; padding-left: 6px; }
+.trows .more { color: #8a8a8a; }
+.trows .note { font-style: italic; color: #555; }
+.trows a { color: #1F6FE0; text-decoration: none; }
+.tmark { height: 18px; vertical-align: -4px; margin-right: 6px; }
+.tflag { width: 24px; height: 24px; border-radius: 6px; color: #fff; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 0 2px #fff, 0 1px 5px rgba(0,0,0,.3); }
+.tflag.end { background: #1c1c1e; }
+.tflag .ti { font-size: 15px; }
+.tnear { width: 24px; height: 24px; border-radius: 50%; background: #fff; display: flex; align-items: center; justify-content: center; box-shadow: 0 1px 5px rgba(0,0,0,.35); }
+.tnear .ti { font-size: 16px; }
+.tme { width: 14px; height: 14px; border-radius: 50%; background: #1F6FE0; box-shadow: 0 0 0 3px #fff, 0 1px 5px rgba(0,0,0,.3); }
+.tarrow { width: 17px; height: 17px; border-radius: 50%; box-shadow: 0 0 0 2px #fff; color: #fff; display: flex; align-items: center; justify-content: center; }
+.tarrow .ti { font-size: 13px; }
 /* Tarief dat per uur oploopt (Parijs) */
 .pstairt { font-size: 12px; font-weight: 600; color: #3a3a3c; margin: 2px 0 6px; }
 .pstair { display: flex; gap: 3px; align-items: flex-end; height: 46px; }
@@ -709,6 +740,10 @@ body.menuopen .mapctl { z-index: 12; opacity: 1; pointer-events: auto; }
   .vlist li, .vlist li:last-child { border-color: #2c2c2e; }
   .mmsep { background: #3a3a3c; }
   .zonepick { background: #23262B; }
+  .tsym, .tchips span { background: #2c2c2e; color: #d1d1d6; }
+  .trows li { border-color: #2c2c2e; }
+  .trows .note { color: #c7c7cc; }
+  .trows a { color: #5EA0FF; }
 }
 /* Alleen de P (geen bedrag bekend): geen lege ruimte erachter */
 .pchip .pct:empty, .ptag span:last-child:empty { display: none; }
