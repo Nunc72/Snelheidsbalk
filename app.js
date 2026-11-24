@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '220';
+const VERSION = '221';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -8,7 +8,7 @@ const PHOTON = 'https://photon.komoot.io/api/';
 // Verkeer (files) van TomTom, via onze eigen worker: daar staat de sleutel, niet in de app.
 // Zie het blok Verkeer verderop.
 const TT = 'https://verlocidad-backup.verlocidad.workers.dev/tt';
-const JAM_SHOW = 180, JAM_CHANGE = 300, TAIL_M = 1000, TAIL_KMH = 70, TRAFFIC_EVERY = 2 * 60 * 1000;
+const JAM_SHOW = 180, JAM_CHANGE = 300, TAIL_M = 1000, TAIL_KMH = 70, TRAFFIC_EVERY = 5 * 60 * 1000;
 let trafficOn = true;
 try { trafficOn = localStorage.getItem('traffic') !== '0'; } catch (e) { /* geen opslag */ }
 const trafficReady = () => true;
@@ -2302,7 +2302,7 @@ const planning = () => document.body.classList.contains('planning');
 const inSearch = () => !$('search').hidden || !$('overview').hidden;
 // Wat er bij het openen van de planner gold: liep er een route, en hoe stond de kaart
 // from: de gevonden plek waar de planner vandaan kwam (Vanaf, Route): terug gaat weer naar die plek
-const plan = { live: false, sig0: '', altPicked: false, wasFollowing: false, backHome: false, from: null, cam: null };
+const plan = { live: false, sig0: '', altPicked: false, wasFollowing: false, backHome: false, from: null, cam: null, jams: false };
 const planSig = () => JSON.stringify([stops.map(s => s && (s.here ? 'here' : [s.lat, s.lon])), travelMode]);
 // Iets gewijzigd sinds je de planner opende (een andere route kiezen telt ook)
 const planDirty = () => plan.altPicked || planSig() !== plan.sig0;
@@ -2356,6 +2356,8 @@ function openSheet() {
   plan.backHome = false;
   plan.from = null;
   plan.cam = null;
+  // File-informatie: alleen als je hem voor deze rit aanzet (onderweg wijzigen: zoals de rit had)
+  plan.jams = !!(state.nav && state.nav.jams);
   $('search').hidden = false;
   closePlaceMenu();
   clearLook();
@@ -3322,6 +3324,7 @@ async function computePreview(note) {
     drawPreview();
     $('psum').textContent = msg;
     $('pjam').hidden = true;
+    $('pjamsw').hidden = true;
     hideParkChip();
   };
   syncOk();
@@ -3353,6 +3356,7 @@ async function computePreview(note) {
     previewNav = routes[0];
     previewData = { coords: previewNav.shape, pts, routes, sel: 0, note };
     drawPreview();
+    for (const r of routes) r.jams = plan.jams;
     previewSummary(note, previewNav.time, previewNav.total);
     $('qok').disabled = false;
     previewJams();
@@ -5551,7 +5555,7 @@ function incCells(shape, from = 0, upto = Infinity, cum = null) {
 const INC_FIELDS = '{incidents{type,geometry{type,coordinates},properties{id,iconCategory,magnitudeOfDelay,events{description,code,iconCategory},startTime,endTime,from,to,length,delay,roadNumbers}}}';
 function incidentsIn(bbox) {
   const hit = incMemo.get(bbox);
-  if (hit && Date.now() - hit.at < 90 * 1000) return hit.p;
+  if (hit && Date.now() - hit.at < 5 * 60 * 1000) return hit.p;
   const url = `${TT}/services/5/incidentDetails?bbox=${bbox}&fields=${encodeURIComponent(INC_FIELDS)}&language=nl-NL&categoryFilter=1,6,7,8,9,14&timeValidityFilter=present`;
   const p = fetch(url).then(r => (r.ok ? r.json() : Promise.reject(new Error('TomTom ' + r.status)))).then(j => j.incidents || []);
   p.catch(() => incMemo.delete(bbox));
@@ -5657,7 +5661,7 @@ const minText = s => Math.max(1, Math.round(s / 60)) + ' min';
 let previewJamSeq = 0;
 async function previewJams() {
   const d = previewData, seq = ++previewJamSeq;
-  if (!trafficReady() || !d || !d.routes || travelMode !== 'auto') return;
+  if (!plan.jams || !trafficReady() || !d || !d.routes || travelMode !== 'auto' || !jamWorth(d)) return;
   // Eén keer de vakken van alle routes samen (de alternatieven liggen grotendeels in dezelfde vakken)
   const inc = await incidentsInCells([...new Set(d.routes.flatMap(r => incCells(r.shape)))]);
   d.jamFail = inc.failed;
@@ -5688,8 +5692,32 @@ function addJamLayer(m, w) {
   m.addLayer({ id: 'rjam', type: 'line', source: 'rjam', layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: { 'line-color': ['get', 'c'], 'line-width': w } });
 }
+// File-informatie kost TomTom-tegoed: alleen voor ritten van 10 km of meer, en alleen als je hem aanzet
+const jamWorth = d => d && d.routes && d.routes.some(r => r.total >= 10000);
+function syncJamSwitch() {
+  const b = $('pjamsw');
+  b.hidden = !previewNav || travelMode !== 'auto' || !jamWorth(previewData);
+  b.setAttribute('aria-checked', String(plan.jams));
+}
+$('pjamsw').addEventListener('click', () => {
+  plan.jams = !plan.jams;
+  const d = previewData;
+  if (d && d.routes) for (const r of d.routes) r.jams = plan.jams;
+  // Onderweg aangepast: geldt meteen voor de lopende rit
+  if (state.nav && plan.live) state.nav.jams = plan.jams;
+  if (plan.jams) previewJams();
+  else if (d && d.routes) {
+    previewJamSeq++;
+    d.jamFail = false;
+    for (const r of d.routes) navJams.delete(r);
+    drawNavJams();
+    drawPreview();
+  }
+  if (previewNav) previewSummary(d.note, previewNav.time, previewNav.total);
+});
 function previewJamLine() {
-  const el = $('pjam'), n = previewNav, jams = n && jamsOf(n);
+  syncJamSwitch();
+  const el = $('pjam'), n = previewNav, jams = plan.jams && n && jamsOf(n);
   const s = jams ? jamSec(jams, 0, Infinity) : 0;
   // Filegegevens lukten niet: zeggen, zodat geen file niet lijkt op geen file
   const fail = s < 60 && previewData && previewData.jamFail && travelMode === 'auto';
@@ -5775,7 +5803,7 @@ async function incidentTap(f) {
 // ---------- Onderweg ----------
 const tr = { nav: null, at: 0, busy: false, told: new Map(), tail: new Set(), lastToast: 0, beep: null };
 async function refreshNavJams(n) {
-  if (tr.busy || !trafficReady() || n.mode !== 'auto') return;
+  if (tr.busy || !trafficReady() || n.mode !== 'auto' || !n.jams) return;
   tr.busy = true;
   tr.at = Date.now();
   try {
@@ -6238,6 +6266,7 @@ async function reroute() {
     const [nav] = await fetchRoutes([hereNow(), ...ahead, ...n.legStops.slice(n.legIdx)], 0, n.mode, n.opts);
     if (state.nav !== n) return;
     if (ahead.length) withVia(nav, ahead);
+    nav.jams = n.jams;
     state.nav = nav;
     shownLeg = -1;
     if (DEMO) demo.along = 0;

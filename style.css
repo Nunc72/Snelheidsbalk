@@ -730,6 +730,14 @@ body.menuopen .mapctl { z-index: 12; opacity: 1; pointer-events: auto; }
 #trafficmenu[aria-checked="true"] .tsw { background: #34C759; }
 #trafficmenu[aria-checked="true"] .tsw::after { left: 18px; }
 #trafficmenu { gap: 10px; padding-right: 10px; }
+/* File-informatie voor deze rit: alleen als je hem aanzet (kost TomTom-tegoed) */
+.pjamsw { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 2px auto 0; padding: 4px 6px; font-size: 14px; color: #3a3a3c; }
+.pjamsw .ti { font-size: 17px; color: #8a8a8a; }
+.pjamsw .tsw { width: 34px; height: 20px; flex: none; border-radius: 10px; background: #D1D1D6; position: relative; transition: background .15s; }
+.pjamsw .tsw::after { content: ""; position: absolute; left: 2px; top: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: left .15s; }
+.pjamsw[aria-checked="true"] .tsw { background: #34C759; }
+.pjamsw[aria-checked="true"] .tsw::after { left: 16px; }
 #trafficmenu[aria-checked="true"], #trafficmenu[aria-checked="true"] .ti { color: inherit; font-weight: inherit; }
 #trafficmenu[aria-checked="true"] .ti { color: #6b6b6b; }
 .jtoast { bottom: calc(env(safe-area-inset-bottom) + 24px + var(--bottomh, 108px) + var(--ptoasth, 0px)); }
@@ -756,6 +764,8 @@ body.menuopen .mapctl { z-index: 12; opacity: 1; pointer-events: auto; }
 @media (prefers-color-scheme: dark) {
   .pjam, .eta .late { color: #FF6369; }
   #trafficmenu .tsw { background: #48484A; }
+  .pjamsw { color: #c7c7cc; }
+  .pjamsw:not([aria-checked="true"]) .tsw { background: #48484A; }
   #trafficmenu[aria-checked="true"] .ti { color: #8e8e93; }
   .jbig { background: #3A1D1F; }
   .jbig .v, .jlist .v2 { color: #FF6369; }

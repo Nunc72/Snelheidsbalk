@@ -18,7 +18,7 @@ async function traffic(req, env, ctx, path, cors) {
   if (!ORIGINS.some(o => origin === o || referer.startsWith(o + '/'))) return new Response('niet toegestaan', { status: 403, headers: cors });
   if (!TT_PATHS.some(r => r.test(path))) return new Response('niet gevonden', { status: 404, headers: cors });
   if (!env.TOMTOM_KEY) return new Response('geen sleutel ingesteld', { status: 503, headers: cors });
-  // Een minuut bewaren bij Cloudflare: wie hetzelfde vraagt, kost TomTom geen extra verzoek
+  // Even bewaren bij Cloudflare: wie hetzelfde vraagt, kost TomTom geen extra verzoek
   const url = new URL(req.url);
   url.searchParams.delete('key');
   const cacheKey = new Request(url.toString());
@@ -29,8 +29,10 @@ async function traffic(req, env, ctx, path, cors) {
     up.searchParams.set('key', env.TOMTOM_KEY);
     // De sleutel werkt alleen voor onze site (whitelist bij TomTom): zeg dat het van daar komt
     const r = await fetch(up, { headers: { 'Accept-Encoding': 'gzip', Origin: ORIGINS[0], Referer: ORIGINS[0] + '/Snelheidsbalk/' } });
+    // Filemeldingen 5 minuten (die kosten het schaarse tegoed), kaarttegels 1 minuut
+    const age = path.startsWith('/services/') ? 300 : 60;
     res = new Response(r.body, { status: r.status, headers: { 'Content-Type': r.headers.get('Content-Type') || 'application/octet-stream',
-      'Cache-Control': 'public, max-age=60' } });
+      'Cache-Control': `public, max-age=${age}` } });
     if (r.ok) ctx.waitUntil(cache.put(cacheKey, res.clone()));
   }
   const out = new Response(res.body, res);
