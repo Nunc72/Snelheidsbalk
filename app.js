@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '225';
+const VERSION = '226';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -968,6 +968,7 @@ map.on('style.load', () => {
   syncPlanLayers();
   drawPreview();
   if (msmap) { showMainLayers(false); addMsLayers(map); msDraw(); msTilt(true); }
+  drawWalk();
 });
 
 // De kleine routeoverzichtkaart is altijd de gewone kaart: geen reliëf, luchtfoto of
@@ -1271,6 +1272,9 @@ function onFix(f) {
   updateCamera(p, first ? 0 : 1000);
   maybeFetchLimit(p);
   parkMoved(f);
+  // Pad hersteld voor de eerste GPS-positie: nu kan het punt het dichtst bij je erbij
+  if (first && walk && !walk.points.some(q => q.near)) showWalk(walk.keep, walk.info, false);
+  else walkSubs();
 }
 
 function startGps() {
@@ -2840,41 +2844,59 @@ function trailInfo(d) {
     round: tags.roundtrip === 'yes' || (tags.roundtrip !== 'no' && !!start && dist(start, end) < 300) };
 }
 
-// Een pad op de kaart, in zijn eigen kleur: de lijn, de zijpaden dun, etappes als genummerde rondjes
-function drawTrail(info, color) {
-  if (!map.getSource('trail')) {
-    map.addSource('trail', { type: 'geojson', data: EMPTY_FC });
-    map.addSource('trailnear', { type: 'geojson', data: EMPTY_FC });
-    map.addSource('trailpts', { type: 'geojson', data: EMPTY_FC });
-    const before = map.getLayer('route-casing') ? 'route-casing' : undefined;
-    map.addLayer({ id: 'trail-casing', type: 'line', source: 'trail', layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': theme() === 'dark' ? '#1c1c1e' : '#fff', 'line-width': 7, 'line-opacity': 0.9 } }, before);
-    map.addLayer({ id: 'trail-line', type: 'line', source: 'trail', layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': ['get', 'color'], 'line-width': ['case', ['get', 'side'], 2.5, 4] } }, before);
-    // Van jou (of de plek waar je zocht) naar het dichtstbijzijnde punt van het pad: gestippeld
-    map.addLayer({ id: 'trail-near', type: 'line', source: 'trailnear', paint: { 'line-color': '#1F6FE0', 'line-width': 2, 'line-dasharray': [1.5, 1.5] } }, before);
-    // Uitgezoomd (heel Spanje) alleen stipjes; ingezoomd rondjes met het nummer
-    map.addLayer({ id: 'trail-stage', type: 'circle', source: 'trailpts',
-      paint: { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 6, 3, 9, 8], 'circle-color': '#fff',
-        'circle-stroke-color': ['get', 'color'], 'circle-stroke-width': ['interpolate', ['linear'], ['zoom'], 6, 1.5, 9, 2] } });
-    map.addLayer({ id: 'trail-stagenr', type: 'symbol', source: 'trailpts', minzoom: 8.5,
-      layout: { 'text-field': ['get', 'n'], 'text-font': ['Noto Sans Bold'], 'text-size': 9, 'text-padding': 4 },
-      paint: { 'text-color': ['get', 'color'] } });
-  }
-  clearTrail();
-  map.getSource('trail').setData({ type: 'FeatureCollection', features: [
+// Een pad op de kaart, in zijn eigen kleur: de lijn, de zijpaden dun, etappes als genummerde rondjes.
+// 'key': 'trail' voor het detailblad, 'walk' voor het pad dat na Start op de live kaart blijft staan
+function trailLayers(key) {
+  if (map.getSource(key)) return;
+  map.addSource(key, { type: 'geojson', data: EMPTY_FC });
+  map.addSource(key + 'near', { type: 'geojson', data: EMPTY_FC });
+  map.addSource(key + 'pts', { type: 'geojson', data: EMPTY_FC });
+  const before = map.getLayer('route-casing') ? 'route-casing' : undefined;
+  map.addLayer({ id: key + '-casing', type: 'line', source: key, layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: { 'line-color': theme() === 'dark' ? '#1c1c1e' : '#fff', 'line-width': 7, 'line-opacity': 0.9 } }, before);
+  map.addLayer({ id: key + '-line', type: 'line', source: key, layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: { 'line-color': ['get', 'color'], 'line-width': ['case', ['get', 'side'], 2.5, 4] } }, before);
+  // Van jou (of de plek waar je zocht) naar het dichtstbijzijnde punt van het pad: gestippeld
+  map.addLayer({ id: key + '-near', type: 'line', source: key + 'near', paint: { 'line-color': '#1F6FE0', 'line-width': 2, 'line-dasharray': [1.5, 1.5] } }, before);
+  // Uitgezoomd (heel Spanje) alleen stipjes; ingezoomd rondjes met het nummer
+  map.addLayer({ id: key + '-stage', type: 'circle', source: key + 'pts',
+    paint: { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 6, 3, 9, 8], 'circle-color': '#fff',
+      'circle-stroke-color': ['get', 'color'], 'circle-stroke-width': ['interpolate', ['linear'], ['zoom'], 6, 1.5, 9, 2] } }, before);
+  map.addLayer({ id: key + '-stagenr', type: 'symbol', source: key + 'pts', minzoom: 8.5,
+    layout: { 'text-field': ['get', 'n'], 'text-font': ['Noto Sans Bold'], 'text-size': 9, 'text-padding': 4 },
+    paint: { 'text-color': ['get', 'color'] } }, before);
+}
+function drawTrail(info, color, key = 'trail') {
+  trailLayers(key);
+  if (key === 'trail') clearTrail();
+  map.getSource(key).setData({ type: 'FeatureCollection', features: [
     { type: 'Feature', properties: { side: true, color }, geometry: { type: 'MultiLineString', coordinates: info.side } },
     { type: 'Feature', properties: { side: false, color }, geometry: { type: 'MultiLineString', coordinates: info.lines } }] });
-  map.getSource('trailpts').setData({ type: 'FeatureCollection', features: info.stages.length > 1 ? info.stages.map((s, i) => (
+  map.getSource(key + 'pts').setData({ type: 'FeatureCollection', features: info.stages.length > 1 ? info.stages.map((s, i) => (
     { type: 'Feature', properties: { n: String(i + 1), color }, geometry: { type: 'Point', coordinates: s.at } })) : [] });
 }
 // Een eigen markering op de kaart (vlag, pijltje), weg met clearTrail
-function trailMark(html, at, opts = {}) {
+function trailMark(html, at, opts = {}, list = trailMarks) {
   const el = document.createElement('div');
   el.innerHTML = html;
   const m = new maplibregl.Marker({ element: el.firstElementChild, ...opts }).setLngLat(at).addTo(map);
-  trailMarks.push(m);
+  list.push(m);
   return m;
+}
+// Begin- en eindvlag, en bij een rondje pijltjes voor de looprichting
+function trailFlags(info, color, list = trailMarks) {
+  if (!info.round) trailMark('<div class="tflag end"><i class="ti ti-flag-3"></i></div>', info.end, { anchor: 'bottom' }, list);
+  trailMark(`<div class="tflag" style="background:${color}"><i class="ti ti-flag"></i></div>`, info.start, { anchor: 'bottom' }, list);
+  if (!info.round) return;
+  const L = info.lines[0], seg = L.slice(1).map((q, i) => dist(L[i], q)), tot = seg.reduce((a, x) => a + x, 0);
+  for (let n = 1; n <= 5 && tot; n++) {
+    let want = tot * n / 6, i = 0;
+    while (want > seg[i] && i < seg.length - 1) want -= seg[i++];
+    const a = L[i], c = L[i + 1], f = seg[i] ? Math.min(1, want / seg[i]) : 0;
+    const brg = Math.atan2((c[0] - a[0]) * Math.cos(a[1] * Math.PI / 180), c[1] - a[1]) * 180 / Math.PI;
+    trailMark(`<div class="tarrow" style="background:${color}"><i class="ti ti-chevron-up"></i></div>`,
+      [a[0] + (c[0] - a[0]) * f, a[1] + (c[1] - a[1]) * f], { rotation: brg, rotationAlignment: 'map' }, list);
+  }
 }
 
 async function chooseTrail(t) {
@@ -2997,41 +3019,63 @@ async function showWalkNear(seq) {
 // Detail van één pad: het hele pad op de kaart, eronder een blad met wat OpenStreetMap ervan weet
 let trailView = null;
 const MARK_NL = { white: 'wit', red: 'rood', yellow: 'geel', blue: 'blauw', green: 'groen', black: 'zwart', orange: 'oranje', purple: 'paars', brown: 'bruin' };
-function closeTrail() {
+// 'back': terug naar de lijst, met de kaart zoals hij was (niet na Start)
+function closeTrail(back = true) {
   document.querySelectorAll('.tsheet').forEach(el => el.remove());
   if (!trailView) return;
   const v = trailView;
   trailView = null;
+  document.body.classList.remove('trailview');
   clearTrail();
-  if (v.dot) v.dot.remove();
+  if (!back) return;
   $('search').hidden = false;
+  $('overview').hidden = v.overview;
   map.jumpTo(v.cam);
   if (v.following) follow();
+}
+// Ingeklapt blad: alleen de kop blijft staan, de kaart is vrij
+function lowTrail(sh, on) {
+  const head = sh.querySelector('.phead');
+  sh.classList.toggle('low', on);
+  sh.style.transform = on ? `translateY(${sh.offsetHeight - head.offsetTop - head.offsetHeight - 12}px)` : '';
 }
 async function openTrail(t, at) {
   $('q').blur();
   closeTrail();
-  const view = trailView = { cam: camNow(), following: state.following };
+  const view = trailView = { cam: camNow(), following: state.following, overview: $('overview').hidden };
   stopFollowing();
   $('search').hidden = true;
+  $('overview').hidden = true;
+  document.body.classList.add('trailview');
   const sh = document.createElement('div');
   sh.className = 'psheet tsheet';
   sh.setAttribute('role', 'dialog');
   sh.style.setProperty('--c', t.color);
   sh.innerHTML = '<div class="handle" aria-hidden="true"></div><div class="phead"><span class="tsym big"></span>'
     + '<div class="ph"><div class="t1"></div><div class="t2"></div></div>'
+    + '<button type="button" class="tstart" disabled><i class="ti ti-walk" aria-hidden="true"></i>Start</button>'
     + '<button type="button" class="px" aria-label="Sluiten"><i class="ti ti-x" aria-hidden="true"></i></button></div><div class="pbody"><div class="psrc">Pad laden…</div></div>';
   sh.querySelector('.tsym').innerHTML = t.symbol_id ? `<img alt="" src="${trailSymbol(t.symbol_id)}">` : '';
   sh.querySelector('.t1').textContent = trailTitle(t);
   sh.querySelector('.t2').textContent = TRAIL_LEVEL[t.group] ? TRAIL_LEVEL[t.group] + ' wandelpad' : 'Wandelpad';
-  sh.querySelector('.px').addEventListener('click', closeTrail);
+  sh.querySelector('.px').addEventListener('click', () => closeTrail());
+  // Ingeklapt haalt een tik op de kop hem terug; omlaag vegen klapt in (en daarna sluit het), omhoog klapt uit
+  sh.querySelector('.phead').addEventListener('click', e => { if (sh.classList.contains('low') && !e.target.closest('button')) lowTrail(sh, false); });
+  sh.querySelector('.handle').addEventListener('click', () => lowTrail(sh, !sh.classList.contains('low')));
   let y0 = null;
   sh.addEventListener('pointerdown', e => { y0 = sh.scrollTop ? null : e.clientY; });
-  sh.addEventListener('pointerup', e => { if (y0 != null && e.clientY - y0 > 60) closeTrail(); y0 = null; });
+  sh.addEventListener('pointerup', e => {
+    const dy = y0 == null ? 0 : e.clientY - y0;
+    y0 = null;
+    if (dy > 60) { if (sh.classList.contains('low')) closeTrail(); else lowTrail(sh, true); } else if (dy < -40) lowTrail(sh, false);
+  });
   document.body.appendChild(sh);
   let info;
   try { info = await trailDetails(t.id); } catch (e) { info = null; }
   if (trailView !== view) return;
+  const go = sh.querySelector('.tstart');
+  go.disabled = !info || !info.lines.length;
+  go.addEventListener('click', () => startWalk(t, info));
   const body = sh.querySelector('.pbody');
   if (!info || !info.lines.length) { body.firstChild.textContent = info ? 'Van dit pad is geen lijn bekend.' : 'Pad laden lukt nu niet.'; return; }
   if (info.nameNl && fold(info.nameNl) !== fold(info.name)) sh.querySelector('.t2').textContent = info.nameNl;
@@ -3105,28 +3149,189 @@ async function openTrail(t, at) {
   // De kaart: het hele pad, begin en eind, het dichtstbijzijnde punt, en bij een rondje de looprichting
   drawTrail(info, t.color);
   map.getSource('trailnear').setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [[at.lon, at.lat], t.nearAt] } });
-  if (!info.round) trailMark('<div class="tflag end"><i class="ti ti-flag-3"></i></div>', info.end, { anchor: 'bottom' });
-  trailMark(`<div class="tflag" style="background:${t.color}"><i class="ti ti-flag"></i></div>`, info.start, { anchor: 'bottom' });
+  trailFlags(info, t.color);
   trailMark(`<div class="tnear"><i class="ti ti-map-pin-down" style="color:${t.color}"></i></div>`, t.nearAt);
   // Zonder je eigen stip op de kaart: een stip waar gezocht is
   if (at.from !== 'jou' || !markerOn) trailMark('<div class="tme"></div>', [at.lon, at.lat]);
-  if (info.round) {
-    const L = info.lines[0], seg = L.slice(1).map((q, i) => dist(L[i], q)), tot = seg.reduce((a, x) => a + x, 0);
-    for (let n = 1; n <= 5 && tot; n++) {
-      let want = tot * n / 6, i = 0;
-      while (want > seg[i] && i < seg.length - 1) want -= seg[i++];
-      const a = L[i], c = L[i + 1], f = seg[i] ? Math.min(1, want / seg[i]) : 0;
-      const brg = Math.atan2((c[0] - a[0]) * Math.cos(a[1] * Math.PI / 180), c[1] - a[1]) * 180 / Math.PI;
-      trailMark(`<div class="tarrow" style="background:${t.color}"><i class="ti ti-chevron-up"></i></div>`,
-        [a[0] + (c[0] - a[0]) * f, a[1] + (c[1] - a[1]) * f], { rotation: brg, rotationAlignment: 'map' });
-    }
-  }
   const all = [...info.lines.flat(), [at.lon, at.lat]];
   const b = all.reduce((bb, c) => bb.extend(c), new maplibregl.LngLatBounds(all[0], all[0]));
   map.jumpTo({ padding: { top: 0, bottom: 0, left: 0, right: 0 }, bearing: 0, pitch: 0 });
   map.fitBounds(b, { padding: { top: 60, bottom: sh.offsetHeight + 24, left: 30, right: 30 },
     duration: 900, maxZoom: 15 });
 }
+
+// Een tik op de kaart klapt het detailblad in (de kaart vrij) en weer uit
+map.on('click', () => {
+  const sh = trailView && document.querySelector('.tsheet');
+  if (sh) lowTrail(sh, !sh.classList.contains('low'));
+});
+
+// ---------- Wandelen: na Start blijft het pad op de live kaart staan ----------
+// Het pad wordt niet 'opgegeten' zoals een route: het staat er tot je het met het kruisje weghaalt (ook na herstarten).
+// Onderin de routepunten (begin, etappes of elke paar km, eind, en het punt het dichtst bij je) om doorheen te vegen.
+let walk = null;
+function startWalk(t, info) {
+  closeTrail(false);
+  closeSearch();
+  const keep = { id: t.id, ref: t.ref || '', name: t.name, group: t.group, symbol_id: t.symbol_id || '', color: t.color };
+  try { localStorage.setItem('walkTrail', JSON.stringify(keep)); } catch (e) { /* geen opslag */ }
+  showWalk(keep, info, true);
+}
+async function restoreWalk() {
+  let keep = null;
+  try { keep = JSON.parse(localStorage.getItem('walkTrail') || 'null'); } catch (e) { /* geen opslag */ }
+  if (!keep || walk) return;
+  let info;
+  try { info = await trailDetails(keep.id); } catch (e) { return; }  // volgende keer opnieuw
+  if (!walk) showWalk(keep, info, false);
+}
+restoreWalk();
+function stopWalk() {
+  if (!walk) return;
+  walk.marks.forEach(m => m.remove());
+  walk = null;
+  for (const id of ['walk', 'walkpts', 'walknear']) if (map.getSource(id)) map.getSource(id).setData(EMPTY_FC);
+  try { localStorage.removeItem('walkTrail'); } catch (e) { /* geen opslag */ }
+  $('walkbar').hidden = true;
+  placeRecenter();
+}
+
+// Afstand langs het pad tot elk punt (de losse stukken van een pad achter elkaar, zonder de sprongen ertussen)
+function trailAlong(info) {
+  const pts = [], cum = [];
+  let d = 0;
+  for (const l of info.lines) {
+    l.forEach((c, i) => { if (i) d += dist(l[i - 1], c); pts.push(c); cum.push(d); });
+  }
+  const nearest = p => {
+    let bi = 0, bd = Infinity;
+    for (let i = 0; i < pts.length; i++) {
+      const m = dist(p, pts[i]);
+      if (m < bd) { bd = m; bi = i; }
+    }
+    return bi;
+  };
+  return { pts, cum, total: d, nearest };
+}
+function walkPoints(info, me) {
+  const a = trailAlong(info), list = [];
+  const at = i => ({ at: a.pts[i], along: a.cum[i] });
+  list.push({ ...at(0), icon: 'ti-flag', title: info.round ? 'Begin en eind' : 'Begin', sub: info.round ? '' : info.itinerary[0] || '' });
+  if (info.stages.length > 1) {
+    info.stages.forEach((s, i) => {
+      if (i) list.push({ ...at(a.nearest(s.at)), n: i + 1, title: `Etappe ${i + 1}`, sub: s.it[0] || s.name.replace(/^.*?[-:–]\s*/, '') });
+    });
+  } else {
+    // Zonder etappes: elke 1, 2, 5… km een punt, zo dat het er niet meer dan 12 zijn
+    const step = [1, 2, 5, 10, 20, 50, 100].find(k => a.total / 1000 / k <= 12) || 200;
+    for (let km = step, i = 0; km * 1000 < a.total - step * 300; km += step) {
+      while (i < a.cum.length - 1 && a.cum[i] < km * 1000) i++;
+      list.push({ ...at(i), n: km, title: `Km ${km}`, sub: '' });
+    }
+  }
+  if (!info.round) list.push({ ...at(a.pts.length - 1), icon: 'ti-flag-3', title: 'Eind', sub: info.itinerary.at(-1) || '' });
+  if (me) {
+    const near = { ...at(a.nearest(me)), icon: 'ti-map-pin-down', title: 'Dichtst bij jou', sub: '', near: true };
+    list.splice(list.filter(p => p.along <= near.along).length, 0, near);
+  }
+  return list;
+}
+
+function showWalk(keep, info, fly) {
+  if (walk) { walk.marks.forEach(m => m.remove()); }
+  const me = state.fix ? [state.fix.lon, state.fix.lat] : null;
+  const points = walkPoints(info, me);
+  walk = { keep, info, points, marks: [], sel: null, idx: Math.max(0, points.findIndex(p => p.near)) };
+  drawWalk();
+  // De balk onderin: naam, kruisje, en een rij kaartjes om opzij te vegen
+  const bar = $('walkbar');
+  bar.style.setProperty('--c', keep.color);
+  bar.querySelector('.tsym').innerHTML = keep.symbol_id ? `<img alt="" src="${trailSymbol(keep.symbol_id)}">` : '';
+  $('walkname').textContent = trailTitle(keep);
+  const row = $('walkcards');
+  row.replaceChildren(...points.map((p, i) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'wcard' + (p.near ? ' near' : '');
+    b.innerHTML = '<span class="wn"></span><span class="wt"><b></b><small></small></span>';
+    b.querySelector('.wn').innerHTML = p.icon ? `<i class="ti ${p.icon}" aria-hidden="true"></i>` : '';
+    if (!p.icon) b.querySelector('.wn').textContent = p.n;
+    b.querySelector('b').textContent = p.title;
+    b.addEventListener('click', () => walkTo(i, true));
+    return b;
+  }));
+  walkSubs();
+  bar.hidden = false;
+  placeRecenter();
+  row.scrollLeft = row.children[walk.idx].offsetLeft;
+  walkSel();
+  if (fly) {
+    // Jij en het dichtstbijzijnde punt samen in beeld
+    const p = points[walk.idx];
+    const b = new maplibregl.LngLatBounds(p.at, p.at);
+    if (me && dist(me, p.at) < 20000) b.extend(me);
+    stopFollowing();
+    // De padding komt bovenop die van de kaart: die eerst op nul, het kaartje onderin zelf meetellen
+    const bottom = camPadding().bottom;
+    map.jumpTo({ padding: { top: 0, bottom: 0, left: 0, right: 0 } });
+    map.fitBounds(b, { padding: { top: 90, bottom: bottom + 50, left: 50, right: 50 }, maxZoom: 16, duration: 1200 });
+  }
+}
+// Na een andere kaartsoort is de lijn weg: opnieuw tekenen
+function drawWalk() {
+  if (!walk) return;
+  const { info, keep } = walk;
+  // Is de kaartstijl nog niet klaar, dan tekent style.load het straks
+  try { drawTrail(info, keep.color, 'walk'); } catch (e) { return; }
+  walk.marks.forEach(m => m.remove());
+  walk.marks = [];
+  trailFlags(info, keep.color, walk.marks);
+  walk.sel = null;
+  walkSel();
+}
+// Per kaartje: hoe ver langs het pad, en hoe ver van jou (bij elke nieuwe GPS-positie)
+function walkSubs() {
+  if (!walk) return;
+  const me = state.fix && [state.fix.lon, state.fix.lat];
+  [...$('walkcards').children].forEach((b, i) => {
+    const p = walk.points[i];
+    b.querySelector('small').textContent = [p.sub, p.along ? kmText(p.along) + ' langs het pad' : '', me ? fmtDist(dist(me, p.at)) + ' van jou' : '']
+      .filter(Boolean).join(' · ');
+  });
+  if (me) map.getSource('walknear') && map.getSource('walknear').setData(walk.points[walk.idx].near
+    ? { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [me, walk.points[walk.idx].at] } } : EMPTY_FC);
+}
+// Het gekozen routepunt: een ring op de kaart en het kaartje gemarkeerd
+function walkSel() {
+  const p = walk.points[walk.idx];
+  [...$('walkcards').children].forEach((b, i) => b.classList.toggle('on', i === walk.idx));
+  if (!walk.sel) walk.sel = trailMark(`<div class="wsel" style="border-color:${walk.keep.color}"></div>`, p.at, {}, walk.marks);
+  walk.sel.setLngLat(p.at);
+  walkSubs();
+}
+function walkTo(i, scroll) {
+  if (!walk || !walk.points[i]) return;
+  walk.idx = i;
+  walkSel();
+  if (scroll) {
+    const row = $('walkcards'), b = row.children[i];
+    row.scrollTo({ left: b.offsetLeft, behavior: 'smooth' });
+  }
+  stopFollowing();
+  map.easeTo({ center: walk.points[i].at, zoom: Math.max(map.getZoom(), 14), padding: camPadding(), duration: 800 });
+}
+// Vegen: na het stilvallen het kaartje dat links staat
+let walkScroll = 0;
+$('walkcards').addEventListener('scroll', () => {
+  clearTimeout(walkScroll);
+  walkScroll = setTimeout(() => {
+    if (!walk) return;
+    const row = $('walkcards'), gap = b => Math.abs(b.offsetLeft - row.scrollLeft);
+    const cards = [...row.children], i = cards.indexOf(cards.reduce((m, b) => (gap(b) < gap(m) ? b : m)));
+    if (i !== walk.idx) walkTo(i, false);
+  }, 140);
+});
+$('walkx').addEventListener('click', stopWalk);
 
 // Publieke gebouwen op de kaart waarvan de naam past, dichtstbij eerst
 function publicMatches(v) {
@@ -4790,7 +4995,7 @@ map.on('contextmenu', e => {
 // Tik je op een station, luchthaven, gebouw, eigen pin of plaatsnaam, dan wordt het die plek zelf (een plaats: het centrum).
 // Staat er al een plek, dan haalt een tik ernaast die weg (weer Zoek plaats); de volgende tik kiest een nieuwe.
 // Even wachten: een dubbele tik is inzoomen.
-const homeIdle = () => !planning() && $('search').hidden && !msmap && !state.nav && !state.concept;
+const homeIdle = () => !planning() && $('search').hidden && !msmap && !state.nav && !state.concept && !trailView;
 let tapTimer = 0;
 map.on('click', e => {
   clearTimeout(tapTimer);

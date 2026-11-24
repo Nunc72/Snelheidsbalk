@@ -574,6 +574,35 @@ body.menuopen .mapctl { z-index: 12; opacity: 1; pointer-events: auto; }
 .tme { width: 14px; height: 14px; border-radius: 50%; background: #1F6FE0; box-shadow: 0 0 0 3px #fff, 0 1px 5px rgba(0,0,0,.3); }
 .tarrow { width: 17px; height: 17px; border-radius: 50%; box-shadow: 0 0 0 2px #fff; color: #fff; display: flex; align-items: center; justify-content: center; }
 .tarrow .ti { font-size: 13px; }
+.tstart { flex: none; height: 32px; padding: 0 12px; border-radius: 16px; background: #1F6FE0; color: #fff; font-weight: 600; font-size: 15px; display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
+.tstart .ti { font-size: 18px; }
+.tstart:disabled { opacity: .4; }
+.tstart + .px { margin-left: 8px; }
+.psheet.tsheet { transition: transform .25s ease; }
+.tsheet.low { overflow: hidden; }
+/* Zolang het detailblad er is: niet het kaartje van het beginscherm eronder */
+body.trailview #bottom-idle, body.trailview #recenter { visibility: hidden; }
+.tsheet.low .phead { cursor: pointer; }
+/* Wandelpad op de live kaart: naam en routepunten in het kaartje onderin */
+.walkbar { margin: -4px -18px 12px; }
+.wbhead { display: flex; align-items: center; gap: 9px; padding: 0 18px; }
+.wbhead .tsym { width: 26px; height: 26px; border-radius: 6px; }
+.wbhead .tsym img { width: 21px; height: 21px; }
+.wbname { flex: 1; min-width: 0; font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wbx { flex: none; width: 28px; height: 28px; border-radius: 50%; background: #F1F0EC; color: #6b6b6b; display: flex; align-items: center; justify-content: center; }
+.wbx .ti { font-size: 16px; }
+.wcards { position: relative; display: flex; gap: 8px; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; padding: 10px 18px 2px; scroll-padding: 0 18px; touch-action: pan-x; }
+.wcards::-webkit-scrollbar { display: none; }
+.wcards::after { content: ''; flex: 0 0 calc(22% - 8px); }
+.wcard { flex: 0 0 78%; scroll-snap-align: start; display: flex; align-items: center; gap: 10px; padding: 9px 11px; border-radius: 14px; background: #F4F4F2; text-align: left; color: inherit; border: 2px solid transparent; }
+.wcard.on { border-color: var(--c); background: #fff; box-shadow: 0 1px 6px rgba(0,0,0,.12); }
+.wn { width: 28px; height: 28px; flex: none; border-radius: 50%; background: #fff; border: 2px solid var(--c); color: var(--c); font-weight: 700; font-size: 12px; display: flex; align-items: center; justify-content: center; }
+.wn .ti { font-size: 16px; }
+.wcard.near .wn { background: var(--c); color: #fff; }
+.wt { min-width: 0; display: flex; flex-direction: column; }
+.wt b { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wt small { font-size: 12.5px; color: #6b6b6b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wsel { width: 26px; height: 26px; border-radius: 50%; border: 3px solid; background: rgba(255,255,255,.35); box-shadow: 0 0 0 2px #fff; }
 /* Tarief dat per uur oploopt (Parijs) */
 .pstairt { font-size: 12px; font-weight: 600; color: #3a3a3c; margin: 2px 0 6px; }
 .pstair { display: flex; gap: 3px; align-items: flex-end; height: 46px; }
@@ -744,6 +773,11 @@ body.menuopen .mapctl { z-index: 12; opacity: 1; pointer-events: auto; }
   .trows li { border-color: #2c2c2e; }
   .trows .note { color: #c7c7cc; }
   .trows a { color: #5EA0FF; }
+  .wbx { background: #2c2c2e; color: #a1a1a6; }
+  .wcard { background: #2c2c2e; }
+  .wcard.on { background: #1c1c1e; }
+  .wn { background: #1c1c1e; }
+  .wt small { color: #a1a1a6; }
 }
 /* Alleen de P (geen bedrag bekend): geen lege ruimte erachter */
 .pchip .pct:empty, .ptag span:last-child:empty { display: none; }
