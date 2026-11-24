@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '221';
+const VERSION = '222';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -3323,8 +3323,7 @@ async function computePreview(note) {
     previewData = { coords: [], pts: pts.filter(Boolean), routes: null, sel: 0, note, fitted: wait };
     drawPreview();
     $('psum').textContent = msg;
-    $('pjam').hidden = true;
-    $('pjamsw').hidden = true;
+    $('pjamrow').hidden = true;
     hideParkChip();
   };
   syncOk();
@@ -5267,7 +5266,8 @@ function syncParkMenu() {
 }
 $('parkmenu').addEventListener('click', e => { e.stopPropagation(); toggleMapMenu(false); openPermitSheet(); });
 $('pchip').addEventListener('click', openParkSheet);
-$('pjam').addEventListener('click', openJamList);
+// Tik op de regel: met files de lijst, anders de verkeersinformatie aan of uit
+$('pjam').addEventListener('click', () => { if ($('pjam').classList.contains('jam')) openJamList(); else toggleJams(); });
 $('trafficmenu').addEventListener('click', e => { e.stopPropagation(); setTrafficOn(!trafficOn); toggleMapMenu(false); });
 map.on('click', 'tinc', e => { lp.eatUntil = Date.now() + 400; incidentTap(e.features[0]); });
 
@@ -5694,12 +5694,7 @@ function addJamLayer(m, w) {
 }
 // File-informatie kost TomTom-tegoed: alleen voor ritten van 10 km of meer, en alleen als je hem aanzet
 const jamWorth = d => d && d.routes && d.routes.some(r => r.total >= 10000);
-function syncJamSwitch() {
-  const b = $('pjamsw');
-  b.hidden = !previewNav || travelMode !== 'auto' || !jamWorth(previewData);
-  b.setAttribute('aria-checked', String(plan.jams));
-}
-$('pjamsw').addEventListener('click', () => {
+function toggleJams() {
   plan.jams = !plan.jams;
   const d = previewData;
   if (d && d.routes) for (const r of d.routes) r.jams = plan.jams;
@@ -5714,24 +5709,30 @@ $('pjamsw').addEventListener('click', () => {
     drawPreview();
   }
   if (previewNav) previewSummary(d.note, previewNav.time, previewNav.total);
-});
+}
+$('pjamsw').addEventListener('click', toggleJams);
+// Eén regel: uit 'Verkeersinformatie', aan de files op de route (of dat het nu niet lukt)
 function previewJamLine() {
-  syncJamSwitch();
-  const el = $('pjam'), n = previewNav, jams = plan.jams && n && jamsOf(n);
+  const row = $('pjamrow'), el = $('pjam'), n = previewNav;
+  row.hidden = !n || travelMode !== 'auto' || !jamWorth(previewData);
+  $('pjamsw').setAttribute('aria-checked', String(plan.jams));
+  if (row.hidden) return 0;
+  const jams = plan.jams && jamsOf(n);
   const s = jams ? jamSec(jams, 0, Infinity) : 0;
-  // Filegegevens lukten niet: zeggen, zodat geen file niet lijkt op geen file
-  const fail = s < 60 && previewData && previewData.jamFail && travelMode === 'auto';
-  el.classList.toggle('off', !!fail);
-  if (fail) {
-    el.hidden = false;
-    el.innerHTML = '<i class="ti ti-cloud-off" aria-hidden="true"></i><span>Filegegevens nu niet beschikbaar</span>';
-    return 0;
-  }
-  el.hidden = s < 60;
-  if (el.hidden) return 0;
-  const worst = jams.reduce((a, j) => (j.delay > a.delay ? j : a));
-  el.innerHTML = '<span class="fsq sm"><i class="ti ti-car" aria-hidden="true"></i></span><span></span>';
-  el.lastChild.textContent = `incl. ${minText(s)} file` + jamText(worst);
+  let cls = '', icon = '<i class="ti ti-traffic-lights" aria-hidden="true"></i>', text = 'Verkeersinformatie';
+  if (s >= 60) {
+    const worst = jams.reduce((a, j) => (j.delay > a.delay ? j : a));
+    cls = 'jam';
+    icon = '<span class="fsq sm"><i class="ti ti-car" aria-hidden="true"></i></span>';
+    text = `incl. ${minText(s)} file` + jamText(worst);
+  } else if (plan.jams && previewData.jamFail) {
+    cls = 'off';
+    icon = '<i class="ti ti-cloud-off" aria-hidden="true"></i>';
+    text = 'Informatie nu niet beschikbaar';
+  } else if (plan.jams) text = jams ? 'Geen files op de route' : 'Files ophalen…';
+  el.className = 'pjam ' + cls;
+  el.innerHTML = icon + '<span></span>';
+  el.lastChild.textContent = text;
   return s;
 }
 

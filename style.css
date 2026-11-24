@@ -719,10 +719,14 @@ body.menuopen .mapctl { z-index: 12; opacity: 1; pointer-events: auto; }
 .fsq .ti { font-size: 14px; }
 .fsq.big { width: 32px; height: 32px; border-radius: 7px; }
 .fsq.big .ti { font-size: 20px; }
-.pjam { display: flex; align-items: center; justify-content: center; gap: 6px; margin: -2px auto 0; padding: 2px 6px; border-radius: 8px;
-  font-size: 14px; color: #C62828; max-width: 100%; }
+.pjamrow { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 0 auto; max-width: 100%; min-width: 0; }
+.pjamrow[hidden] { display: none; }
+.pjam { display: flex; align-items: center; justify-content: center; gap: 6px; min-width: 0; padding: 2px 4px; border-radius: 8px;
+  font-size: 14px; color: #3a3a3c; max-width: 100%; }
 .pjam span:last-child { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pjam.off { color: #8a8a8a; pointer-events: none; }
+.pjam > .ti { font-size: 17px; color: #8a8a8a; }
+.pjam.jam { color: #C62828; }
+.pjam.off { color: #8a8a8a; }
 .eta .late { font-size: 14px; font-weight: 600; color: #C62828; margin-left: 3px; vertical-align: 2px; }
 #trafficmenu .tsw { margin-left: auto; margin-right: -2px; padding-left: 0; width: 38px; height: 22px; flex: none; border-radius: 11px; background: #D1D1D6; position: relative; transition: background .15s; }
 #trafficmenu .tsw::after { content: ""; position: absolute; left: 2px; top: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff;
@@ -731,8 +735,7 @@ body.menuopen .mapctl { z-index: 12; opacity: 1; pointer-events: auto; }
 #trafficmenu[aria-checked="true"] .tsw::after { left: 18px; }
 #trafficmenu { gap: 10px; padding-right: 10px; }
 /* File-informatie voor deze rit: alleen als je hem aanzet (kost TomTom-tegoed) */
-.pjamsw { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 2px auto 0; padding: 4px 6px; font-size: 14px; color: #3a3a3c; }
-.pjamsw .ti { font-size: 17px; color: #8a8a8a; }
+.pjamsw { display: flex; align-items: center; flex: none; padding: 4px 2px; }
 .pjamsw .tsw { width: 34px; height: 20px; flex: none; border-radius: 10px; background: #D1D1D6; position: relative; transition: background .15s; }
 .pjamsw .tsw::after { content: ""; position: absolute; left: 2px; top: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff;
   box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: left .15s; }
@@ -762,9 +765,9 @@ body.menuopen .mapctl { z-index: 12; opacity: 1; pointer-events: auto; }
 .jlist .k { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .jlist .v2 { flex: none; font-size: 15px; font-weight: 600; color: #C62828; margin: 0; }
 @media (prefers-color-scheme: dark) {
-  .pjam, .eta .late { color: #FF6369; }
+  .pjam { color: #c7c7cc; }
+  .pjam.jam, .eta .late { color: #FF6369; }
   #trafficmenu .tsw { background: #48484A; }
-  .pjamsw { color: #c7c7cc; }
   .pjamsw:not([aria-checked="true"]) .tsw { background: #48484A; }
   #trafficmenu[aria-checked="true"] .ti { color: #8e8e93; }
   .jbig { background: #3A1D1F; }
