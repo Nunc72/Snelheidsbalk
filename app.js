@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '219';
+const VERSION = '220';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -5527,39 +5527,42 @@ function setTrafficOn(on) {
 }
 
 // ---------- Meldingen langs de route ----------
-// TomTom geeft meldingen per vak. Grote vakken zijn zwaar (honderden kleine stadsfiles), dus
-// smalle vakken langs de route: een nieuw vak elke 20 km (bij lange routes langer, hooguit
-// 10 vakken per route), met zo'n 1 km ruimte eromheen.
+// TomTom geeft meldingen per vak. Elk verzoek kost tegoed, dus vaste vakken van een halve graad
+// (zo'n 55 x 35 km): de routes in het overzicht delen ze, en hetzelfde vak is bij Cloudflare
+// een minuut bewaard (ook voor een volgende route of een ander toestel). Alleen de soorten die
+// voor files tellen: ongeluk, file, rijstrook dicht, weg dicht, werkzaamheden, gestremd.
 const incMemo = new Map();
-function routeBoxes(shape, from = 0, upto = Infinity, cum = null) {
-  const boxes = [], pad = 0.01;
-  const span = cum ? Math.min(upto, cum[cum.length - 1]) - from : shape.reduce((t, q, i) => t + (i ? dist(shape[i - 1], q) : 0), 0);
-  const step = Math.max(20000, span / 10);
-  let b = null, run = 0;
+const INC_CELL = 0.5, MAX_CELLS = 16;
+function incCells(shape, from = 0, upto = Infinity, cum = null) {
+  const cells = new Set();
+  const add = ([lon, lat]) => cells.add(Math.floor(lon / INC_CELL) + ',' + Math.floor(lat / INC_CELL));
   for (let i = 0; i < shape.length; i++) {
     if (cum && (cum[i] < from - 2000 || cum[i] > upto)) continue;
-    const [lon, lat] = shape[i];
-    if (b && i) run += dist(shape[i - 1], shape[i]);
-    if (b && run > step) { boxes.push(b); b = null; run = 0; }
-    b = b ? [Math.min(b[0], lon), Math.min(b[1], lat), Math.max(b[2], lon), Math.max(b[3], lat)] : [lon, lat, lon, lat];
+    add(shape[i]);
+    // Lange rechte stukken: tussenpunten, anders slaat de lijn soms een vak over
+    const b = shape[i + 1];
+    if (b) {
+      const k = Math.floor(dist(shape[i], b) / 10000);
+      for (let t = 1; t <= k; t++) add([shape[i][0] + (b[0] - shape[i][0]) * t / (k + 1), shape[i][1] + (b[1] - shape[i][1]) * t / (k + 1)]);
+    }
   }
-  if (b) boxes.push(b);
-  return boxes.map(x => [x[0] - pad, x[1] - pad, x[2] + pad, x[3] + pad].map(v => v.toFixed(4)).join(','));
+  return [...cells].map(c => { const [x, y] = c.split(',').map(Number); return [x * INC_CELL, y * INC_CELL, (x + 1) * INC_CELL, (y + 1) * INC_CELL].map(v => v.toFixed(2)).join(','); });
 }
 const INC_FIELDS = '{incidents{type,geometry{type,coordinates},properties{id,iconCategory,magnitudeOfDelay,events{description,code,iconCategory},startTime,endTime,from,to,length,delay,roadNumbers}}}';
 function incidentsIn(bbox) {
   const hit = incMemo.get(bbox);
   if (hit && Date.now() - hit.at < 90 * 1000) return hit.p;
-  const url = `${TT}/services/5/incidentDetails?bbox=${bbox}&fields=${encodeURIComponent(INC_FIELDS)}&language=nl-NL&timeValidityFilter=present`;
+  const url = `${TT}/services/5/incidentDetails?bbox=${bbox}&fields=${encodeURIComponent(INC_FIELDS)}&language=nl-NL&categoryFilter=1,6,7,8,9,14&timeValidityFilter=present`;
   const p = fetch(url).then(r => (r.ok ? r.json() : Promise.reject(new Error('TomTom ' + r.status)))).then(j => j.incidents || []);
   p.catch(() => incMemo.delete(bbox));
   if (incMemo.size > 60) incMemo.delete(incMemo.keys().next().value);
   incMemo.set(bbox, { at: Date.now(), p });
   return p;
 }
-async function incidentsAlong(shape, from, upto, cum) {
-  const boxes = routeBoxes(shape, from, upto, cum).slice(0, 12);
-  const lists = await Promise.all(boxes.map(b => incidentsIn(b).catch(() => [])));
+// Alle meldingen in deze vakken; lukte er een niet (geen tegoed, geen verbinding), dan staat .failed aan
+async function incidentsInCells(cells) {
+  let failed = false;
+  const lists = await Promise.all(cells.slice(0, MAX_CELLS).map(b => incidentsIn(b).catch(() => { failed = true; return []; })));
   const seen = new Set(), out = [];
   for (const f of lists.flat()) {
     const id = f.properties && f.properties.id;
@@ -5567,8 +5570,10 @@ async function incidentsAlong(shape, from, upto, cum) {
     seen.add(id);
     out.push(f);
   }
+  out.failed = failed;
   return out;
 }
+const incidentsAlong = (shape, from, upto, cum) => incidentsInCells(incCells(shape, from, upto, cum));
 
 // Welke meldingen liggen op deze route, in dezelfde rijrichting? Punten van de melding om de
 // 150 m; elk punt moet binnen 25 m van de route liggen en dezelfde kant op gaan.
@@ -5653,7 +5658,10 @@ let previewJamSeq = 0;
 async function previewJams() {
   const d = previewData, seq = ++previewJamSeq;
   if (!trafficReady() || !d || !d.routes || travelMode !== 'auto') return;
-  const all = await Promise.all(d.routes.map(r => incidentsAlong(r.shape, 0, Infinity, null).then(inc => jamsOnRoute(r, inc)).catch(() => [])));
+  // Eén keer de vakken van alle routes samen (de alternatieven liggen grotendeels in dezelfde vakken)
+  const inc = await incidentsInCells([...new Set(d.routes.flatMap(r => incCells(r.shape)))]);
+  d.jamFail = inc.failed;
+  const all = d.routes.map(r => jamsOnRoute(r, inc));
   // Altijd bij de routes bewaren: ook als je intussen al bent gaan rijden, telt de file mee
   // (maar niet over nieuwere files heen die de navigatie onderweg zelf al heeft opgehaald)
   d.routes.forEach((r, i) => { if (!(r === state.nav && navJams.has(r))) navJams.set(r, all[i]); });
@@ -5683,6 +5691,14 @@ function addJamLayer(m, w) {
 function previewJamLine() {
   const el = $('pjam'), n = previewNav, jams = n && jamsOf(n);
   const s = jams ? jamSec(jams, 0, Infinity) : 0;
+  // Filegegevens lukten niet: zeggen, zodat geen file niet lijkt op geen file
+  const fail = s < 60 && previewData && previewData.jamFail && travelMode === 'auto';
+  el.classList.toggle('off', !!fail);
+  if (fail) {
+    el.hidden = false;
+    el.innerHTML = '<i class="ti ti-cloud-off" aria-hidden="true"></i><span>Filegegevens nu niet beschikbaar</span>';
+    return 0;
+  }
   el.hidden = s < 60;
   if (el.hidden) return 0;
   const worst = jams.reduce((a, j) => (j.delay > a.delay ? j : a));
@@ -5765,6 +5781,12 @@ async function refreshNavJams(n) {
   try {
     const inc = await incidentsAlong(n.shape, n.along, n.along + 80000, n.cum);
     if (state.nav !== n) return;
+    // Eén keer per rit zeggen dat files nu niet gemeld kunnen worden
+    if (inc.failed && tr.failNav !== n) {
+      tr.failNav = n;
+      jamToast({ title: 'Filegegevens niet beschikbaar', sub: 'Files onderweg worden nu niet gemeld', icon: 'cloud-off', ttl: 6000 });
+    }
+    if (inc.failed && !inc.length) return;
     const old = jamsOf(n) || [];
     const jams = jamsOnRoute(n, inc);
     navJams.set(n, jams);
