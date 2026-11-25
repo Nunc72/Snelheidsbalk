@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '227';
+const VERSION = '228';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -968,7 +968,6 @@ map.on('style.load', () => {
   syncPlanLayers();
   drawPreview();
   if (msmap) { showMainLayers(false); addMsLayers(map); msDraw(); msTilt(true); }
-  drawWalk();
 });
 
 // De kleine routeoverzichtkaart is altijd de gewone kaart: geen reliëf, luchtfoto of
@@ -1272,9 +1271,6 @@ function onFix(f) {
   updateCamera(p, first ? 0 : 1000);
   maybeFetchLimit(p);
   parkMoved(f);
-  // Pad hersteld voor de eerste GPS-positie: nu kan het punt het dichtst bij je erbij
-  if (first && walk && !walk.points.some(q => q.near)) showWalk(walk.keep, walk.info, false);
-  else walkSubs();
 }
 
 function startGps() {
@@ -2967,24 +2963,70 @@ function walkNear(at) {
 }
 const TRAIL_LEVEL = { INT: 'Internationaal', NAT: 'Nationaal', REG: 'Regionaal', LOC: 'Lokaal' };
 const kmText = m => { const k = m / 1000; return (k >= 100 ? String(Math.round(k)) : String(Math.round(k * 10) / 10).replace('.', ',')) + ' km'; };
-const walkTime = m => (m <= 40000 ? `≈ ${String(Math.max(0.5, Math.round(m / 2000) / 2)).replace('.', ',')} u lopen` : `≈ ${Math.ceil(m / 20000)} dagen lopen`);
-const trailSub = (t, info) => (info
-  ? [kmText(info.len), info.round ? 'rondwandeling' : TRAIL_LEVEL[t.group], info.stages.length > 1 ? info.stages.length + ' etappes' : info.round ? '' : info.itinerary.join(' – ')]
-  : [TRAIL_LEVEL[t.group] && TRAIL_LEVEL[t.group] + ' wandelpad', (t.itinerary || []).join(' – ')]).filter(Boolean).join(' · ');
+// De lengte: de officiële als die bekend is (de lijn in OpenStreetMap mist soms stukken)
+const trailLen = info => info.official || info.len;
+
+// De markering zonder het nummer erin: van het teken van Waymarked Trails alleen de vormen
+// ('osmc_NAT_empty_white-upper_red-lower_00380033_black' zonder '_00380033_black').
+// Alleen een achtergrond (rood met een nummer erop): een vlakje in die kleur. Alleen tekst (ref_…): geen markering.
+const OSMC = { white: '#fff', red: '#E0260D', yellow: '#F5C400', blue: '#1E5BD8', green: '#1E9E3A', black: '#1c1c1e',
+  orange: '#F08C00', purple: '#7B3FE4', brown: '#8C5A2B', gray: '#8a8a8a', grey: '#8a8a8a' };
+function trailMarking(id) {
+  if (!id || !id.startsWith('osmc_')) return null;
+  const parts = id.replace(/_[0-9a-f]{4,}_[a-z]+$/, '').split('_');
+  if (parts.length > 3) return { img: trailSymbol(parts.join('_')) };
+  return OSMC[parts[2]] ? { bg: OSMC[parts[2]] } : null;
+}
+// Het icoon van een pad: de markering, anders een vlakje in de kleur van het pad
+function trailIcon(el, t) {
+  const m = trailMarking(t.symbol_id);
+  el.style.setProperty('--c', t.color);
+  el.classList.toggle('plain', !m);
+  if (m && m.bg) el.style.background = m.bg;
+  if (!m || !m.img) return;
+  const img = new Image();
+  img.alt = '';
+  img.src = m.img;
+  img.onerror = () => { img.remove(); el.classList.add('plain'); };
+  el.appendChild(img);
+}
+
+// Plaatsnaam bij een punt (begin of eind van een pad zonder vermelde plaatsen)
+const placeMemo = new Map();
+function trailPlace(c) {
+  const k = c[0].toFixed(3) + '|' + c[1].toFixed(3);
+  if (!placeMemo.has(k)) {
+    placeMemo.set(k, fetch(`${PHOTON.replace('/api/', '/reverse')}?lat=${c[1]}&lon=${c[0]}&limit=1`).then(r => r.json())
+      .then(d => { const p = (d.features[0] || {}).properties || {}; return p.city || p.locality || p.district || p.name || ''; })
+      .catch(() => { placeMemo.delete(k); return ''; }));
+  }
+  return placeMemo.get(k);
+}
+// Begin en eind als plaatsnamen: uit de gegevens van het pad, anders opgezocht bij het punt
+async function trailEnds(info) {
+  const it = info.itinerary;
+  const from = it[0] || (info.start ? await trailPlace(info.start) : '');
+  const to = info.round ? from : (it.length > 1 ? it.at(-1) : info.end ? await trailPlace(info.end) : '');
+  return { from, to };
+}
+// Onder de naam: pijltje of rondje, lengte, en de plaatsen
+function trailSubHtml(el, t, info, ends) {
+  if (!info) {
+    el.textContent = [TRAIL_LEVEL[t.group] && TRAIL_LEVEL[t.group] + ' wandelpad', (t.itinerary || []).join(' – ')].filter(Boolean).join(' · ');
+    return;
+  }
+  const where = info.round ? (ends.from ? 'begin en eind: ' + ends.from : 'rondwandeling') : [ends.from, ends.to].filter(Boolean).join(' – ');
+  el.innerHTML = `<i class="ti ${info.round ? 'ti-repeat' : 'ti-arrow-narrow-right'}" aria-hidden="true"></i>`;
+  el.append([kmText(trailLen(info)), where].filter(Boolean).join(' · '));
+}
 
 function walkItem(t, at, list) {
   const li = document.createElement('li');
   li.className = 'recent walk';
-  li.innerHTML = `<div class="row"><span class="tsym" style="--c:${t.color}"></span><div class="rtext"><div class="r1"></div><div class="r2"></div></div><span class="dist"></span></div>`;
-  if (t.symbol_id) {
-    const img = new Image();
-    img.alt = '';
-    img.src = trailSymbol(t.symbol_id);
-    img.onerror = () => img.remove();
-    li.querySelector('.tsym').appendChild(img);
-  }
+  li.innerHTML = '<div class="row"><span class="tsym"></span><div class="rtext"><div class="r1"></div><div class="r2"></div></div><span class="dist"></span></div>';
+  trailIcon(li.querySelector('.tsym'), t);
   li.querySelector('.r1').textContent = trailTitle(t);
-  li.querySelector('.r2').textContent = trailSub(t);
+  trailSubHtml(li.querySelector('.r2'), t);
   li.querySelector('.dist').textContent = fmtDist(t.near);
   li.addEventListener('click', () => openTrail(t, at, list));
   return li;
@@ -2996,9 +3038,8 @@ async function showWalkNear(seq) {
   const { prev } = nearLeg();
   const cur = stops[editRow] && !stops[editRow].here ? stops[editRow] : null;
   const base = cur || editRow > 0 && prev;
-  // 'from': waar de afstand vandaan is (in het detailblad: '1,2 km van jou')
-  // 'place': een gezochte plek; na Start blijft die het punt waar 'dichtstbij' vandaan is (niet je telefoon)
-  const at = base ? { lat: base.lat, lon: base.lon, from: base.here ? 'jou' : stopLabel(base), place: !base.here }
+  // 'from': waar de afstand vandaan is (in het detailblad: '1,2 km vanaf Olot')
+  const at = base ? { lat: base.lat, lon: base.lon, from: base.here ? 'jou' : stopLabel(base) }
     : { ...nearCentre(), from: state.fix ? 'jou' : 'het midden van de kaart' };
   const sec = nearSection('Wandelpaden', base && !base.here ? 'rond ' + stopLabel(base) : 'binnen 10 km');
   ul.append(sec.head, sec.note);
@@ -3008,16 +3049,26 @@ async function showWalkNear(seq) {
   if (!list.length) { sec.note.textContent = 'Geen wandelpaden binnen 10 km.'; return; }
   const items = list.map(t => walkItem(t, at, list));
   sec.note.replaceWith(...items);
-  // Daarna van de eerste paden de lengte en of het een rondje is (niet de hele grote paden binnenhalen)
-  for (const [i, t] of list.slice(0, 12).entries()) {
+  // Lengte, rondje en plaatsen pas als de regel in beeld komt (en niet de hele grote paden binnenhalen)
+  const seen = new IntersectionObserver(es => es.forEach(async e => {
+    if (!e.isIntersecting) return;
+    seen.unobserve(e.target);
+    const t = list[items.indexOf(e.target)];
     let info = null;
-    try { info = await trailDetails(t.id, 800000); } catch (e) { /* dan zonder */ }
-    if (seq !== searchSeq) return;
-    if (info) items[i].querySelector('.r2').textContent = trailSub(t, info);
-  }
+    try { info = await trailDetails(t.id, 800000); } catch (err) { /* dan zonder */ }
+    if (!info || seq !== searchSeq) return;
+    const r2 = e.target.querySelector('.r2');
+    trailSubHtml(r2, t, info, { from: info.itinerary[0] || '', to: info.round ? info.itinerary[0] || '' : info.itinerary.length > 1 ? info.itinerary.at(-1) : '' });
+    const ends = await trailEnds(info);
+    if (seq === searchSeq) trailSubHtml(r2, t, info, ends);
+  }));
+  items.forEach(li => seen.observe(li));
 }
 
-// Detail van één pad: het hele pad op de kaart, eronder een blad met wat OpenStreetMap ervan weet
+// ---------- Detail van een pad ----------
+// Een rij kaartjes onderin, één per pad uit de lijst; links en rechts piept het vorige en volgende.
+// Opzij vegen gaat naar dat pad (op de kaart het hele pad). Met het greepje (of een tik op de kaart)
+// klapt het in tot naam en soort; nog een keer omlaag sluit het.
 let trailView = null;
 const MARK_NL = { white: 'wit', red: 'rood', yellow: 'geel', blue: 'blauw', green: 'groen', black: 'zwart', orange: 'oranje', purple: 'paars', brown: 'bruin' };
 // 'back': terug naar de lijst, met de kaart zoals hij was (niet na Start)
@@ -3034,107 +3085,149 @@ function closeTrail(back = true) {
   map.jumpTo(v.cam);
   if (v.following) follow();
 }
-// Ingeklapt blad: alleen de kop blijft staan, de kaart is vrij
-function lowTrail(sh, on) {
-  const head = sh.querySelector('.phead');
-  sh.classList.toggle('low', on);
-  sh.style.transform = on ? `translateY(${sh.offsetHeight - head.offsetTop - head.offsetHeight - 12}px)` : '';
+// Ingeklapt: van elk kaartje alleen de kop (naam en soort)
+function lowTrail(on) {
+  const v = trailView;
+  if (!v) return;
+  v.sh.classList.toggle('low', on);
+  for (const c of v.cards) {
+    const h = c.querySelector('.phead');
+    if (on) c.scrollTop = 0;
+    c.style.maxHeight = on ? h.getBoundingClientRect().bottom - c.getBoundingClientRect().top + 6 + 'px' : '';
+  }
 }
-// list: de lijst waar het pad uit komt (opzij vegen gaat naar het vorige of volgende); dir: van welke kant het binnenkomt
-async function openTrail(t, at, list = [t], dir = 0) {
+function openTrail(t, at, list = [t]) {
   $('q').blur();
-  // Bij vegen blijft het beeld van voor het eerste pad bewaard (sluiten gaat daarheen terug)
-  const old = dir && trailView;
-  if (old) { document.querySelectorAll('.tsheet').forEach(el => el.remove()); clearTrail(); } else closeTrail();
-  const view = trailView = old ? { cam: old.cam, following: old.following, overview: old.overview }
-    : { cam: camNow(), following: state.following, overview: $('overview').hidden };
+  closeTrail();
+  const sh = document.createElement('div');
+  sh.className = 'tsheet';
+  sh.setAttribute('role', 'dialog');
+  sh.innerHTML = '<div class="tcards"></div>';
+  const row = sh.firstChild;
+  const v = trailView = { cam: camNow(), following: state.following, overview: $('overview').hidden, sh, at, list, cards: [], idx: -1 };
   stopFollowing();
   $('search').hidden = true;
   $('overview').hidden = true;
   document.body.classList.add('trailview');
-  const sh = document.createElement('div');
-  sh.className = 'psheet tsheet' + (dir ? ' in' : '');
-  if (dir) sh.style.setProperty('--dx', dir * 100 + '%');
-  sh.setAttribute('role', 'dialog');
-  sh.style.setProperty('--c', t.color);
-  sh.innerHTML = '<div class="handle" aria-hidden="true"></div><div class="phead"><span class="tsym big"></span>'
-    + '<div class="ph"><div class="t1"></div><div class="t2"></div></div>'
-    + '<button type="button" class="tstart" disabled><i class="ti ti-walk" aria-hidden="true"></i>Start</button>'
-    + '<button type="button" class="px" aria-label="Sluiten"><i class="ti ti-x" aria-hidden="true"></i></button></div><div class="pbody"><div class="psrc">Pad laden…</div></div>';
-  sh.querySelector('.tsym').innerHTML = t.symbol_id ? `<img alt="" src="${trailSymbol(t.symbol_id)}">` : '';
-  sh.querySelector('.t1').textContent = trailTitle(t);
-  const pos = list.indexOf(t);
-  sh.querySelector('.t2').textContent = TRAIL_LEVEL[t.group] ? TRAIL_LEVEL[t.group] + ' wandelpad' : 'Wandelpad';
-  sh.querySelector('.px').addEventListener('click', () => closeTrail());
-  // Ingeklapt haalt een tik op de kop hem terug; omlaag vegen klapt in (en daarna sluit het), omhoog klapt uit
-  sh.querySelector('.phead').addEventListener('click', e => { if (sh.classList.contains('low') && !e.target.closest('button')) lowTrail(sh, false); });
-  sh.querySelector('.handle').addEventListener('click', () => lowTrail(sh, !sh.classList.contains('low')));
-  // Opzij vegen: het vorige of volgende pad uit de lijst
-  let y0 = null, x0 = null, y1 = null;
-  sh.addEventListener('pointerdown', e => { y0 = sh.scrollTop ? null : e.clientY; x0 = e.clientX; y1 = e.clientY; });
-  sh.addEventListener('pointerup', e => {
-    const dy = y0 == null ? 0 : e.clientY - y0, dx = x0 == null ? 0 : e.clientX - x0;
-    const side = Math.abs(dx) > 50 && Math.abs(dx) > 1.5 * Math.abs(e.clientY - y1);
-    y0 = x0 = null;
-    if (side) {
-      const to = list[pos + (dx < 0 ? 1 : -1)];
-      if (to) openTrail(to, at, list, dx < 0 ? 1 : -1);
-      return;
-    }
-    if (dy > 60) { if (sh.classList.contains('low')) closeTrail(); else lowTrail(sh, true); } else if (dy < -40) lowTrail(sh, false);
-  });
+  v.cards = list.map(u => trailCard(u, at));
+  row.append(...v.cards);
   document.body.appendChild(sh);
+  const centre = i => v.cards[i].offsetLeft - (row.clientWidth - v.cards[i].offsetWidth) / 2;
+  v.scrollTo = (i, smooth = true) => row.scrollTo({ left: centre(i), behavior: smooth ? 'smooth' : 'auto' });
+  v.scrollTo(Math.max(0, list.indexOf(t)), false);
+  showTrailCard(Math.max(0, list.indexOf(t)));
+  // Na het vegen: het kaartje dat in het midden staat
+  let wait = 0;
+  row.addEventListener('scroll', () => {
+    clearTimeout(wait);
+    wait = setTimeout(() => {
+      if (trailView !== v) return;
+      const gap = i => Math.abs(centre(i) - row.scrollLeft);
+      const i = v.cards.reduce((b, c, j) => (gap(j) < gap(b) ? j : b), 0);
+      if (i !== v.idx) showTrailCard(i);
+    }, 120);
+  });
+}
+function trailCard(t, at) {
+  const c = document.createElement('div');
+  c.className = 'tcard';
+  c.style.setProperty('--c', t.color);
+  c.innerHTML = '<div class="tgrab"><div class="handle" aria-hidden="true"></div>'
+    + '<button type="button" class="px" aria-label="Sluiten"><i class="ti ti-x" aria-hidden="true"></i></button></div>'
+    + '<div class="phead"><span class="tsym big"></span><div class="ph"><div class="t1"></div><div class="t2"></div></div></div>'
+    + '<div class="tchips"><span class="b" hidden></span><span><i class="ti ti-map-pin-down" aria-hidden="true"></i><span></span></span></div>'
+    + '<div class="tbody"><div class="psrc">Pad laden…</div></div>';
+  trailIcon(c.querySelector('.tsym'), t);
+  c.querySelector('.t1').textContent = trailTitle(t);
+  c.querySelector('.t2').textContent = TRAIL_LEVEL[t.group] ? TRAIL_LEVEL[t.group] + ' wandelpad' : 'Wandelpad';
+  c.querySelector('.tchips span:last-child span').textContent = `${fmtDist(t.near)} vanaf ${at.from === 'jou' ? 'jouw locatie' : at.from}`;
+  c.querySelector('.px').addEventListener('click', e => { e.stopPropagation(); closeTrail(); });
+  // Tik op een kaartje dat opzij piept: dat pad
+  c.addEventListener('click', e => {
+    const v = trailView, i = v ? v.cards.indexOf(c) : -1;
+    if (i >= 0 && i !== v.idx) { e.stopPropagation(); v.scrollTo(i); }
+  }, true);
+  // Greepje en kop: omlaag vegen klapt in (en daarna sluit het), omhoog klapt uit; tikken wisselt
+  const low = () => trailView && trailView.sh.classList.contains('low');
+  c.querySelector('.handle').addEventListener('click', () => lowTrail(!low()));
+  c.querySelector('.phead').addEventListener('click', () => { if (low()) lowTrail(false); });
+  let y0 = null, x0 = 0;
+  for (const el of [c.querySelector('.tgrab'), c.querySelector('.phead')]) {
+    el.addEventListener('pointerdown', e => { y0 = e.clientY; x0 = e.clientX; });
+    el.addEventListener('pointerup', e => {
+      if (y0 === null) return;
+      const dy = e.clientY - y0, dx = e.clientX - x0;
+      y0 = null;
+      if (Math.abs(dx) > Math.abs(dy)) return;
+      if (dy > 50) { if (low()) closeTrail(); else lowTrail(true); } else if (dy < -40) lowTrail(false);
+    });
+  }
+  return c;
+}
+// Het pad van kaartje i op de kaart, en het kaartje gevuld
+async function showTrailCard(i) {
+  const v = trailView;
+  v.idx = i;
+  v.cards.forEach((c, j) => c.classList.toggle('on', j === i));
+  clearTrail();
+  const t = v.list[i], c = v.cards[i], at = v.at;
   let info;
   try { info = await trailDetails(t.id); } catch (e) { info = null; }
-  if (trailView !== view) return;
-  const go = sh.querySelector('.tstart');
-  go.disabled = !info || !info.lines.length;
-  go.addEventListener('click', () => startWalk(t, info, at));
-  const body = sh.querySelector('.pbody');
+  if (trailView !== v) return;
+  fillTrailCard(c, t, info);
+  if (v.idx !== i || !info || !info.lines.length) return;
+  drawTrail(info, t.color);
+  map.getSource('trailnear').setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [[at.lon, at.lat], t.nearAt] } });
+  trailFlags(info, t.color);
+  trailMark(`<div class="tnear"><i class="ti ti-map-pin-down" style="color:${t.color}"></i></div>`, t.nearAt);
+  // Zonder je eigen stip op de kaart: een stip waar gezocht is
+  if (at.from !== 'jou' || !markerOn) trailMark('<div class="tme"></div>', [at.lon, at.lat]);
+  const all = [...info.lines.flat(), [at.lon, at.lat]];
+  const b = all.reduce((bb, q) => bb.extend(q), new maplibregl.LngLatBounds(all[0], all[0]));
+  const bottom = v.sh.classList.contains('low') ? 110 : innerHeight - c.getBoundingClientRect().top;
+  map.jumpTo({ padding: { top: 0, bottom: 0, left: 0, right: 0 }, bearing: 0, pitch: 0 });
+  map.fitBounds(b, { padding: { top: 60, bottom: Math.min(innerHeight * 0.6, bottom + 24), left: 30, right: 30 }, duration: 900, maxZoom: 15 });
+}
+function fillTrailCard(c, t, info) {
+  const body = c.querySelector('.tbody');
+  if (c.dataset.done) return;
   if (!info || !info.lines.length) { body.firstChild.textContent = info ? 'Van dit pad is geen lijn bekend.' : 'Pad laden lukt nu niet.'; return; }
-  if (info.nameNl && fold(info.nameNl) !== fold(info.name)) sh.querySelector('.t2').textContent = info.nameNl;
-
-  // Het blad: lengte en soort als kleine labels, daaronder de gegevens per regel
-  const chips = [[kmText(info.len), '', 'b'], [info.round ? 'Rond' : 'Lijn', info.round ? 'ti-repeat' : 'ti-arrow-narrow-right'],
-    [walkTime(info.len), 'ti-walk'], [`${fmtDist(t.near)} van ${at.from}`, 'ti-map-pin-down'],
-    // Waar je bent in de lijst (opzij vegen gaat naar het vorige of volgende pad)
-    [list.length > 1 && `${pos + 1} van ${list.length}`, 'ti-arrows-horizontal']];
-  const rows = [];
-  if (info.round) rows.push(['Start', 'Begin en eind op hetzelfde punt']);
-  else if (info.itinerary.length) rows.push(['Van – naar', info.itinerary.join(' → ')]);
-  if (info.official && Math.abs(info.official - info.len) > Math.max(1000, info.len * 0.1)) rows.push(['Officieel', kmText(info.official) + ' (op de kaart ' + kmText(info.len) + ')']);
-  body.innerHTML = '<div class="tchips"></div><ul class="trows"></ul><div class="psrc"></div>';
-  for (const [txt, icon, cls] of chips) {
-    if (!txt) continue;
-    const c = document.createElement('span');
-    if (cls) c.className = cls;
-    c.innerHTML = icon ? `<i class="ti ${icon}" aria-hidden="true"></i>` : '';
-    c.append(txt);
-    body.querySelector('.tchips').appendChild(c);
-  }
+  c.dataset.done = '1';
+  const km = c.querySelector('.tchips .b');
+  km.textContent = kmText(trailLen(info));
+  km.hidden = false;
+  body.innerHTML = '<ul class="trows"></ul><div class="psrc"></div><button type="button" class="tgo"><i class="ti ti-walk" aria-hidden="true"></i>Start</button>';
   const ul = body.querySelector('.trows');
-  const row = (k, fill) => {
+  const row = (k, fill, wide) => {
     const li = document.createElement('li');
+    if (wide) li.className = 'wide';
     li.innerHTML = '<span class="k"></span><span class="v"></span>';
     li.firstChild.textContent = k;
     if (typeof fill === 'string') li.lastChild.textContent = fill;
     else fill(li.lastChild);
     ul.appendChild(li);
   };
-  for (const [k, v] of rows) row(k, v);
   if (info.stages.length > 1) {
     row(`${info.stages.length} etappes`, v => {
-      for (const [i, s] of info.stages.slice(0, 3).entries()) {
+      const stage = (s, i) => {
         const e = document.createElement('div');
         e.className = 'et';
         e.innerHTML = '<b></b><span></span><span></span>';
         e.children[0].textContent = i + 1;
         e.children[1].textContent = s.it.length ? s.it.join(' → ') : s.name.replace(/^.*?[-:–]\s*/, '');
         e.children[2].textContent = s.len ? kmText(s.len) : '';
-        v.appendChild(e);
-      }
-      if (info.stages.length > 3) v.insertAdjacentHTML('beforeend', `<div class="more">+ nog ${info.stages.length - 3} etappes</div>`);
-    });
+        return e;
+      };
+      info.stages.slice(0, 3).forEach((s, i) => v.appendChild(stage(s, i)));
+      if (info.stages.length <= 3) return;
+      // Openklappen: alle etappes
+      const more = document.createElement('button');
+      more.type = 'button';
+      more.className = 'more';
+      more.textContent = `+ nog ${info.stages.length - 3} etappes`;
+      more.addEventListener('click', () => more.replaceWith(...info.stages.slice(3).map((s, i) => stage(s, i + 3))));
+      v.appendChild(more);
+    }, true);
   }
   if (info.symbol) {
     row('Markering', v => {
@@ -3143,7 +3236,12 @@ async function openTrail(t, at, list = [t], dir = 0) {
         .replace(/ strip(e)?/g, ' streep').replace(/on top of/g, 'boven').replace(/\bon\b/g, 'op'));
     });
   }
-  if (info.note) row('Opmerking', v => { v.className = 'v note'; v.textContent = info.note; });
+  row(info.round ? 'Rondwandeling' : 'Van – naar', v => {
+    const put = e => { v.textContent = info.round ? 'Begin en eind: ' + (e.from || 'hetzelfde punt') : [e.from || '?', e.to || '?'].join(' → '); };
+    put({ from: info.itinerary[0], to: info.itinerary.length > 1 ? info.itinerary.at(-1) : '' });
+    trailEnds(info).then(put);
+  });
+  if (info.note) row('Opmerking', v => { v.className = 'v note'; v.textContent = info.note; }, info.note.length > 60);
   const wiki = Object.entries(info.wiki).sort((a, b) => ['nl', 'en'].indexOf(b[0]) - ['nl', 'en'].indexOf(a[0]))[0];
   if (wiki || info.url) {
     row('Meer', v => {
@@ -3161,202 +3259,106 @@ async function openTrail(t, at, list = [t], dir = 0) {
     });
   }
   body.querySelector('.psrc').textContent = `Bron: OpenStreetMap via Waymarked Trails · relatie ${info.id}`;
-
-  // De kaart: het hele pad, begin en eind, het dichtstbijzijnde punt, en bij een rondje de looprichting
-  drawTrail(info, t.color);
-  map.getSource('trailnear').setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [[at.lon, at.lat], t.nearAt] } });
-  trailFlags(info, t.color);
-  trailMark(`<div class="tnear"><i class="ti ti-map-pin-down" style="color:${t.color}"></i></div>`, t.nearAt);
-  // Zonder je eigen stip op de kaart: een stip waar gezocht is
-  if (at.from !== 'jou' || !markerOn) trailMark('<div class="tme"></div>', [at.lon, at.lat]);
-  const all = [...info.lines.flat(), [at.lon, at.lat]];
-  const b = all.reduce((bb, c) => bb.extend(c), new maplibregl.LngLatBounds(all[0], all[0]));
-  map.jumpTo({ padding: { top: 0, bottom: 0, left: 0, right: 0 }, bearing: 0, pitch: 0 });
-  map.fitBounds(b, { padding: { top: 60, bottom: sh.offsetHeight + 24, left: 30, right: 30 },
-    duration: 900, maxZoom: 15 });
+  body.querySelector('.tgo').addEventListener('click', () => startTrailNav(t, info));
 }
 
-// Een tik op de kaart klapt het detailblad in (de kaart vrij) en weer uit
-map.on('click', () => {
-  const sh = trailView && document.querySelector('.tsheet');
-  if (sh) lowTrail(sh, !sh.classList.contains('low'));
-});
+// Een tik op de kaart klapt de kaartjes in (de kaart vrij) en weer uit
+map.on('click', () => { if (trailView) lowTrail(!trailView.sh.classList.contains('low')); });
 
-// ---------- Wandelen: na Start blijft het pad op de live kaart staan ----------
-// Het pad wordt niet 'opgegeten' zoals een route: het staat er tot je het met het kruisje weghaalt (ook na herstarten).
-// Onderin de routepunten (begin, etappes of elke paar km, eind, en het punt het dichtst bij je) om doorheen te vegen.
-let walk = null;
-function startWalk(t, info, at) {
+// ---------- Start: navigeren langs het pad ----------
+// Net als met de auto, fiets of te voet: de lijn wordt opgegeten en je veegt door de punten.
+// De punten: het begin, het begin van elke officiële etappe en het eind (geen extra punten).
+// Instappen doe je aan het begin. Ligt dat veel verder weg dan het pad zelf (El Camí begint in
+// Frankrijk), dan op het punt het dichtst bij je; de punten achter je vallen dan af, een rondje
+// loop je helemaal rond tot je daar weer bent. Niet op het pad: eerst te voet naar het instappunt.
+const TRAIL_SPEED = 4 / 3.6;  // m/s
+const JOIN_MORE = 1500;  // zoveel meter verder mag het begin liggen dan het dichtstbijzijnde punt
+async function startTrailNav(t, info) {
+  const title = trailTitle(t);
+  const shape = [];
+  for (const l of info.lines) for (const q of l) { const p = shape.at(-1); if (!p || p[0] !== q[0] || p[1] !== q[1]) shape.push(q); }
+  if (shape.length < 2) return;
+  const n = shape.length;
+  const nearest = (p, line = shape) => line.reduce((b, q, i) => { const d = dist(p, q); return d < b.d ? { d, i } : b; }, { d: Infinity, i: 0 });
+  const me = state.fix && [state.fix.lon, state.fix.lat];
+  const close = me && nearest(me);
+  const j = close && dist(me, shape[0]) > close.d + JOIN_MORE ? close.i : 0;
+  // Begin en eind heten naar de plaats waar ze echt liggen: de lijn in OpenStreetMap loopt niet altijd
+  // in de richting van de vermelde plaatsen, en mist soms een stuk (de GR 83 houdt boven Olot op)
+  const [first, last, join] = await Promise.all([trailPlace(shape[0]), trailPlace(shape.at(-1)), j ? trailPlace(shape[j]) : '']);
+  const cand = [{ i: 0, name: 'Begin' + (first ? ' · ' + first : '') }];
+  info.stages.forEach((s, k) => {
+    if (k) cand.push({ i: nearest(s.at).i, name: `Etappe ${k + 1}` + (s.it[0] ? ' · ' + s.it[0] : '') });
+  });
+  cand.push({ i: n - 1, name: info.round ? 'Eind (terug bij begin)' : 'Eind' + (last ? ' · ' + last : '') });
+  let line = shape, wps = cand;
+  if (j) {
+    // Vanaf het instappunt; een rondje gaat door het begin heen terug naar het instappunt
+    line = info.round ? [...shape.slice(j), ...shape.slice(1, j + 1)] : shape.slice(j);
+    wps = [{ i: 0, name: 'Instappunt' + (join ? ' · ' + join : '') }];
+    for (const w of cand) {
+      if (info.round ? w.i === n - 1 || w.i === j : w.i <= j) continue;
+      wps.push({ i: w.i > j ? w.i - j : n - 1 - j + w.i, name: w.name });
+    }
+    if (info.round) wps.push({ i: line.length - 1, name: 'Eind (terug bij instappunt)' });
+  }
+  const cum = [0];
+  for (let i = 1; i < line.length; i++) cum.push(cum[i - 1] + dist(line[i - 1], line[i]));
+  // Op volgorde langs het pad, zonder punten vlak achter elkaar
+  const pts = wps.sort((a, b) => a.i - b.i).filter((w, k, a) => !k || k === a.length - 1 || cum[w.i] - cum[a[k - 1].i] > 200);
+  if (pts.length > 2 && cum.at(-1) - cum[pts.at(-2).i] < 200) pts.splice(pts.length - 2, 1);
+  const stop = w => ({ lat: line[w.i][1], lon: line[w.i][0], name: w.name });
+
+  // Nog niet op het pad: eerst te voet naar het instappunt
+  let lead = null;
+  if (me && nearest(me, line).d > 60) {
+    toast('Route naar het pad berekenen…', 4000);
+    try { [lead] = await fetchRoutes([hereNow(), stop(pts[0])], 0, 'pedestrian'); } catch (e) { lead = null; }
+  }
+  const nav = { shape: [], maneuvers: [], legs: [], legStops: [], mode: 'pedestrian', trail: true, idx: 0, along: 0, off: 0, arrivedAt: 0, legIdx: 0 };
+  if (lead) {
+    nav.shape.push(...lead.shape);
+    nav.maneuvers.push(...lead.maneuvers);
+    nav.legs.push({ endIdx: lead.shape.length - 1, time: lead.time });
+    nav.legStops.push(stop(pts[0]));
+  }
+  const off = nav.shape.length;
+  nav.shape.push(...line);
+  for (let k = 1; k < pts.length; k++) {
+    const a = off + pts[k - 1].i, b = off + pts[k].i, leg = nav.legs.length;
+    nav.maneuvers.push({ type: 1, instruction: 'Volg ' + title, street_names: [title], begin_shape_index: a, end_shape_index: b, leg },
+      { type: 4, instruction: pts[k].name, begin_shape_index: b, end_shape_index: b, leg });
+    nav.legs.push({ endIdx: b, time: (cum[pts[k].i] - cum[pts[k - 1].i]) / TRAIL_SPEED });
+    nav.legStops.push(stop(pts[k]));
+  }
+  nav.cum = [0];
+  for (let i = 1; i < nav.shape.length; i++) nav.cum.push(nav.cum[i - 1] + dist(nav.shape[i - 1], nav.shape[i]));
+  let begin = 0;
+  for (const l of nav.legs) { l.begin = begin; l.end = nav.cum[l.endIdx]; begin = l.end; }
+  nav.total = nav.cum.at(-1);
+  nav.time = nav.legs.reduce((s, l) => s + l.time, 0);
+
+  // Verder als na Start in de planner
   closeTrail(false);
   closeSearch();
-  const keep = { id: t.id, ref: t.ref || '', name: t.name, group: t.group, symbol_id: t.symbol_id || '', color: t.color };
-  // Rond een gezochte plek: 'dichtstbij' blijft vanaf die plek, anders vanaf je telefoon
-  if (at && at.place) keep.from = { lat: at.lat, lon: at.lon, name: at.from };
-  try { localStorage.setItem('walkTrail', JSON.stringify(keep)); } catch (e) { /* geen opslag */ }
-  showWalk(keep, info, true);
+  clearLook();
+  setTravelMode('pedestrian');
+  setHomeStart(false);
+  clearConcept(true);
+  state.zones = [];
+  state.navStart = nav.shape[0];
+  state.dest = { ...nav.legStops.at(-1), name: title };
+  state.nav = nav;
+  shownLeg = -1;
+  state.lastRouteAt = Date.now();
+  if (DEMO) demo.along = 0;
+  setRouteLine(nav.shape);
+  drawRouteEnds();
+  setMode('nav');
+  drawNavZone();
+  follow();
+  if (state.fix) updateNav([state.fix.lon, state.fix.lat]);
 }
-async function restoreWalk() {
-  let keep = null;
-  try { keep = JSON.parse(localStorage.getItem('walkTrail') || 'null'); } catch (e) { /* geen opslag */ }
-  if (!keep || walk) return;
-  let info;
-  try { info = await trailDetails(keep.id); } catch (e) { return; }  // volgende keer opnieuw
-  if (!walk) showWalk(keep, info, false);
-}
-restoreWalk();
-function stopWalk() {
-  if (!walk) return;
-  walk.marks.forEach(m => m.remove());
-  walk = null;
-  for (const id of ['walk', 'walkpts', 'walknear']) if (map.getSource(id)) map.getSource(id).setData(EMPTY_FC);
-  try { localStorage.removeItem('walkTrail'); } catch (e) { /* geen opslag */ }
-  $('walkbar').hidden = true;
-  placeRecenter();
-}
-
-// Afstand langs het pad tot elk punt (de losse stukken van een pad achter elkaar, zonder de sprongen ertussen)
-function trailAlong(info) {
-  const pts = [], cum = [];
-  let d = 0;
-  for (const l of info.lines) {
-    l.forEach((c, i) => { if (i) d += dist(l[i - 1], c); pts.push(c); cum.push(d); });
-  }
-  const nearest = p => {
-    let bi = 0, bd = Infinity;
-    for (let i = 0; i < pts.length; i++) {
-      const m = dist(p, pts[i]);
-      if (m < bd) { bd = m; bi = i; }
-    }
-    return bi;
-  };
-  return { pts, cum, total: d, nearest };
-}
-// Waar 'dichtstbij' vandaan is: de gezochte plek, anders je eigen positie
-const walkOrigin = keep => (keep.from ? [keep.from.lon, keep.from.lat] : state.fix ? [state.fix.lon, state.fix.lat] : null);
-const walkFromName = keep => (keep.from ? keep.from.name : 'jou');
-function walkPoints(info, me, from = 'jou') {
-  const a = trailAlong(info), list = [];
-  const at = i => ({ at: a.pts[i], along: a.cum[i] });
-  list.push({ ...at(0), icon: 'ti-flag', title: info.round ? 'Begin en eind' : 'Begin', sub: info.round ? '' : info.itinerary[0] || '' });
-  if (info.stages.length > 1) {
-    info.stages.forEach((s, i) => {
-      if (i) list.push({ ...at(a.nearest(s.at)), n: i + 1, title: `Etappe ${i + 1}`, sub: s.it[0] || s.name.replace(/^.*?[-:–]\s*/, '') });
-    });
-  } else {
-    // Zonder etappes: elke 1, 2, 5… km een punt, zo dat het er niet meer dan 12 zijn
-    const step = [1, 2, 5, 10, 20, 50, 100].find(k => a.total / 1000 / k <= 12) || 200;
-    for (let km = step, i = 0; km * 1000 < a.total - step * 300; km += step) {
-      while (i < a.cum.length - 1 && a.cum[i] < km * 1000) i++;
-      list.push({ ...at(i), n: km, title: `Km ${km}`, sub: '' });
-    }
-  }
-  if (!info.round) list.push({ ...at(a.pts.length - 1), icon: 'ti-flag-3', title: 'Eind', sub: info.itinerary.at(-1) || '' });
-  if (me) {
-    const near = { ...at(a.nearest(me)), icon: 'ti-map-pin-down', title: 'Dichtst bij ' + from, sub: '', near: true };
-    list.splice(list.filter(p => p.along <= near.along).length, 0, near);
-  }
-  return list;
-}
-
-function showWalk(keep, info, fly) {
-  if (walk) { walk.marks.forEach(m => m.remove()); }
-  const me = walkOrigin(keep);
-  const points = walkPoints(info, me, walkFromName(keep));
-  walk = { keep, info, points, marks: [], sel: null, idx: Math.max(0, points.findIndex(p => p.near)) };
-  drawWalk();
-  // De balk onderin: naam, kruisje, en een rij kaartjes om opzij te vegen
-  const bar = $('walkbar');
-  bar.style.setProperty('--c', keep.color);
-  bar.querySelector('.tsym').innerHTML = keep.symbol_id ? `<img alt="" src="${trailSymbol(keep.symbol_id)}">` : '';
-  $('walkname').textContent = trailTitle(keep);
-  const row = $('walkcards');
-  row.replaceChildren(...points.map((p, i) => {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'wcard' + (p.near ? ' near' : '');
-    b.innerHTML = '<span class="wn"></span><span class="wt"><b></b><small></small></span>';
-    b.querySelector('.wn').innerHTML = p.icon ? `<i class="ti ${p.icon}" aria-hidden="true"></i>` : '';
-    if (!p.icon) b.querySelector('.wn').textContent = p.n;
-    b.querySelector('b').textContent = p.title;
-    b.addEventListener('click', () => walkTo(i, true));
-    return b;
-  }));
-  walkSubs();
-  bar.hidden = false;
-  placeRecenter();
-  row.scrollLeft = row.children[walk.idx].offsetLeft;
-  walkSel();
-  if (fly) {
-    // Jij en het dichtstbijzijnde punt samen in beeld
-    const p = points[walk.idx];
-    const b = new maplibregl.LngLatBounds(p.at, p.at);
-    if (me && dist(me, p.at) < 20000) b.extend(me);
-    stopFollowing();
-    // De padding komt bovenop die van de kaart: die eerst op nul, het kaartje onderin zelf meetellen
-    const bottom = camPadding().bottom;
-    map.jumpTo({ padding: { top: 0, bottom: 0, left: 0, right: 0 } });
-    map.fitBounds(b, { padding: { top: 90, bottom: bottom + 50, left: 50, right: 50 }, maxZoom: 16, duration: 1200 });
-  }
-}
-// Na een andere kaartsoort is de lijn weg: opnieuw tekenen
-function drawWalk() {
-  if (!walk) return;
-  const { info, keep } = walk;
-  // Is de kaartstijl nog niet klaar, dan tekent style.load het straks
-  try { drawTrail(info, keep.color, 'walk'); } catch (e) { return; }
-  walk.marks.forEach(m => m.remove());
-  walk.marks = [];
-  trailFlags(info, keep.color, walk.marks);
-  if (keep.from) trailMark('<div class="tme"></div>', [keep.from.lon, keep.from.lat], {}, walk.marks);
-  walk.sel = null;
-  walkSel();
-}
-// Per kaartje: hoe ver langs het pad, en hoe ver van jou (bij elke nieuwe GPS-positie)
-function walkSubs() {
-  if (!walk) return;
-  const me = walkOrigin(walk.keep), from = walkFromName(walk.keep);
-  [...$('walkcards').children].forEach((b, i) => {
-    const p = walk.points[i];
-    b.querySelector('small').textContent = [p.sub, p.along ? kmText(p.along) + ' langs het pad' : '', me ? fmtDist(dist(me, p.at)) + ' van ' + from : '']
-      .filter(Boolean).join(' · ');
-  });
-  if (me) map.getSource('walknear') && map.getSource('walknear').setData(walk.points[walk.idx].near
-    ? { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [me, walk.points[walk.idx].at] } } : EMPTY_FC);
-}
-// Het gekozen routepunt: een ring op de kaart en het kaartje gemarkeerd
-function walkSel() {
-  const p = walk.points[walk.idx];
-  [...$('walkcards').children].forEach((b, i) => b.classList.toggle('on', i === walk.idx));
-  if (!walk.sel) walk.sel = trailMark(`<div class="wsel" style="border-color:${walk.keep.color}"></div>`, p.at, {}, walk.marks);
-  walk.sel.setLngLat(p.at);
-  walkSubs();
-}
-function walkTo(i, scroll) {
-  if (!walk || !walk.points[i]) return;
-  walk.idx = i;
-  walkSel();
-  if (scroll) {
-    const row = $('walkcards'), b = row.children[i];
-    row.scrollTo({ left: b.offsetLeft, behavior: 'smooth' });
-  }
-  stopFollowing();
-  // In een boog: uitzoomen, overvliegen, inzoomen (verder weg duurt langer)
-  const to = walk.points[i].at, c = map.getCenter(), d = dist([c.lng, c.lat], to);
-  map.flyTo({ center: to, zoom: Math.min(17, Math.max(map.getZoom(), 14)), bearing: 0, pitch: camPitch(), padding: camPadding(),
-    curve: 1.8, duration: Math.min(4000, 1300 + Math.log2(1 + d / 400) * 380), essential: true });
-}
-// Vegen: na het stilvallen het kaartje dat links staat
-let walkScroll = 0;
-$('walkcards').addEventListener('scroll', () => {
-  clearTimeout(walkScroll);
-  walkScroll = setTimeout(() => {
-    if (!walk) return;
-    const row = $('walkcards'), gap = b => Math.abs(b.offsetLeft - row.scrollLeft);
-    const cards = [...row.children], i = cards.indexOf(cards.reduce((m, b) => (gap(b) < gap(m) ? b : m)));
-    if (i !== walk.idx) walkTo(i, false);
-  }, 140);
-});
-$('walkx').addEventListener('click', stopWalk);
 
 // Publieke gebouwen op de kaart waarvan de naam past, dichtstbij eerst
 function publicMatches(v) {
@@ -6908,7 +6910,8 @@ function navFromTrip(trip, mode, legStops) {
 // Van de route afgeraakt: opnieuw vanaf je positie, langs de stops die nog komen
 async function reroute() {
   const n = state.nav;
-  if (!n || state.routing || !state.fix) return;
+  // Langs een wandelpad: geen andere weg zoeken, het pad blijft de route
+  if (!n || n.trail || state.routing || !state.fix) return;
   state.routing = true;
   state.lastRouteAt = Date.now();
   toast('Nieuwe route…', 2000);

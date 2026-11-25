@@ -544,13 +544,26 @@ body.menuopen .mapctl { z-index: 12; opacity: 1; pointer-events: auto; }
 .plegend .sw.arr { background: #E5484D; width: 3px; }
 .psrc { font-size: 11.5px; color: #8a8a8a; margin-top: 12px; }
 /* Wandelpaden: lijst (In de buurt → Wandel) en detailblad over de kaart */
-.tsym { width: 30px; height: 30px; flex: none; border-radius: 7px; background: #F1F0EC; box-shadow: 0 0 0 2px var(--c); display: flex; align-items: center; justify-content: center; overflow: hidden; }
-.tsym img { width: 24px; height: 24px; object-fit: contain; }
-.tsym:empty { background: var(--c); }
-.tsym.big { width: 36px; height: 36px; border-radius: 8px; }
-.tsym.big img { width: 30px; height: 30px; }
-.psheet.tsheet { z-index: 30; max-height: 52vh; }
-.tsheet .phead .t1 { white-space: normal; font-size: 17px; line-height: 1.2; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.tsym { width: 30px; height: 30px; flex: none; border-radius: 5px; display: flex; align-items: center; justify-content: center; overflow: hidden; box-shadow: inset 0 0 0 1px rgba(0,0,0,.12); }
+.tsym img { width: 100%; height: 100%; object-fit: contain; }
+.tsym.plain { background: var(--c); border-radius: 7px; box-shadow: none; }
+.tsym.big { width: 36px; height: 36px; }
+.walk .r2 .ti { font-size: 14px; vertical-align: -2px; margin-right: 3px; }
+/* Detail: een rij kaartjes onderin, het vorige en volgende piepen opzij */
+.tsheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; pointer-events: none; }
+.tcards { display: flex; align-items: flex-end; gap: 8px; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; scrollbar-width: none; padding: 14px 22px 0; }
+.tcards::-webkit-scrollbar { display: none; }
+.tcard { pointer-events: auto; flex: 0 0 calc(100% - 44px); box-sizing: border-box; scroll-snap-align: center; max-height: 62vh; overflow-y: auto; overscroll-behavior: contain;
+  background: #fff; color: #1c1c1e; border-radius: 20px 20px 0 0; padding: 0 16px calc(env(safe-area-inset-bottom) + 14px); box-shadow: 0 -3px 14px rgba(0,0,0,.16); transition: max-height .25s ease; }
+.tsheet.low .tcard { overflow: hidden; }
+.tcard:not(.on) .px { visibility: hidden; }
+.tgrab { position: relative; height: 26px; touch-action: pan-x; }
+.tgrab .handle { position: absolute; left: 50%; top: 8px; width: 38px; height: 5px; margin-left: -19px; border-radius: 3px; background: #D6D6D6; }
+.tgrab .px { position: absolute; right: -6px; top: 6px; width: 28px; height: 28px; }
+.tgrab .px .ti { font-size: 16px; }
+.tcard .phead { touch-action: pan-x; padding-right: 22px; margin-top: 4px; }
+.tcard .phead .t1 { white-space: normal; font-size: 17px; line-height: 1.2; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.tsheet.low .phead { cursor: pointer; }
 .tchips { display: flex; flex-wrap: wrap; gap: 5px; margin: 12px 0 6px; }
 .tchips span { font-size: 13px; padding: 3px 8px; border-radius: 8px; background: #F1F0EC; color: #3a3a3c; display: inline-flex; align-items: center; gap: 4px; }
 .tchips span.b { background: var(--c); color: #fff; font-weight: 600; }
@@ -558,9 +571,14 @@ body.menuopen .mapctl { z-index: 12; opacity: 1; pointer-events: auto; }
 .trows { list-style: none; margin: 4px 0 0; padding: 0; font-size: 14px; }
 .trows li { display: flex; gap: 10px; padding: 8px 0; border-top: 1px solid #f0f0f0; line-height: 1.35; }
 .trows .k { color: #8a8a8a; width: 78px; flex: none; }
+.tcard .trows .k { width: 100px; }
+/* Etappes: onder het label, over de hele breedte */
+.trows li.wide { flex-direction: column; gap: 3px; }
+.tcard .trows li.wide .k { width: auto; }
 .trows .v { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .trows .et { display: flex; gap: 7px; }
 .trows .et b { width: 16px; flex: none; text-align: right; color: var(--c); }
+.trows .et span:nth-child(2) { flex: 1; min-width: 0; }
 .trows .et span:last-child { margin-left: auto; color: #8a8a8a; white-space: nowrap; padding-left: 6px; }
 .trows .more { color: #8a8a8a; }
 .trows .note { font-style: italic; color: #555; }
@@ -574,38 +592,12 @@ body.menuopen .mapctl { z-index: 12; opacity: 1; pointer-events: auto; }
 .tme { width: 14px; height: 14px; border-radius: 50%; background: #1F6FE0; box-shadow: 0 0 0 3px #fff, 0 1px 5px rgba(0,0,0,.3); }
 .tarrow { width: 17px; height: 17px; border-radius: 50%; box-shadow: 0 0 0 2px #fff; color: #fff; display: flex; align-items: center; justify-content: center; }
 .tarrow .ti { font-size: 13px; }
-.tstart { flex: none; height: 32px; padding: 0 12px; border-radius: 16px; background: #1F6FE0; color: #fff; font-weight: 600; font-size: 15px; display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
-.tstart .ti { font-size: 18px; }
-.tstart:disabled { opacity: .4; }
-.tstart + .px { margin-left: 8px; }
-.psheet.tsheet { transition: transform .25s ease; }
-.tsheet.low { overflow: hidden; }
-/* Opzij geveegd: het volgende pad schuift van die kant binnen */
-.tsheet.in { animation: tin .28s ease-out; }
-@keyframes tin { from { transform: translateX(var(--dx)); } }
-/* Zolang het detailblad er is: niet het kaartje van het beginscherm eronder */
+/* Zolang het detail er is: niet het kaartje van het beginscherm eronder */
 body.trailview #bottom-idle, body.trailview #recenter { visibility: hidden; }
-.tsheet.low .phead { cursor: pointer; }
-/* Wandelpad op de live kaart: naam en routepunten in het kaartje onderin */
-.walkbar { margin: -4px -18px 12px; }
-.wbhead { display: flex; align-items: center; gap: 9px; padding: 0 18px; }
-.wbhead .tsym { width: 26px; height: 26px; border-radius: 6px; }
-.wbhead .tsym img { width: 21px; height: 21px; }
-.wbname { flex: 1; min-width: 0; font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.wbx { flex: none; width: 28px; height: 28px; border-radius: 50%; background: #F1F0EC; color: #6b6b6b; display: flex; align-items: center; justify-content: center; }
-.wbx .ti { font-size: 16px; }
-.wcards { position: relative; display: flex; gap: 8px; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; padding: 10px 18px 2px; scroll-padding: 0 18px; touch-action: pan-x; }
-.wcards::-webkit-scrollbar { display: none; }
-.wcards::after { content: ''; flex: 0 0 calc(22% - 8px); }
-.wcard { flex: 0 0 78%; scroll-snap-align: start; display: flex; align-items: center; gap: 10px; padding: 9px 11px; border-radius: 14px; background: #F4F4F2; text-align: left; color: inherit; border: 2px solid transparent; }
-.wcard.on { border-color: var(--c); background: #fff; box-shadow: 0 1px 6px rgba(0,0,0,.12); }
-.wn { width: 28px; height: 28px; flex: none; border-radius: 50%; background: #fff; border: 2px solid var(--c); color: var(--c); font-weight: 700; font-size: 12px; display: flex; align-items: center; justify-content: center; }
-.wn .ti { font-size: 16px; }
-.wcard.near .wn { background: var(--c); color: #fff; }
-.wt { min-width: 0; display: flex; flex-direction: column; }
-.wt b { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.wt small { font-size: 12.5px; color: #6b6b6b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.wsel { width: 26px; height: 26px; border-radius: 50%; border: 3px solid; background: rgba(255,255,255,.35); box-shadow: 0 0 0 2px #fff; }
+.tgo { display: flex; width: 100%; height: 46px; margin-top: 14px; border-radius: 23px; background: #1F6FE0; color: #fff; font-weight: 600; font-size: 17px; align-items: center; justify-content: center; gap: 6px; }
+.tgo .ti { font-size: 20px; }
+.tbody .psrc { border-top: 1px solid #f0f0f0; padding-top: 8px; }
+.trows button.more { padding: 4px 0 0; font: inherit; color: #1F6FE0; background: none; }
 /* Tarief dat per uur oploopt (Parijs) */
 .pstairt { font-size: 12px; font-weight: 600; color: #3a3a3c; margin: 2px 0 6px; }
 .pstair { display: flex; gap: 3px; align-items: flex-end; height: 46px; }
@@ -772,15 +764,13 @@ body.trailview #bottom-idle, body.trailview #recenter { visibility: hidden; }
   .vlist li, .vlist li:last-child { border-color: #2c2c2e; }
   .mmsep { background: #3a3a3c; }
   .zonepick { background: #23262B; }
-  .tsym, .tchips span { background: #2c2c2e; color: #d1d1d6; }
+  .tchips span { background: #2c2c2e; color: #d1d1d6; }
+  .tcard { background: #1c1c1e; color: #f2f2f7; }
+  .tbody .psrc { border-color: #2c2c2e; }
+  .trows button.more { color: #5EA0FF; }
   .trows li { border-color: #2c2c2e; }
   .trows .note { color: #c7c7cc; }
   .trows a { color: #5EA0FF; }
-  .wbx { background: #2c2c2e; color: #a1a1a6; }
-  .wcard { background: #2c2c2e; }
-  .wcard.on { background: #1c1c1e; }
-  .wn { background: #1c1c1e; }
-  .wt small { color: #a1a1a6; }
 }
 /* Alleen de P (geen bedrag bekend): geen lege ruimte erachter */
 .pchip .pct:empty, .ptag span:last-child:empty { display: none; }
