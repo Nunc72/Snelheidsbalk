@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '231';
+const VERSION = '232';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -3196,47 +3196,51 @@ function trailCard(t, at) {
     if (c.dataset.dragged) { e.stopPropagation(); e.preventDefault(); return; }
     if (i >= 0 && i !== v.idx && !e.target.closest('.px')) { e.stopPropagation(); v.scrollTo(i); }
   }, true);
-  // Greepje en kop (ingeklapt het enige wat je ziet): het vegen doen we zelf.
-  // Opzij: het vorige of volgende pad. Omlaag klapt in (en daarna sluit het), omhoog klapt uit; tikken wisselt.
+  // Vegen doen we zelf, op het hele kaartje: opzij gaat naar het vorige of volgende pad (iOS liet het
+  // gewone schuiven van de rij na een paar kaartjes hangen). Op greepje en kop (ingeklapt het enige
+  // wat je ziet) klapt omlaag in (en daarna sluit het), omhoog uit; tikken wisselt. Elders op het
+  // kaartje schuift omhoog en omlaag gewoon de inhoud.
   const low = () => trailView && trailView.sh.classList.contains('low');
   c.querySelector('.handle').addEventListener('click', () => lowTrail(!low()));
   c.querySelector('.phead').addEventListener('click', () => { if (low()) lowTrail(false); });
   let g = null;
-  for (const el of [c.querySelector('.tgrab'), c.querySelector('.phead')]) {
-    el.addEventListener('pointerdown', e => {
-      if (e.target.closest('.px') || !trailView) return;
-      g = { x: e.clientX, y: e.clientY, id: e.pointerId, dir: null, row: c.parentNode, left: c.parentNode.scrollLeft };
-    });
-    el.addEventListener('pointermove', e => {
-      if (!g || e.pointerId !== g.id) return;
-      const dx = e.clientX - g.x, dy = e.clientY - g.y;
-      if (!g.dir && Math.hypot(dx, dy) > 8) {
-        g.dir = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
-        el.setPointerCapture(e.pointerId);
-        if (g.dir === 'x') { g.row.style.scrollSnapType = 'none'; trailView.dragging = true; }
-      }
-      if (g.dir === 'x') g.row.scrollLeft = g.left - dx;
-    });
-    const end = e => {
-      if (!g || e.pointerId !== g.id) return;
-      const { dir, row } = g, dx = e.clientX - g.x, dy = e.clientY - g.y, v = trailView;
-      g = null;
-      if (!dir || !v) return;
-      c.dataset.dragged = '1';
-      setTimeout(() => delete c.dataset.dragged, 50);
-      if (dir === 'y') {
-        if (dy > 50) { if (low()) closeTrail(); else lowTrail(true); } else if (dy < -40) lowTrail(false);
-        return;
-      }
-      const i = Math.max(0, Math.min(v.cards.length - 1, v.idx + (dx < -40 ? 1 : dx > 40 ? -1 : 0)));
-      v.dragging = false;
-      v.scrollTo(i);
-      setTimeout(() => { row.style.scrollSnapType = ''; }, 450);
-      if (i !== v.idx) showTrailCard(i);
-    };
-    el.addEventListener('pointerup', end);
-    el.addEventListener('pointercancel', end);
-  }
+  c.addEventListener('pointerdown', e => {
+    if (e.target.closest('.px') || !trailView || (e.pointerType === 'mouse' && e.button)) return;
+    g = { x: e.clientX, y: e.clientY, lx: e.clientX, ly: e.clientY, id: e.pointerId, dir: null, row: c.parentNode, left: c.parentNode.scrollLeft,
+      head: !!e.target.closest('.tgrab, .phead') };
+  });
+  c.addEventListener('pointermove', e => {
+    if (!g || e.pointerId !== g.id) return;
+    g.lx = e.clientX;
+    g.ly = e.clientY;
+    const dx = e.clientX - g.x, dy = e.clientY - g.y;
+    if (!g.dir && Math.hypot(dx, dy) > 8) {
+      g.dir = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+      if (g.dir === 'y' && !g.head) { g = null; return; }
+      try { c.setPointerCapture(e.pointerId); } catch (err) { /* al los */ }
+      if (g.dir === 'x') { g.row.style.scrollSnapType = 'none'; trailView.dragging = true; }
+    }
+    if (g.dir === 'x') g.row.scrollLeft = g.left - dx;
+  });
+  const end = e => {
+    if (!g || e.pointerId !== g.id) return;
+    const { dir, row } = g, dx = g.lx - g.x, dy = g.ly - g.y, v = trailView;
+    g = null;
+    if (!dir || !v) return;
+    c.dataset.dragged = '1';
+    setTimeout(() => delete c.dataset.dragged, 50);
+    if (dir === 'y') {
+      if (dy > 50) { if (low()) closeTrail(); else lowTrail(true); } else if (dy < -40) lowTrail(false);
+      return;
+    }
+    const i = Math.max(0, Math.min(v.cards.length - 1, v.idx + (dx < -40 ? 1 : dx > 40 ? -1 : 0)));
+    v.dragging = false;
+    v.scrollTo(i);
+    setTimeout(() => { row.style.scrollSnapType = ''; }, 450);
+    if (i !== v.idx) showTrailCard(i);
+  };
+  c.addEventListener('pointerup', end);
+  c.addEventListener('pointercancel', end);
   return c;
 }
 // Het pad van kaartje i op de kaart, en het kaartje gevuld

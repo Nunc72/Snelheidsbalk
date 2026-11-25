@@ -560,7 +560,7 @@ body.menuopen .mapctl { z-index: 12; opacity: 1; pointer-events: auto; }
 .tsheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; pointer-events: none; }
 .tcards { display: flex; align-items: flex-end; gap: 6px; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; scrollbar-width: none; padding: 14px 16px 0; }
 .tcards::-webkit-scrollbar { display: none; }
-.tcard { pointer-events: auto; flex: 0 0 100%; box-sizing: border-box; scroll-snap-align: center; height: 50vh; max-height: 50vh; overflow-y: auto; overscroll-behavior: contain;
+.tcard { pointer-events: auto; flex: 0 0 100%; box-sizing: border-box; scroll-snap-align: center; height: 50vh; max-height: 50vh; overflow-y: auto; touch-action: pan-y; overscroll-behavior: contain;
   background: #fff; color: #1c1c1e; border-radius: 20px 20px 0 0; padding: 0 16px calc(env(safe-area-inset-bottom) + 14px); box-shadow: 0 -3px 14px rgba(0,0,0,.16); transition: max-height .25s ease; }
 .tsheet.low .tcard { overflow: hidden; }
 .tcard:not(.on) .px { visibility: hidden; }
