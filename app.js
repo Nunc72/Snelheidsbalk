@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '228';
+const VERSION = '229';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -2966,29 +2966,40 @@ const kmText = m => { const k = m / 1000; return (k >= 100 ? String(Math.round(k
 // De lengte: de officiële als die bekend is (de lijn in OpenStreetMap mist soms stukken)
 const trailLen = info => info.official || info.len;
 
-// De markering zonder het nummer erin: van het teken van Waymarked Trails alleen de vormen
-// ('osmc_NAT_empty_white-upper_red-lower_00380033_black' zonder '_00380033_black').
-// Alleen een achtergrond (rood met een nummer erop): een vlakje in die kleur. Alleen tekst (ref_…): geen markering.
-const OSMC = { white: '#fff', red: '#E0260D', yellow: '#F5C400', blue: '#1E5BD8', green: '#1E9E3A', black: '#1c1c1e',
-  orange: '#F08C00', purple: '#7B3FE4', brown: '#8C5A2B', gray: '#8a8a8a', grey: '#8a8a8a' };
-function trailMarking(id) {
-  if (!id || !id.startsWith('osmc_')) return null;
-  const parts = id.replace(/_[0-9a-f]{4,}_[a-z]+$/, '').split('_');
-  if (parts.length > 3) return { img: trailSymbol(parts.join('_')) };
-  return OSMC[parts[2]] ? { bg: OSMC[parts[2]] } : null;
+// De markering zoals hij langs het pad staat, met het nummer erin en in zijn eigen vorm (vaak rechthoekig).
+// Waymarked Trails tekent er een gekleurde rand omheen (de soort pad): die halen we eraf.
+// Alleen tekst (ref_…) is geen markering: dan een vlakje in de kleur van het pad.
+const markMemo = new Map();
+function trailMarkSrc(id) {
+  if (!markMemo.has(id)) {
+    markMemo.set(id, fetch(trailSymbol(id)).then(r => (r.ok ? r.text() : Promise.reject(new Error(r.status)))).then(svg => {
+      const m = svg.match(/viewBox="0 0 ([\d.]+) ([\d.]+)"/);
+      if (!m) throw new Error('geen svg');
+      const w = +m[1] - 2.4, h = +m[2] - 2.4;
+      svg = svg.replace(/<path style="fill:none;stroke-width:1\.2;[^>]*d="M 0\.6[^>]*\/>/, '')
+        .replace(/ width="[^"]*" height="[^"]*" viewBox="[^"]*"/, ` width="${w}" height="${h}" viewBox="1.2 1.2 ${w} ${h}"`);
+      return { src: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg), ratio: w / h };
+    }).catch(() => null));
+  }
+  return markMemo.get(id);
 }
-// Het icoon van een pad: de markering, anders een vlakje in de kleur van het pad
-function trailIcon(el, t) {
-  const m = trailMarking(t.symbol_id);
+// Het icoon van een pad: de markering (hoogte h, niet breder dan max), anders een vlakje in de kleur van het pad
+function trailIcon(el, t, h = 20, max = 34) {
   el.style.setProperty('--c', t.color);
-  el.classList.toggle('plain', !m);
-  if (m && m.bg) el.style.background = m.bg;
-  if (!m || !m.img) return;
-  const img = new Image();
-  img.alt = '';
-  img.src = m.img;
-  img.onerror = () => { img.remove(); el.classList.add('plain'); };
-  el.appendChild(img);
+  el.classList.add('plain');
+  if (!t.symbol_id || !t.symbol_id.startsWith('osmc_')) return;
+  trailMarkSrc(t.symbol_id).then(m => {
+    if (!m) return;
+    const img = new Image();
+    img.alt = '';
+    const hh = Math.min(h, max / m.ratio);
+    img.style.height = hh + 'px';
+    img.style.width = hh * m.ratio + 'px';
+    img.src = m.src;
+    el.classList.remove('plain');
+    el.classList.add('mark');
+    el.replaceChildren(img);
+  });
 }
 
 // Plaatsnaam bij een punt (begin of eind van een pad zonder vermelde plaatsen)
@@ -3137,10 +3148,10 @@ function trailCard(t, at) {
     + '<div class="phead"><span class="tsym big"></span><div class="ph"><div class="t1"></div><div class="t2"></div></div></div>'
     + '<div class="tchips"><span class="b" hidden></span><span><i class="ti ti-map-pin-down" aria-hidden="true"></i><span></span></span></div>'
     + '<div class="tbody"><div class="psrc">Pad laden…</div></div>';
-  trailIcon(c.querySelector('.tsym'), t);
+  trailIcon(c.querySelector('.tsym'), t, 26, 46);
   c.querySelector('.t1').textContent = trailTitle(t);
   c.querySelector('.t2').textContent = TRAIL_LEVEL[t.group] ? TRAIL_LEVEL[t.group] + ' wandelpad' : 'Wandelpad';
-  c.querySelector('.tchips span:last-child span').textContent = `${fmtDist(t.near)} vanaf ${at.from === 'jou' ? 'jouw locatie' : at.from}`;
+  c.querySelector('.tchips span:last-child span').textContent = 'Nabijheid ' + fmtDist(t.near);
   c.querySelector('.px').addEventListener('click', e => { e.stopPropagation(); closeTrail(); });
   // Tik op een kaartje dat opzij piept: dat pad
   c.addEventListener('click', e => {
@@ -3209,6 +3220,8 @@ function fillTrailCard(c, t, info) {
   };
   if (info.stages.length > 1) {
     row(`${info.stages.length} etappes`, v => {
+      // Ruimte voor de nummers: 1 tot 9, of tot 99
+      v.style.setProperty('--nw', String(info.stages.length).length * 0.62 + 0.15 + 'em');
       const stage = (s, i) => {
         const e = document.createElement('div');
         e.className = 'et';
@@ -3231,12 +3244,18 @@ function fillTrailCard(c, t, info) {
   }
   if (info.symbol) {
     row('Markering', v => {
-      if (info.symbolId) v.innerHTML = `<img class="tmark" alt="" src="${trailSymbol(info.symbolId)}">`;
+      if (info.symbolId) {
+        const img = document.createElement('img');
+        img.className = 'tmark';
+        img.alt = '';
+        v.appendChild(img);
+        trailMarkSrc(info.symbolId).then(m => { if (m) img.src = m.src; else img.remove(); });
+      }
       v.append(info.symbol.replace(/\b(white|red|yellow|blue|green|black|orange|purple|brown)\b/g, w => MARK_NL[w])
         .replace(/ strip(e)?/g, ' streep').replace(/on top of/g, 'boven').replace(/\bon\b/g, 'op'));
     });
   }
-  row(info.round ? 'Rondwandeling' : 'Van – naar', v => {
+  row(info.round ? 'Rond' : 'Van – naar', v => {
     const put = e => { v.textContent = info.round ? 'Begin en eind: ' + (e.from || 'hetzelfde punt') : [e.from || '?', e.to || '?'].join(' → '); };
     put({ from: info.itinerary[0], to: info.itinerary.length > 1 ? info.itinerary.at(-1) : '' });
     trailEnds(info).then(put);
@@ -3265,99 +3284,69 @@ function fillTrailCard(c, t, info) {
 // Een tik op de kaart klapt de kaartjes in (de kaart vrij) en weer uit
 map.on('click', () => { if (trailView) lowTrail(!trailView.sh.classList.contains('low')); });
 
-// ---------- Start: navigeren langs het pad ----------
-// Net als met de auto, fiets of te voet: de lijn wordt opgegeten en je veegt door de punten.
+// ---------- Start: het pad als route bekijken ----------
+// Net als een bewaarde route uit de tab Routes vanaf een ander vertrekpunt: de route gestippeld,
+// de kaart op het vertrekpunt, en je veegt door de punten. Je positie (of de gezochte plek) doet
+// niet mee en de lijn wordt niet opgegeten.
 // De punten: het begin, het begin van elke officiële etappe en het eind (geen extra punten).
-// Instappen doe je aan het begin. Ligt dat veel verder weg dan het pad zelf (El Camí begint in
-// Frankrijk), dan op het punt het dichtst bij je; de punten achter je vallen dan af, een rondje
-// loop je helemaal rond tot je daar weer bent. Niet op het pad: eerst te voet naar het instappunt.
+// Je begint bij de etappe die het dichtst bij de gezochte plek ligt; zonder etappes aan het begin,
+// hoe ver weg ook. Vanaf een latere etappe vallen de etappes ervoor af; een rondje loop je helemaal rond.
 const TRAIL_SPEED = 4 / 3.6;  // m/s
-const JOIN_MORE = 1500;  // zoveel meter verder mag het begin liggen dan het dichtstbijzijnde punt
 async function startTrailNav(t, info) {
-  const title = trailTitle(t);
+  const title = trailTitle(t), at = trailView ? [trailView.at.lon, trailView.at.lat] : null;
   const shape = [];
   for (const l of info.lines) for (const q of l) { const p = shape.at(-1); if (!p || p[0] !== q[0] || p[1] !== q[1]) shape.push(q); }
   if (shape.length < 2) return;
   const n = shape.length;
-  const nearest = (p, line = shape) => line.reduce((b, q, i) => { const d = dist(p, q); return d < b.d ? { d, i } : b; }, { d: Infinity, i: 0 });
-  const me = state.fix && [state.fix.lon, state.fix.lat];
-  const close = me && nearest(me);
-  const j = close && dist(me, shape[0]) > close.d + JOIN_MORE ? close.i : 0;
+  const nearest = p => shape.reduce((b, q, i) => { const d = dist(p, q); return d < b.d ? { d, i } : b; }, { d: Infinity, i: 0 });
   // Begin en eind heten naar de plaats waar ze echt liggen: de lijn in OpenStreetMap loopt niet altijd
   // in de richting van de vermelde plaatsen, en mist soms een stuk (de GR 83 houdt boven Olot op)
-  const [first, last, join] = await Promise.all([trailPlace(shape[0]), trailPlace(shape.at(-1)), j ? trailPlace(shape[j]) : '']);
+  const [first, last] = await Promise.all([trailPlace(shape[0]), trailPlace(shape.at(-1))]);
   const cand = [{ i: 0, name: 'Begin' + (first ? ' · ' + first : '') }];
-  info.stages.forEach((s, k) => {
-    if (k) cand.push({ i: nearest(s.at).i, name: `Etappe ${k + 1}` + (s.it[0] ? ' · ' + s.it[0] : '') });
-  });
-  cand.push({ i: n - 1, name: info.round ? 'Eind (terug bij begin)' : 'Eind' + (last ? ' · ' + last : '') });
-  let line = shape, wps = cand;
+  // Etappes zonder vermelde plaats: de plaats bij hun begin
+  cand.push(...await Promise.all(info.stages.slice(1).map(async (s, k) => {
+    const i = nearest(s.at).i, where = s.it[0] || await trailPlace(shape[i]);
+    return { i, name: `Etappe ${k + 2}` + (where ? ' · ' + where : '') };
+  })));
+  const end = { i: n - 1, name: info.round ? 'Eind (terug bij begin)' : 'Eind' + (last ? ' · ' + last : '') };
+  // Vertrek: het etappebegin het dichtst bij de gezochte plek
+  const j = at && cand.length > 1 ? cand.reduce((b, w) => (dist(at, shape[w.i]) < dist(at, shape[b.i]) ? w : b)).i : 0;
+  let line = shape, wps = [...cand, end];
   if (j) {
-    // Vanaf het instappunt; een rondje gaat door het begin heen terug naar het instappunt
+    const start = cand.find(w => w.i === j);
     line = info.round ? [...shape.slice(j), ...shape.slice(1, j + 1)] : shape.slice(j);
-    wps = [{ i: 0, name: 'Instappunt' + (join ? ' · ' + join : '') }];
-    for (const w of cand) {
+    wps = [{ i: 0, name: start.name }];
+    for (const w of [...cand, end]) {
       if (info.round ? w.i === n - 1 || w.i === j : w.i <= j) continue;
       wps.push({ i: w.i > j ? w.i - j : n - 1 - j + w.i, name: w.name });
     }
-    if (info.round) wps.push({ i: line.length - 1, name: 'Eind (terug bij instappunt)' });
+    if (info.round) wps.push({ i: line.length - 1, name: 'Eind (terug bij ' + start.name.replace(/ · .*/, '').toLowerCase() + ')' });
   }
   const cum = [0];
   for (let i = 1; i < line.length; i++) cum.push(cum[i - 1] + dist(line[i - 1], line[i]));
   // Op volgorde langs het pad, zonder punten vlak achter elkaar
   const pts = wps.sort((a, b) => a.i - b.i).filter((w, k, a) => !k || k === a.length - 1 || cum[w.i] - cum[a[k - 1].i] > 200);
   if (pts.length > 2 && cum.at(-1) - cum[pts.at(-2).i] < 200) pts.splice(pts.length - 2, 1);
-  const stop = w => ({ lat: line[w.i][1], lon: line[w.i][0], name: w.name });
+  const stopsList = pts.map(w => ({ lat: line[w.i][1], lon: line[w.i][0], name: w.name }));
 
-  // Nog niet op het pad: eerst te voet naar het instappunt
-  let lead = null;
-  if (me && nearest(me, line).d > 60) {
-    toast('Route naar het pad berekenen…', 4000);
-    try { [lead] = await fetchRoutes([hereNow(), stop(pts[0])], 0, 'pedestrian'); } catch (e) { lead = null; }
-  }
-  const nav = { shape: [], maneuvers: [], legs: [], legStops: [], mode: 'pedestrian', trail: true, idx: 0, along: 0, off: 0, arrivedAt: 0, legIdx: 0 };
-  if (lead) {
-    nav.shape.push(...lead.shape);
-    nav.maneuvers.push(...lead.maneuvers);
-    nav.legs.push({ endIdx: lead.shape.length - 1, time: lead.time });
-    nav.legStops.push(stop(pts[0]));
-  }
-  const off = nav.shape.length;
-  nav.shape.push(...line);
+  const nav = { shape: line, cum, maneuvers: [], legs: [], legStops: stopsList.slice(1), mode: 'pedestrian', trail: true, idx: 0, along: 0, off: 0, arrivedAt: 0, legIdx: 0 };
   for (let k = 1; k < pts.length; k++) {
-    const a = off + pts[k - 1].i, b = off + pts[k].i, leg = nav.legs.length;
+    const a = pts[k - 1].i, b = pts[k].i, leg = k - 1;
     nav.maneuvers.push({ type: 1, instruction: 'Volg ' + title, street_names: [title], begin_shape_index: a, end_shape_index: b, leg },
       { type: 4, instruction: pts[k].name, begin_shape_index: b, end_shape_index: b, leg });
-    nav.legs.push({ endIdx: b, time: (cum[pts[k].i] - cum[pts[k - 1].i]) / TRAIL_SPEED });
-    nav.legStops.push(stop(pts[k]));
+    nav.legs.push({ endIdx: b, time: (cum[b] - cum[a]) / TRAIL_SPEED, begin: cum[a], end: cum[b] });
   }
-  nav.cum = [0];
-  for (let i = 1; i < nav.shape.length; i++) nav.cum.push(nav.cum[i - 1] + dist(nav.shape[i - 1], nav.shape[i]));
-  let begin = 0;
-  for (const l of nav.legs) { l.begin = begin; l.end = nav.cum[l.endIdx]; begin = l.end; }
-  nav.total = nav.cum.at(-1);
+  nav.total = cum.at(-1);
   nav.time = nav.legs.reduce((s, l) => s + l.time, 0);
 
-  // Verder als na Start in de planner
+  // Verder als een bewaarde route vanaf een ander vertrekpunt
   closeTrail(false);
   closeSearch();
   clearLook();
   setTravelMode('pedestrian');
   setHomeStart(false);
-  clearConcept(true);
   state.zones = [];
-  state.navStart = nav.shape[0];
-  state.dest = { ...nav.legStops.at(-1), name: title };
-  state.nav = nav;
-  shownLeg = -1;
-  state.lastRouteAt = Date.now();
-  if (DEMO) demo.along = 0;
-  setRouteLine(nav.shape);
-  drawRouteEnds();
-  setMode('nav');
-  drawNavZone();
-  follow();
-  if (state.fix) updateNav([state.fix.lon, state.fix.lat]);
+  showConcept({ nav, stops: stopsList, mode: 'pedestrian', trail: true });
 }
 
 // Publieke gebouwen op de kaart waarvan de naam past, dichtstbij eerst
@@ -3886,6 +3875,17 @@ async function computePreview(note) {
   }
   if (list.length < 2) { noRoute(list.length && stops.length === 1 ? 'Vul nog een adres in' : ''); return; }
   if (pts.some(p => !p)) { noRoute('Nog geen GPS-positie voor "Huidige locatie"'); return; }
+  // Een wandelpad dat je bekijkt (Start bij een pad), ongewijzigd: de lijn van het pad zelf, niet opnieuw berekenen
+  const c = state.concept;
+  if (c && c.trail && sigOf(list, travelMode) === sigOf(c.stops, c.mode)) {
+    previewNav = c.nav;
+    previewData = { coords: c.nav.shape, pts, routes: [c.nav], sel: 0, note };
+    drawPreview();
+    previewSummary(note, c.nav.time, c.nav.total);
+    $('pjamrow').hidden = true;
+    $('qok').disabled = false;
+    return;
+  }
   // Fietsen en lopen rekent de routedienst niet verder dan 150 en 100 km hemelsbreed
   const max = MAX_DIST[travelMode];
   const span = pts.slice(1).reduce((s, p, i) => s + dist([pts[i].lon, pts[i].lat], [p.lon, p.lat]), 0);

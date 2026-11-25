@@ -544,16 +544,17 @@ body.menuopen .mapctl { z-index: 12; opacity: 1; pointer-events: auto; }
 .plegend .sw.arr { background: #E5484D; width: 3px; }
 .psrc { font-size: 11.5px; color: #8a8a8a; margin-top: 12px; }
 /* Wandelpaden: lijst (In de buurt → Wandel) en detailblad over de kaart */
-.tsym { width: 30px; height: 30px; flex: none; border-radius: 5px; display: flex; align-items: center; justify-content: center; overflow: hidden; box-shadow: inset 0 0 0 1px rgba(0,0,0,.12); }
-.tsym img { width: 100%; height: 100%; object-fit: contain; }
-.tsym.plain { background: var(--c); border-radius: 7px; box-shadow: none; }
-.tsym.big { width: 36px; height: 36px; }
+.tsym { width: 34px; height: 30px; flex: none; display: flex; align-items: center; justify-content: center; }
+.tsym img { display: block; border-radius: 1.5px; box-shadow: 0 0 0 1px rgba(0,0,0,.18); }
+.tsym.plain::before { content: ''; width: 26px; height: 26px; border-radius: 6px; background: var(--c); }
+.tsym.big { width: 46px; height: 36px; }
+.tsym.big.plain::before { width: 32px; height: 32px; border-radius: 7px; }
 .walk .r2 .ti { font-size: 14px; vertical-align: -2px; margin-right: 3px; }
 /* Detail: een rij kaartjes onderin, het vorige en volgende piepen opzij */
 .tsheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; pointer-events: none; }
-.tcards { display: flex; align-items: flex-end; gap: 8px; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; scrollbar-width: none; padding: 14px 22px 0; }
+.tcards { display: flex; align-items: flex-end; gap: 6px; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; scrollbar-width: none; padding: 14px 16px 0; }
 .tcards::-webkit-scrollbar { display: none; }
-.tcard { pointer-events: auto; flex: 0 0 calc(100% - 44px); box-sizing: border-box; scroll-snap-align: center; max-height: 62vh; overflow-y: auto; overscroll-behavior: contain;
+.tcard { pointer-events: auto; flex: 0 0 100%; box-sizing: border-box; scroll-snap-align: center; max-height: 50vh; overflow-y: auto; overscroll-behavior: contain;
   background: #fff; color: #1c1c1e; border-radius: 20px 20px 0 0; padding: 0 16px calc(env(safe-area-inset-bottom) + 14px); box-shadow: 0 -3px 14px rgba(0,0,0,.16); transition: max-height .25s ease; }
 .tsheet.low .tcard { overflow: hidden; }
 .tcard:not(.on) .px { visibility: hidden; }
@@ -564,6 +565,9 @@ body.menuopen .mapctl { z-index: 12; opacity: 1; pointer-events: auto; }
 .tcard .phead { touch-action: pan-x; padding-right: 22px; margin-top: 4px; }
 .tcard .phead .t1 { white-space: normal; font-size: 17px; line-height: 1.2; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .tsheet.low .phead { cursor: pointer; }
+/* Ingeklapt: naam en soort elk op één regel, zodat alle lage kaartjes even hoog zijn */
+.tsheet.low .phead .t1 { display: block; white-space: nowrap; text-overflow: ellipsis; }
+.tcard .phead .t2 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tchips { display: flex; flex-wrap: wrap; gap: 5px; margin: 12px 0 6px; }
 .tchips span { font-size: 13px; padding: 3px 8px; border-radius: 8px; background: #F1F0EC; color: #3a3a3c; display: inline-flex; align-items: center; gap: 4px; }
 .tchips span.b { background: var(--c); color: #fff; font-weight: 600; }
@@ -571,19 +575,19 @@ body.menuopen .mapctl { z-index: 12; opacity: 1; pointer-events: auto; }
 .trows { list-style: none; margin: 4px 0 0; padding: 0; font-size: 14px; }
 .trows li { display: flex; gap: 10px; padding: 8px 0; border-top: 1px solid #f0f0f0; line-height: 1.35; }
 .trows .k { color: #8a8a8a; width: 78px; flex: none; }
-.tcard .trows .k { width: 100px; }
+.tcard .trows .k { width: 72px; }
 /* Etappes: onder het label, over de hele breedte */
 .trows li.wide { flex-direction: column; gap: 3px; }
 .tcard .trows li.wide .k { width: auto; }
 .trows .v { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .trows .et { display: flex; gap: 7px; }
-.trows .et b { width: 16px; flex: none; text-align: right; color: var(--c); }
+.trows .et b { width: var(--nw, 16px); flex: none; text-align: right; color: var(--c); }
 .trows .et span:nth-child(2) { flex: 1; min-width: 0; }
 .trows .et span:last-child { margin-left: auto; color: #8a8a8a; white-space: nowrap; padding-left: 6px; }
 .trows .more { color: #8a8a8a; }
 .trows .note { font-style: italic; color: #555; }
 .trows a { color: #1F6FE0; text-decoration: none; }
-.tmark { height: 18px; vertical-align: -4px; margin-right: 6px; }
+.tmark { height: 18px; vertical-align: -4px; margin-right: 6px; border-radius: 1.5px; box-shadow: 0 0 0 1px rgba(0,0,0,.18); }
 .tflag { width: 24px; height: 24px; border-radius: 6px; color: #fff; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 0 2px #fff, 0 1px 5px rgba(0,0,0,.3); }
 .tflag.end { background: #1c1c1e; }
 .tflag .ti { font-size: 15px; }
@@ -766,6 +770,7 @@ body.trailview #bottom-idle, body.trailview #recenter { visibility: hidden; }
   .zonepick { background: #23262B; }
   .tchips span { background: #2c2c2e; color: #d1d1d6; }
   .tcard { background: #1c1c1e; color: #f2f2f7; }
+  .tsym img, .tmark { box-shadow: 0 0 0 1px rgba(255,255,255,.22); }
   .tbody .psrc { border-color: #2c2c2e; }
   .trows button.more { color: #5EA0FF; }
   .trows li { border-color: #2c2c2e; }
