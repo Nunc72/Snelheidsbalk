@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '230';
+const VERSION = '231';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -2479,6 +2479,7 @@ function closeSearch() {
   $('search').hidden = true;
   $('overview').hidden = true;
   setPlanning(false);
+  clearNearTrail();
   homeControls(true);
   previewSeq++;
   ms.seq++;
@@ -2814,7 +2815,7 @@ async function trailDetails(id, max = Infinity) {
     d = JSON.parse(await new Blob(parts).text());
   } else d = await r.json();
   const info = trailInfo(d);
-  if (trailMemo.size > 30) trailMemo.delete(trailMemo.keys().next().value);
+  if (trailMemo.size > 6) trailMemo.delete(trailMemo.keys().next().value);
   trailMemo.set(id, info);
   return info;
 }
@@ -3074,7 +3075,7 @@ async function showWalkNear(seq) {
   const cur = stops[editRow] && !stops[editRow].here ? stops[editRow] : null;
   const base = cur || editRow > 0 && prev;
   // 'from': waar de afstand vandaan is (in het detailblad: '1,2 km vanaf Olot')
-  const at = base ? { lat: base.lat, lon: base.lon, from: base.here ? 'jou' : stopLabel(base) }
+  const at = base ? { lat: base.lat, lon: base.lon, from: base.here ? 'jou' : stopLabel(base), place: base.here ? null : base }
     : { ...nearCentre(), from: state.fix ? 'jou' : 'het midden van de kaart' };
   const sec = nearSection('Wandelpaden', base && !base.here ? 'rond ' + stopLabel(base) : 'binnen 10 km');
   ul.append(sec.head, sec.note);
@@ -3185,7 +3186,10 @@ function trailCard(t, at) {
   c.querySelector('.t1').textContent = trailTitle(t);
   c.querySelector('.t2').textContent = TRAIL_LEVEL[t.group] ? TRAIL_LEVEL[t.group] + ' wandelpad' : 'Wandelpad';
   c.querySelector('.tchips span:last-child span').textContent = 'Nabijheid ' + fmtDist(t.near);
-  c.querySelector('.px').addEventListener('click', e => { e.stopPropagation(); closeTrail(); });
+  // Sluiten al bij het loslaten: een tik terwijl de rij nog naschuift wordt anders geen klik
+  const px = c.querySelector('.px');
+  px.addEventListener('click', e => { e.stopPropagation(); closeTrail(); });
+  px.addEventListener('touchend', e => { e.preventDefault(); e.stopPropagation(); closeTrail(); });
   // Tik op een kaartje dat opzij piept: dat pad. Een veeg is geen tik.
   c.addEventListener('click', e => {
     const v = trailView, i = v ? v.cards.indexOf(c) : -1;
@@ -3268,7 +3272,7 @@ function fillTrailCard(c, t, info) {
   km.textContent = kmText(trailLen(info));
   km.hidden = false;
   body.innerHTML = '<ul class="trows"></ul><div class="psrc"></div><div class="tacts">'
-    + '<button type="button" data-act="dir"><i class="ti ti-arrows-exchange" aria-hidden="true"></i>Loop&shy;richting</button>'
+    + '<button type="button" data-act="dir"><i class="ti ti-arrows-exchange" aria-hidden="true"></i>Richting</button>'
     + '<button type="button" data-act="near"><i class="ti ti-map-pin-down" aria-hidden="true"></i>Dichtst&shy;bij</button>'
     + '<button type="button" data-act="save"><i class="ti ti-download" aria-hidden="true"></i>Bewaar</button>'
     + '<button type="button" data-act="go" class="tgo"><i class="ti ti-walk" aria-hidden="true"></i>Start</button></div>';
@@ -3410,7 +3414,7 @@ async function trailPlan(t, info, rev) {
 function trailNav(line, pts, title) {
   const cum = [0];
   for (let i = 1; i < line.length; i++) cum.push(cum[i - 1] + dist(line[i - 1], line[i]));
-  const stopsList = pts.map(w => ({ lat: line[w.i][1], lon: line[w.i][0], name: w.name }));
+  const stopsList = pts.map(w => Object.assign({ lat: line[w.i][1], lon: line[w.i][0], name: w.name }, w.near && { near: true }));
   const nav = { shape: line, cum, maneuvers: [], legs: [], legStops: stopsList.slice(1), mode: 'pedestrian', trail: true, idx: 0, along: 0, off: 0, arrivedAt: 0, legIdx: 0 };
   for (let k = 1; k < pts.length; k++) {
     const a = pts[k - 1].i, b = pts[k].i, leg = k - 1;
@@ -3484,13 +3488,64 @@ async function saveTrail(t, info, rev, btn) {
   btn.classList.toggle('on', ok);
 }
 
-// Dichtstbij: de planner van je positie naar het punt dichtbij, met auto, fiets of lopen.
-// Kan de auto er niet komen, dan rekent de routedienst naar de dichtstbijzijnde weg die wel kan.
+// Dichtstbij: de planner naar het pad, vanaf de plek waar je zocht (anders je positie), met auto, fiets of lopen.
+// Het pad blijft in zijn kleur op de kaart zolang je plant, ook als je een andere bestemming kiest;
+// weg zodra je de route start of stopt.
+let nearTrail = null;
 async function trailNearest(t) {
-  const where = await trailPlace(t.nearAt);
-  const p = { lat: t.nearAt[1], lon: t.nearAt[0], name: `${trailTitle(t)}${where ? ' · ' + where : ''}` };
+  const v = trailView, from = (v && v.at.place) || HERE;
+  let info = null;
+  try { info = await trailDetails(t.id); } catch (e) { /* zonder lijn: alleen het punt */ }
+  const nt = { t, info };
+  const p = await trailStop(nt, travelMode);
   leaveTrail();
-  placeTo(p);
+  nearTrail = nt;
+  if (info) drawTrail(info, t.color, 'walk');
+  placeTo(p, from);
+}
+function clearNearTrail() {
+  if (!nearTrail) return;
+  nearTrail = null;
+  for (const id of ['walk', 'walkpts', 'walknear']) if (map.getSource(id)) map.getSource(id).setData(EMPTY_FC);
+}
+// De bestemming op het pad voor deze vervoerswijze. Lopend: het punt dichtbij. Met de auto of fiets:
+// het punt van het pad dichtst daarbij dat vlak naast (30 m) een weg ligt waar je mag rijden.
+async function trailStop(nt, mode) {
+  const { t, info } = nt, at = t.nearAt;
+  let q = at;
+  if (mode !== 'pedestrian' && info) {
+    const cands = [at];
+    for (const l of info.lines) {
+      let m = 0;
+      for (let i = 1; i < l.length; i++) {
+        m += dist(l[i - 1], l[i]);
+        if (m >= 250 && dist(l[i], at) < 10000) { cands.push(l[i]); m = 0; }
+      }
+    }
+    cands.sort((a, b) => dist(a, at) - dist(b, at));
+    try {
+      for (let k = 0, found = false; k < Math.min(cands.length, 80) && !found; k += 20) {
+        const part = cands.slice(k, k + 20);
+        const r = await fetch(`${VALHALLA}/locate`, { method: 'POST',
+          body: JSON.stringify({ locations: part.map(([lon, lat]) => ({ lat, lon })), costing: mode, verbose: false }) });
+        if (!r.ok) break;
+        const hit = (await r.json()).findIndex(x => (x.edges || []).some(e => dist([e.correlated_lon, e.correlated_lat], [x.input_lon, x.input_lat]) < 30));
+        if (hit >= 0) { q = part[hit]; found = true; }
+      }
+    } catch (e) { /* dan het punt dichtbij; de routedienst rekent naar de dichtstbijzijnde weg */ }
+  }
+  const where = await trailPlace(q);
+  return { lat: q[1], lon: q[0], name: `${trailTitle(t)}${where ? ' · ' + where : ''}`, trailFor: mode };
+}
+// Andere vervoerswijze, bestemming nog het punt op het pad: een punt dat met deze vervoerswijze kan
+async function retargetTrail() {
+  const last = stops.at(-1);
+  if (!nearTrail || !last || !last.trailFor || last.trailFor === travelMode) return;
+  const mode = travelMode, p = await trailStop(nearTrail, mode);
+  if (mode !== travelMode || stops.at(-1) !== last) return;
+  stops[stops.length - 1] = p;
+  renderStops();
+  if (dist([p.lon, p.lat], [last.lon, last.lat]) > 50) toast(`Ander punt op het pad, bereikbaar ${{ auto: 'met de auto', bicycle: 'met de fiets', pedestrian: 'lopend' }[mode]}`, 4000);
 }
 
 // Publieke gebouwen op de kaart waarvan de naam past, dichtstbij eerst
@@ -5348,6 +5403,7 @@ document.querySelectorAll('.modes button').forEach(b => b.addEventListener('clic
   setTravelMode(b.dataset.mode);
   savedPick = null;
   if (!$('mapsearch').hidden) msRecompute();
+  else if (nearTrail && stops.at(-1) && stops.at(-1).trailFor) retargetTrail().then(() => computePreview());
   else computePreview();
 }));
 
@@ -7099,15 +7155,26 @@ function stopRoute(stay = false) {
 }
 
 // ---------- Conceptroute: vanaf een ander vertrekpunt, alleen bekijken ----------
+// Het punt dichtbij van een pad (Start) is geen gewone tussenstop: met het eigen icoon
+let conceptNear = null;
 function drawConcept() {
   drawNavZone();
+  if (conceptNear) { conceptNear.remove(); conceptNear = null; }
   const src = map.getSource('concept');
   if (!src) return;
   const c = state.concept;
   if (!c) { src.setData(EMPTY_FC); return; }
   const shape = c.nav.shape;
   const ends = stopPoints([shape[0], ...c.nav.legs.map(l => shape[l.endIdx])]);
-  src.setData({ type: 'FeatureCollection', features: [lineFeature(shape), ...ends.features] });
+  const k = c.stops.findIndex(st => st && st.near);
+  const feats = ends.features.filter((f, i) => k <= 0 || i !== k);
+  src.setData({ type: 'FeatureCollection', features: [lineFeature(shape), ...feats] });
+  if (k > 0) {
+    const el = document.createElement('div');
+    el.className = 'cnear';
+    el.innerHTML = '<i class="ti ti-map-pin-down" aria-hidden="true"></i>';
+    conceptNear = new maplibregl.Marker({ element: el }).setLngLat(shape[c.nav.legs[k - 1].endIdx]).addTo(map);
+  }
 }
 
 function clearConcept(stay = false) {

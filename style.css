@@ -1,5 +1,7 @@
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { margin: 0; height: 100%; overflow: hidden; overscroll-behavior: none; }
+/* Geen eigen tekstvergroting van iOS (na draaien, of bij langere regels) */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 body {
   position: fixed; inset: 0;
   background: #EDEBE6; color: #1c1c1e;
@@ -558,13 +560,13 @@ body.menuopen .mapctl { z-index: 12; opacity: 1; pointer-events: auto; }
 .tsheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; pointer-events: none; }
 .tcards { display: flex; align-items: flex-end; gap: 6px; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; scrollbar-width: none; padding: 14px 16px 0; }
 .tcards::-webkit-scrollbar { display: none; }
-.tcard { pointer-events: auto; flex: 0 0 100%; box-sizing: border-box; scroll-snap-align: center; max-height: 50vh; overflow-y: auto; overscroll-behavior: contain;
+.tcard { pointer-events: auto; flex: 0 0 100%; box-sizing: border-box; scroll-snap-align: center; height: 50vh; max-height: 50vh; overflow-y: auto; overscroll-behavior: contain;
   background: #fff; color: #1c1c1e; border-radius: 20px 20px 0 0; padding: 0 16px calc(env(safe-area-inset-bottom) + 14px); box-shadow: 0 -3px 14px rgba(0,0,0,.16); transition: max-height .25s ease; }
 .tsheet.low .tcard { overflow: hidden; }
 .tcard:not(.on) .px { visibility: hidden; }
 .tgrab { position: relative; height: 26px; touch-action: none; }
 .tgrab .handle { position: absolute; left: 50%; top: 8px; width: 38px; height: 5px; margin-left: -19px; border-radius: 3px; background: #D6D6D6; }
-.tgrab .px { position: absolute; right: -6px; top: 6px; width: 28px; height: 28px; }
+.tgrab .px { position: absolute; right: -10px; top: 2px; width: 36px; height: 36px; }
 .tgrab .px .ti { font-size: 16px; }
 .tcard .phead { touch-action: none; padding-right: 22px; margin-top: 4px; }
 .tcard .phead .t1 { white-space: normal; font-size: 17px; line-height: 1.2; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
@@ -600,17 +602,21 @@ body.menuopen .mapctl { z-index: 12; opacity: 1; pointer-events: auto; }
 .tme { width: 14px; height: 14px; border-radius: 50%; background: #1F6FE0; box-shadow: 0 0 0 3px #fff, 0 1px 5px rgba(0,0,0,.3); }
 .tarrow { width: 17px; height: 17px; border-radius: 50%; box-shadow: 0 0 0 2px #fff; color: #fff; display: flex; align-items: center; justify-content: center; }
 .tarrow .ti { font-size: 13px; }
+/* Punt dichtbij in de bekeken route langs een pad: tussenstop met het icoon erin */
+.cnear { width: 26px; height: 26px; box-sizing: border-box; border-radius: 50%; background: #fff; border: 3px solid #1F6FE0; color: #1F6FE0;
+  display: flex; align-items: center; justify-content: center; box-shadow: 0 1px 4px rgba(0,0,0,.3); }
+.cnear .ti { font-size: 14px; }
 /* Zolang het detail er is: niet het kaartje van het beginscherm eronder */
 body.trailview #bottom-idle, body.trailview #recenter { visibility: hidden; }
 /* Vier knoppen onderaan het kaartje van een pad */
-.tacts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 14px; }
-.tacts button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-height: 54px; padding: 6px 2px;
+.tacts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 12px; }
+.tacts button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; min-height: 42px; padding: 4px 2px;
   border-radius: 12px; background: #F1F0EC; color: #3a3a3c; font: inherit; font-size: 11.5px; line-height: 1.15; text-align: center; }
-.tacts .ti { font-size: 21px; }
+.tacts .ti { font-size: 19px; }
 .tacts button.on { background: #DCE8FB; color: #1F6FE0; }
 .tacts .tgo { background: #1F6FE0; color: #fff; font-weight: 600; }
 .tacts .busy .ti { animation: spin 1s linear infinite; }
-.tbody .psrc { border-top: 1px solid #f0f0f0; padding-top: 8px; }
+.tbody .psrc { border-top: 1px solid #f0f0f0; padding-top: 8px; margin-top: 2px; }
 .trows button.more { padding: 4px 0 0; font: inherit; color: #1F6FE0; background: none; }
 /* Tarief dat per uur oploopt (Parijs) */
 .pstairt { font-size: 12px; font-weight: 600; color: #3a3a3c; margin: 2px 0 6px; }
@@ -785,6 +791,7 @@ body.trailview #bottom-idle, body.trailview #recenter { visibility: hidden; }
   .tacts button.on { background: #1d3557; color: #5EA0FF; }
   .tacts .tgo { background: #1F6FE0; color: #fff; }
   .tbody .psrc { border-color: #2c2c2e; }
+  .cnear { border-color: #3D8BFF; color: #3D8BFF; }
   .trows button.more { color: #5EA0FF; }
   .trows li { border-color: #2c2c2e; }
   .trows .note { color: #c7c7cc; }
