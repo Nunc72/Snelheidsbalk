@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '240';
+const VERSION = '241';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -2379,7 +2379,7 @@ const planning = () => document.body.classList.contains('planning');
 const inSearch = () => !$('search').hidden || !$('overview').hidden;
 // Wat er bij het openen van de planner gold: liep er een route, en hoe stond de kaart
 // from: de gevonden plek waar de planner vandaan kwam (Vanaf, Route): terug gaat weer naar die plek
-const plan = { live: false, sig0: '', altPicked: false, wasFollowing: false, backHome: false, from: null, cam: null, jams: false, keepView: false };
+const plan = { live: false, sig0: '', altPicked: false, wasFollowing: false, backHome: false, from: null, cam: null, jams: false };
 const planSig = () => JSON.stringify([stops.map(s => s && (s.here ? 'here' : [s.lat, s.lon])), travelMode]);
 // Iets gewijzigd sinds je de planner opende (een andere route kiezen telt ook)
 const planDirty = () => plan.altPicked || planSig() !== plan.sig0;
@@ -2433,7 +2433,6 @@ function openSheet() {
   plan.backHome = false;
   plan.from = null;
   plan.cam = null;
-  plan.keepView = false;
   // File-informatie: alleen als je hem voor deze rit aanzet (onderweg wijzigen: zoals de rit had)
   plan.jams = !!(state.nav && state.nav.jams);
   $('search').hidden = false;
@@ -2524,8 +2523,6 @@ function editRoute() {
   const c = state.concept;
   if (c && c.trail) savedPick = { nav: c.nav, sig: sigOf(c.stops, c.mode), trail: true };
   plan.sig0 = planSig();
-  // De kaart blijft waar hij is (ook ingezoomd); pas een gewijzigde route komt helemaal in beeld
-  plan.keepView = true;
   showOverview();
 }
 
@@ -3972,8 +3969,6 @@ function drawPreview() {
   // Eén keer inzoomen op nieuwe routes; daarna blijft de kaart waar jij hem neerzet
   // Eén punt zonder route (Vanaf, Vertrekpunt): de kaart blijft precies staan
   if (!d.fitted && !(routes || []).length && !coords.length && pts.length === 1) d.fitted = true;
-  // Via het potloodje: de kaart blijft staan zolang de route dezelfde is
-  if (!d.fitted && plan.keepView && planSig() === plan.sig0) d.fitted = true;
   if (!d.fitted) {
     const all = (routes || []).flatMap(r => r.shape);
     if (!all.length) all.push(...(coords.length ? coords : pts.map(p => [p.lon, p.lat])));
@@ -4918,7 +4913,8 @@ $('qok').addEventListener('click', () => {
   if (plan.live && !planDirty()) { closeSearch(); return; }
   if (lookMode()) lookAt(); else confirmPreview();
 });
-$('pedit').addEventListener('click', e => { e.stopPropagation(); openMapSearch('edit', 'overview'); });
+// De kaart blijft staan zoals hij stond (ook ingezoomd); de hele route zie je door zelf uit te zoomen
+$('pedit').addEventListener('click', e => { e.stopPropagation(); ms.keep = true; openMapSearch('edit', 'overview'); });
 $('msback').addEventListener('click', msBack);
 $('msadd').addEventListener('click', msAdd);
 $('msok').addEventListener('click', msOk);
