@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '238';
+const VERSION = '239';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -10,8 +10,9 @@ const PHOTON = 'https://photon.komoot.io/api/';
 // Zie het blok Verkeer verderop.
 const TT = 'https://verlocidad-backup.verlocidad.workers.dev/tt';
 const JAM_SHOW = 180, JAM_CHANGE = 300, TAIL_M = 1000, TAIL_KMH = 70, TRAFFIC_EVERY = 5 * 60 * 1000;
-let trafficOn = true;
-try { trafficOn = localStorage.getItem('traffic') !== '0'; } catch (e) { /* geen opslag */ }
+// Verkeersinformatie op de kaart staat standaard uit; aanzetten via het kaartmenu (en dat blijft bewaard)
+let trafficOn = false;
+try { trafficOn = localStorage.getItem('traffic') === '1'; } catch (e) { /* geen opslag */ }
 const trafficReady = () => true;
 const trafficMode = () => (state.nav ? state.nav.mode : travelMode) === 'auto';
 const STYLES = {
