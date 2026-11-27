@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '236';
+const VERSION = '237';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -7049,15 +7049,20 @@ async function betterStarts(routes, pts, sources = routes) {
 
 // Een route valt af als een andere route grotendeels (60%) over dezelfde wegen gaat en
 // minstens even snel en niet langer is: dat is dezelfde route met een slechter stuk erin.
-// Niet langer: hooguit een kilometer. Met 2% (10 km op Amsterdam–Parijs) verdrong de route via
+// Grotendeels: 60%, en wat anders is hooguit 15 km (via Brussel of via Gent naar Parijs is 200 km
+// anders, ook al is het 60% dezelfde weg). Niet langer: hooguit een kilometer. Met 2% (10 km op Amsterdam–Parijs) verdrong de route via
 // Zeeburgereiland, een minuut sneller maar 7 km om, die over de Wibautstraat.
 function distinctRoutes(all) {
   const byTime = [...all].sort((a, b) => a.time - b.time);
   const kept = [];
   for (const r of byTime) {
-    if (!kept.some(o => o.time <= r.time + 60 && o.total <= r.total + 1000 && overlap(r, o) >= 0.6)) kept.push(r);
+    if (!kept.some(o => o.time <= r.time + 60 && o.total <= r.total + 1000 && sameish(r, o))) kept.push(r);
   }
   return kept;
+}
+function sameish(r, o) {
+  const ov = overlap(r, o);
+  return ov >= 0.6 && (1 - ov) * r.total <= 15000;
 }
 // Welk deel van route r (om de 200 m gemeten) binnen zo'n 40 m van route o ligt
 const CELL = 0.0004;
