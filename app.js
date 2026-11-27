@@ -1,9 +1,10 @@
 'use strict';
 
-const VERSION = '233';
+const VERSION = '234';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
+const VALHALLA_MAX = 10;  // zoveel punten per routevraag
 const PHOTON = 'https://photon.komoot.io/api/';
 // Verkeer (files) van TomTom, via onze eigen worker: daar staat de sleutel, niet in de app.
 // Zie het blok Verkeer verderop.
@@ -4471,8 +4472,11 @@ function msDraw() {
   if (a && a.type === 'insert') oldLegs.add(a.i);
   if (a && a.type === 'move') { oldLegs.add(a.i - 1); oldLegs.add(a.i); }
   let solid;
-  if (ms.pois && ms.pois.route) solid = [lineFeature(ms.pois.route)];
-  else if (ms.kind === 'row') solid = previewData && previewData.coords.length ? [lineFeature(previewData.coords)] : [];
+  // Plekken uit In de buurt: de hele route uit het overzicht, niet alleen het stuk waarlangs gezocht is
+  const whole = previewData && previewData.coords.length ? previewData.coords : null;
+  if (ms.kind === 'row' && whole) solid = [lineFeature(whole)];
+  else if (ms.pois && ms.pois.route) solid = [lineFeature(ms.pois.route)];
+  else if (ms.kind === 'row') solid = [];
   else solid = ms.legs.map((l, i) => (l && !oldLegs.has(i) ? lineFeature(l) : null)).filter(Boolean);
   msmap.getSource('msroute').setData({ type: 'FeatureCollection', features: solid });
   // id = plek in de lijst, zodat de zone onder de pin kan oplichten
@@ -7029,8 +7033,9 @@ async function betterStarts(routes, pts, sources = routes) {
       const reach = dist(from, ll(S)) + 8000;
       let i = 0;
       while (i < r.shape.length - 1 && dist(from, r.shape[i]) < reach) i++;
-      const pins = [];
-      for (let a = r.cum[i]; a < r.legs[0].end - 8000; a += 20000) pins.push(pin(r, a));
+      // Om de 20 km, maar de routedienst neemt hooguit 10 punten per vraag: bij een lange rit verder uit elkaar
+      const pins = [], room = VALHALLA_MAX - pts.length - 1, span = r.legs[0].end - 8000 - r.cum[i];
+      for (let a = r.cum[i]; a < r.legs[0].end - 8000 && pins.length < room; a += Math.max(20000, span / room)) pins.push(pin(r, a));
       if (!pins.length) return null;
       try { return (await fetchRoutes([pts[0], S, ...pins, ...pts.slice(1)], 0, 'auto'))[0]; } catch (e) { return null; }
     }));
@@ -7041,11 +7046,13 @@ async function betterStarts(routes, pts, sources = routes) {
 
 // Een route valt af als een andere route grotendeels (60%) over dezelfde wegen gaat en
 // minstens even snel en niet langer is: dat is dezelfde route met een slechter stuk erin.
+// Niet langer: hooguit een kilometer. Met 2% (10 km op Amsterdam–Parijs) verdrong de route via
+// Zeeburgereiland, een minuut sneller maar 7 km om, die over de Wibautstraat.
 function distinctRoutes(all) {
   const byTime = [...all].sort((a, b) => a.time - b.time);
   const kept = [];
   for (const r of byTime) {
-    if (!kept.some(o => o.time <= r.time + 60 && o.total <= r.total * 1.02 && overlap(r, o) >= 0.6)) kept.push(r);
+    if (!kept.some(o => o.time <= r.time + 60 && o.total <= r.total + 1000 && overlap(r, o) >= 0.6)) kept.push(r);
   }
   return kept;
 }
