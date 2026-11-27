@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '239';
+const VERSION = '240';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -2379,7 +2379,7 @@ const planning = () => document.body.classList.contains('planning');
 const inSearch = () => !$('search').hidden || !$('overview').hidden;
 // Wat er bij het openen van de planner gold: liep er een route, en hoe stond de kaart
 // from: de gevonden plek waar de planner vandaan kwam (Vanaf, Route): terug gaat weer naar die plek
-const plan = { live: false, sig0: '', altPicked: false, wasFollowing: false, backHome: false, from: null, cam: null, jams: false };
+const plan = { live: false, sig0: '', altPicked: false, wasFollowing: false, backHome: false, from: null, cam: null, jams: false, keepView: false };
 const planSig = () => JSON.stringify([stops.map(s => s && (s.here ? 'here' : [s.lat, s.lon])), travelMode]);
 // Iets gewijzigd sinds je de planner opende (een andere route kiezen telt ook)
 const planDirty = () => plan.altPicked || planSig() !== plan.sig0;
@@ -2433,6 +2433,7 @@ function openSheet() {
   plan.backHome = false;
   plan.from = null;
   plan.cam = null;
+  plan.keepView = false;
   // File-informatie: alleen als je hem voor deze rit aanzet (onderweg wijzigen: zoals de rit had)
   plan.jams = !!(state.nav && state.nav.jams);
   $('search').hidden = false;
@@ -2523,6 +2524,8 @@ function editRoute() {
   const c = state.concept;
   if (c && c.trail) savedPick = { nav: c.nav, sig: sigOf(c.stops, c.mode), trail: true };
   plan.sig0 = planSig();
+  // De kaart blijft waar hij is (ook ingezoomd); pas een gewijzigde route komt helemaal in beeld
+  plan.keepView = true;
   showOverview();
 }
 
@@ -3969,6 +3972,8 @@ function drawPreview() {
   // Eén keer inzoomen op nieuwe routes; daarna blijft de kaart waar jij hem neerzet
   // Eén punt zonder route (Vanaf, Vertrekpunt): de kaart blijft precies staan
   if (!d.fitted && !(routes || []).length && !coords.length && pts.length === 1) d.fitted = true;
+  // Via het potloodje: de kaart blijft staan zolang de route dezelfde is
+  if (!d.fitted && plan.keepView && planSig() === plan.sig0) d.fitted = true;
   if (!d.fitted) {
     const all = (routes || []).flatMap(r => r.shape);
     if (!all.length) all.push(...(coords.length ? coords : pts.map(p => [p.lon, p.lat])));
@@ -6889,9 +6894,12 @@ async function fetchRoutes(pts, alternates = 0, mode = travelMode, opts = null) 
 // kant van de rechte lijn; die mag 35% langzamer zijn (Vall del Bac–Olot over Sant Pau).
 // Fietsen en lopen: de snelste en de kortste, en ook zo'n andere weg.
 const PICK_SLOWER = 0.10, PICK_RATIO = 0.5, ECO_SLOWER = 0.20, ECO_GAP = 120, SAME_WAY = 0.7;
-const OTHER_SLOWER = 0.20, OTHER_DIFF = 0.35, DETOUR_MAX = 1.25, SIDE_SLOWER = 0.35, SIDE_DIFF = 0.8;
+// Met de auto: is hij ook minder zuinig dan de voorkeur, dan hooguit 10% langzamer (Amsterdam–Maastricht
+// over Utrecht en Nijmegen: 16% langzamer en 17% minder zuinig, daar heb je niks aan).
+const OTHER_SLOWER = 0.20, OTHER_DIFF = 0.35, DETOUR_MAX = 1.25, SIDE_SLOWER = 0.35, SIDE_DIFF = 0.8, WORSE_SLOWER = 0.10;
 function otherWay(routes, list, slower) {
   const ok = routes.filter(r => !list.includes(r) && slower(r) <= SIDE_SLOWER && list.every(o => overlap(r, o) <= 1 - OTHER_DIFF)
+    && (travelMode !== 'auto' || slower(r) <= WORSE_SLOWER || fuel(r) <= fuel(list[0]))
     && ((slower(r) <= OTHER_SLOWER && (r.time <= list[0].time + 60 || list.every(o => detour(r, o) <= DETOUR_MAX)))
       || (list.every(o => overlap(r, o) <= 1 - SIDE_DIFF) && otherSide(r, list))));
   return ok.reduce((a, b) => (b.time < a.time ? b : a), ok[0]);
