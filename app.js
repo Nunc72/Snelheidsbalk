@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '235';
+const VERSION = '236';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -7008,7 +7008,9 @@ function withVia(r, list) {
 // Amsterdam-Oost gaat de gewone route via het Zeeburgereiland, terwijl de Wibautstraat naar de
 // A10 sneller is. Daarom verzamelen we de verschillende manieren waarop de routes de snelweg
 // opgaan (tot vlak voor hun eerste snelweg), en proberen we die bij elke route; daarna volgt
-// hij zijn eigen weg (vastgepind). Sneller? Dan die versie.
+// hij zijn eigen weg (vastgepind). Een halve minuut sneller, of zuiniger en hooguit een minuut
+// langzamer: dan die versie. Zo beginnen routes die toch dezelfde kant op gaan ook hetzelfde
+// (anders Amsterdam-Oost–Parijs: de ene over de Wibautstraat, de andere over Zeeburgereiland).
 async function betterStarts(routes, pts, sources = routes) {
   const from = ll(pts[0]);
   const pin = (r, a) => {
@@ -7039,8 +7041,9 @@ async function betterStarts(routes, pts, sources = routes) {
       if (!pins.length) return null;
       try { return (await fetchRoutes([pts[0], S, ...pins, ...pts.slice(1)], 0, 'auto'))[0]; } catch (e) { return null; }
     }));
-    const best = versions.filter(Boolean).reduce((a, b) => (b.time < a.time ? b : a), r);
-    return best.time < r.time - 30 ? best : r;
+    const f0 = fuel(r);
+    const good = versions.filter(v => v && (v.time < r.time - 30 || (v.time <= r.time + 60 && fuel(v) < f0 - 0.05)));
+    return good.length ? good.reduce((a, b) => (fuel(b) < fuel(a) ? b : a)) : r;
   }));
 }
 
