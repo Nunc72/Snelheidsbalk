@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '232';
+const VERSION = '233';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -2080,8 +2080,8 @@ async function breakPoint(a, b) {
 }
 
 // Reistijden over de weg van elk punt in 'from' naar elk punt in 'to' (seconden, null = onbereikbaar)
-async function travelTimes(from, to) {
-  const body = { sources: from.map(p => ({ lat: p.lat, lon: p.lon })), targets: to.map(p => ({ lat: p.lat, lon: p.lon })), costing: 'auto' };
+async function travelTimes(from, to, costing = 'auto') {
+  const body = { sources: from.map(p => ({ lat: p.lat, lon: p.lon })), targets: to.map(p => ({ lat: p.lat, lon: p.lon })), costing };
   const res = await fetch(`${VALHALLA}/sources_to_targets`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const data = await res.json();
   if (!data.sources_to_targets) throw new Error(data.error || 'geen reistijden');
@@ -2096,52 +2096,86 @@ function midList(cat, bp) {
   if (!midMemo.has(key)) midMemo.set(key, rankMid(cat, bp).catch(e => { midMemo.delete(key); throw e; }));
   return midMemo.get(key);
 }
-async function rankMid(cat, bp) {
-  const n = bp.nav;
-  const near = n.shape.filter((c, i) => Math.abs(n.cum[i] - bp.along) < 14000);
+function rankMid(cat, bp) {
+  return rankAlong(cat, bp.nav, bp.along - 12000, bp.along + 12000, { ref: bp, lead: 13000, tail: 13000, side: 1000, photon: [-8, 0, 8], km: 4.5 });
+}
+// Plekken langs het stuk route van 'a0' tot 'a1' (meters vanaf het begin), op volgorde van omrijtijd.
+// Omrijden: van 'lead' meter vóór het stuk via de plek naar 'tail' meter erna, min de tijd zonder stop.
+async function rankAlong(cat, n, a0, a1, o) {
+  const { ref, lead, tail, side, photon, km } = o, mode = o.mode || 'auto';
+  const near = n.shape.filter((c, i) => n.cum[i] > a0 - 2000 && n.cum[i] < a1 + 2000);
   const toRoute = p => Math.min(...near.map(c => dist(c, ll(p))));
-  // De tegels langs de route, van 12 km ervoor tot 12 km erna, met 1 km speling opzij
-  const ids = new Set(), dLat = 1000 / 111320;
-  for (let a = bp.along - 12000; a <= bp.along + 12000; a += 400) {
+  // De tegels langs het stuk route, met 'side' meter speling opzij
+  const ids = new Set(), dLat = side / 111320;
+  for (let a = a0; a <= a1 + 399; a += 400) {
     const q = alongPoint(n, a), dLon = dLat / Math.cos(rad(q.lat));
     const [x1, y1] = tileAt(q.lon - dLon, q.lat + dLat, POI_Z), [x2, y2] = tileAt(q.lon + dLon, q.lat - dLat, POI_Z);
     for (let x = x1; x <= x2; x++) for (let y = y1; y <= y2; y++) ids.add(x + '/' + y);
   }
-  let found = cat === 'train' ? await stationsNear(bp, 50)
-    : tileItems(cat, await Promise.all([...ids].map(k => poiTile(...k.split('/').map(Number)))), bp);
+  let found = cat === 'train' ? await stationsNear(ref, 50)
+    : tileItems(cat, await Promise.all([...ids].map(k => poiTile(...k.split('/').map(Number)))), ref);
   // Laadpalen: ook die van NDW (met vrij of bezet) in het vak rond dit stuk route
   if (cat === 'charging') {
-    const lats = near.map(c => c[1]), lons = near.map(c => c[0]), dLon = dLat / Math.cos(rad(bp.lat));
+    const lats = near.map(c => c[1]), lons = near.map(c => c[0]), dLon = dLat / Math.cos(rad(ref.lat));
     const nd = await ndwChargers(Math.min(...lats) - dLat, Math.min(...lons) - dLon, Math.max(...lats) + dLat, Math.max(...lons) + dLon)
-      .then(l => l.map(p => ({ ...p, d: dist(ll(bp), ll(p)) }))).catch(() => []);
+      .then(l => l.map(p => ({ ...p, d: dist(ll(ref), ll(p)) }))).catch(() => []);
     found = mergeChargers(nd, found);
   }
-  let cands = found.map(p => ({ ...p, r: toRoute(p) })).filter(p => p.r <= 1000);
+  let cands = found.map(p => ({ ...p, r: toRoute(p) })).filter(p => p.r <= side);
   // Weinig langs de route: ook Photon, iets verder van de weg
   if (cands.length < 5 && cat !== 'train') {
     const seen = new Set(cands.map(p => p.lat.toFixed(4) + '|' + p.lon.toFixed(4)));
-    const more = (await Promise.all([0, -8, 8].map(km => photonNear(cat, alongPoint(n, bp.along + km * 1000), 4.5).catch(() => [])))).flat();
+    const mid = (a0 + a1) / 2;
+    const more = (await Promise.all(photon.map(k => photonNear(cat, alongPoint(n, mid + k * 1000), km).catch(() => [])))).flat();
     for (const p of more) {
       const k = p.lat.toFixed(4) + '|' + p.lon.toFixed(4);
-      if (!seen.has(k)) { seen.add(k); cands.push({ ...p, d: dist(ll(bp), ll(p)), r: toRoute(p) }); }
+      if (!seen.has(k)) { seen.add(k); cands.push({ ...p, d: dist(ll(ref), ll(p)), r: toRoute(p) }); }
     }
   }
   // De 25 die het dichtst bij de route liggen gaan mee in de reistijdberekening
   cands = cands.sort((a, b) => a.r - b.r).slice(0, 25);
   if (!cands.length) return [];
-  // Omrijtijd: van 25 km vóór het punt via de plek naar 25 km erna, min de tijd zonder stop
-  const from = alongPoint(n, bp.along - 25000), to = alongPoint(n, bp.along + 25000);
+  const from = alongPoint(n, a0 - lead), to = alongPoint(n, a1 + tail);
   try {
-    const [[there], backRows] = await Promise.all([travelTimes([from], [...cands, to]), travelTimes(cands, [to])]);
+    const [[there], backRows] = await Promise.all([travelTimes([from], [...cands, to], mode), travelTimes(cands, [to], mode)]);
     const base = there.pop(), back = backRows.map(r => r[0]);
     cands.forEach((p, i) => {
       p.extra = there[i] == null || back[i] == null ? Infinity : Math.max(0, there[i] + back[i] - base);
     });
-    // Per hele minuut omrijden telt; bij gelijk de plek het dichtst bij 90 minuten
+    // Per hele minuut omrijden telt; bij gelijk de plek het dichtst bij het punt
     cands.sort((a, b) => Math.round(a.extra / 60) - Math.round(b.extra / 60) || a.d - b.d);
     cands = cands.filter(p => p.extra !== Infinity);
   } catch (e) { /* zonder reistijden: hemelsbreed */ }
   return cands.slice(0, 10);
+}
+
+// Op route: met al een bestemming zoek je vanaf een punt (vertrek, je positie of de tussenstop)
+// langs de route ernaartoe, de eerste 15 minuten, op volgorde van omrijtijd
+const ON_ROUTE = 15 * 60;
+function alongAtTime(n, sec) {
+  let t = 0;
+  for (const m of n.maneuvers) {
+    if (t + m.time < sec) { t += m.time; continue; }
+    const f = m.time ? (sec - t) / m.time : 0;
+    return n.cum[m.begin_shape_index] + f * (n.cum[m.end_shape_index] - n.cum[m.begin_shape_index]);
+  }
+  return n.total;
+}
+const routeNearMemo = new Map();
+function routeNear(cat, a, b, mode = travelMode) {
+  const key = [cat, mode, ...[a.lat, a.lon, b.lat, b.lon].map(v => v.toFixed(4))].join('|');
+  if (!routeNearMemo.has(key)) {
+    routeNearMemo.set(key, (async () => {
+      let n;
+      try { [n] = await fetchRoutes([a, b], 0, mode); } catch (e) { n = null; }
+      // Geen route (te ver om te lopen of te fietsen): gewoon rond het punt
+      if (!n) return { nav: null, list: await nearList(cat, a, 10) };
+      const end = Math.max(300, alongAtTime(n, ON_ROUTE));
+      const side = mode === 'auto' ? 1000 : 400, km = Math.max(1, Math.min(4.5, end / 2000 + 0.5));
+      return { nav: n, list: await rankAlong(cat, n, 0, end, { mode, ref: a, lead: 0, tail: 2000, side, photon: [0], km }) };
+    })().catch(e => { routeNearMemo.delete(key); throw e; }));
+  }
+  return routeNearMemo.get(key);
 }
 const fmtExtra = s => (s < 60 ? 'op route' : '+' + Math.round(s / 60) + ' min');
 
@@ -2187,8 +2221,11 @@ function nearSection(title, sub) {
   } };
 }
 
-// In een etappe drie reeksen: dichtbij vertrek, na 90 minuten (lange autorit) en dichtbij aankomst.
-// Zonder adres erna (je kiest de bestemming) één lijst rond het adres ervoor.
+// Met al een bestemming zoek je vanaf een punt 'Op route' (zie routeNear), anders in een cirkel.
+// - Vertrekregel: op route vanaf het vertrek (of je positie).
+// - Tussenstop: op route vanaf het adres in de regel, of als die nog leeg is vanaf het adres ervoor;
+//   dan eventueel na 90 minuten (lange autorit) en rond het adres erna (aankomst).
+// - Bestemmingsregel: rond het adres in de regel, anders rond het adres ervoor.
 async function showNear() {
   const seq = ++searchSeq;
   const ul = $('results');
@@ -2199,12 +2236,25 @@ async function showNear() {
   const { prev, next } = nearLeg();
   const key = p => p.lat.toFixed(4) + '|' + p.lon.toFixed(4);
   const fail = (sec, e) => { if (seq === searchSeq) sec.note.textContent = 'Zoeken lukt nu niet: ' + e.message; };
-  // Staat er al een adres in de vertrek- of bestemmingsregel, dan rond dat adres (net als bij Park).
-  // Een tussenstop houdt de drie reeksen van de etappe.
-  const cur = !(prev && next) && stops[editRow] && !stops[editRow].here ? stops[editRow] : null;
+  const cur = stops[editRow] && !stops[editRow].here ? resolveStop(stops[editRow]) : null;
+  const onSub = p => 'vanaf ' + p.label + ' · 15 min';
+  // Vertrekregel met al een bestemming
+  if (editRow === 0 && next) {
+    const a = cur ? { ...cur, label: stopLabel(cur) } : state.fix ? { lat: state.fix.lat, lon: state.fix.lon, label: 'je positie' } : null;
+    if (a) {
+      const sec = nearSection('Op route', onSub(a));
+      ul.append(sec.head, sec.note);
+      try {
+        const r = await routeNear(cat, a, next);
+        if (seq === searchSeq) sec.fill(r.list, cat, r.nav && r.nav.shape, true);
+      } catch (e) { fail(sec, e); }
+      return;
+    }
+  }
   if (!(prev && next)) {
-    const at = cur || editRow > 0 && prev || nearCentre();
-    const sec = nearSection('Dichtbij', cur ? stopLabel(cur) : prev && editRow > 0 && !prev.here ? stopLabel(prev) : 'je positie');
+    const c = !(editRow === 0 && next) && cur;
+    const at = c || editRow > 0 && prev || nearCentre();
+    const sec = nearSection('Dichtbij', c ? stopLabel(c) : prev && editRow > 0 && !prev.here ? stopLabel(prev) : 'je positie');
     ul.append(sec.head, sec.note);
     try {
       const list = await nearList(cat, at, 25);
@@ -2212,24 +2262,26 @@ async function showNear() {
     } catch (e) { fail(sec, e); }
     return;
   }
-  const from = nearSection('Dichtbij vertrek', stopLabel(prev));
+  const a = cur ? { ...cur, label: stopLabel(cur) } : { ...prev, label: prev.here ? 'je positie' : stopLabel(prev) };
+  const from = nearSection('Op route', onSub(a));
   const to = nearSection('Dichtbij aankomst', stopLabel(next));
   // Is de etappe hemelsbreed korter dan 60 km, dan is hij nooit 2 uur rijden: niet uitrekenen
-  const long = travelMode === 'auto' && dist(ll(prev), ll(next)) > 60000;
+  const long = travelMode === 'auto' && dist(ll(a), ll(next)) > 60000;
   const mid = long && nearSection('Na 90 minuten', 'Zoeken op de route…');
   ul.append(from.head, from.note, ...(mid ? [mid.head, mid.note] : []), to.head, to.note);
   // Alles tegelijk ophalen; de route voor 'na 90 minuten' meteen al uitrekenen
-  const near = [nearList(cat, prev), nearList(cat, next)];
-  const midP = mid && breakPoint(prev, next).then(async bp => ({ bp, all: bp ? await midList(cat, bp) : [] }));
-  // Geen plek twee keer: vertrek gaat voor aankomst, en beide gaan voor na 90 minuten
+  const startP = routeNear(cat, a, next);
+  const near = [startP.then(r => r.list), nearList(cat, next)];
+  const midP = mid && breakPoint(a, next).then(async bp => ({ bp, all: bp ? await midList(cat, bp) : [] }));
+  // Geen plek twee keer: op route gaat voor aankomst, en beide gaan voor na 90 minuten
   // (aankomst kan maar een half uur na dat punt liggen)
   const fromKeys = near[0].then(l => new Set(l.slice(0, 5).map(key)), () => new Set());
   const toList = Promise.all([fromKeys, near[1]]).then(([shown, l]) => l.filter(p => !shown.has(key(p))).slice(0, 5));
   const bothKeys = Promise.all([fromKeys, toList.catch(() => [])]).then(([f, t]) => new Set([...f, ...t.map(key)]));
   const fillFrom = (async () => {
     try {
-      const a = (await near[0]).slice(0, 5);
-      if (seq === searchSeq) from.fill(a, cat);
+      const r = await startP;
+      if (seq === searchSeq) from.fill(r.list.slice(0, 5), cat, r.nav && r.nav.shape);
     } catch (e) { fail(from, e); }
   })();
   const fillTo = (async () => {
