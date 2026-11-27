@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '241';
+const VERSION = '242';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -1093,9 +1093,10 @@ function farJump(to) {
   return true;
 }
 
-// Alleen tijdens het navigeren een pijl in de rijrichting; anders een blauwe stip
+// Alleen tijdens het navigeren een pijl in de rijrichting; anders een blauwe stip.
+// Ook in de planner (potloodje onderweg) een stip: de grote pijl hoort bij de live route.
 function syncCar() {
-  const dot = !state.nav;
+  const dot = !state.nav || planning();
   $('car').classList.toggle('dot', dot);
   markerEl.classList.toggle('dot', dot);
 }
@@ -2416,6 +2417,7 @@ function setPlanning(on) {
   document.body.classList.toggle('planning', on);
   $('overview').classList.remove('peek');
   if (on) { closePlaceMenu(); stopFollowing(); }
+  syncCar();
   renderBar();
   syncPlanLayers();
   drawNavJams();
