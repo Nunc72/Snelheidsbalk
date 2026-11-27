@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '234';
+const VERSION = '235';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -7127,7 +7127,10 @@ function otherSide(r, list) {
   return !!side && list.every(o => ownPart(o, [r])[side] <= 0.25);
 }
 // Omweg: waar r van route o afwijkt en er later weer op uitkomt, hoeveel keer zo lang dat stuk is
-// als het stuk van o dat het vervangt (het grootste van alle afwijkende stukken van minstens 2 km)
+// als het stuk van o dat het vervangt (het grootste van alle afwijkende stukken van minstens 2 km).
+// Een ander begin of eind (helemaal in de eerste of laatste 15 km) telt niet: het begin zet betterStarts
+// recht, en in de stad rijdt elke route anders binnen. Anders viel Amsterdam-Oost–Parijs via Brussel af:
+// die begon over Zeeburgereiland (de snelste over de Wibautstraat) en reed Parijs anders binnen.
 function detour(r, o) {
   const ss = samples(r);
   let worst = 1, i = 0;
@@ -7136,7 +7139,7 @@ function detour(r, o) {
     let j = i;
     while (j < ss.length && !passes(o, ss[j].p)) j++;
     const from = ss[Math.max(0, i - 1)], to = ss[Math.min(ss.length - 1, j)];
-    if (to.a - from.a >= 2000) worst = Math.max(worst, (to.a - from.a) / Math.max(200, Math.abs(alongOf(o, to.p) - alongOf(o, from.p))));
+    if (to.a - from.a >= 2000 && to.a > 15000 && from.a < ss.at(-1).a - 15000) worst = Math.max(worst, (to.a - from.a) / Math.max(200, Math.abs(alongOf(o, to.p) - alongOf(o, from.p))));
     i = j;
   }
   return worst;
