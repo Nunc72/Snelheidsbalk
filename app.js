@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '237';
+const VERSION = '238';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -5281,10 +5281,8 @@ map.on('contextmenu', e => {
   lp.opened = true;
   openPlaceMenu({ lat: e.lngLat.lat, lon: e.lngLat.lng });
 });
-// Een tik op de kaart vanaf het beginscherm: die plek met Nabij, Vanaf, Route en Start (het kaartje klapt uit).
-// Tik je op een station, luchthaven, gebouw, eigen pin of plaatsnaam, dan wordt het die plek zelf (een plaats: het centrum).
-// Staat er al een plek, dan doet een tik niets: die raak je zo niet per ongeluk kwijt. Een andere plek kies je
-// via het zoekveld (of het pinnetje erin) of door lang te drukken. Even wachten: een dubbele tik is inzoomen.
+// Een tik op de kaart vanaf het beginscherm kiest geen plek: dat gaat via het zoekveld (of het pinnetje erin)
+// of door lang te drukken. Even wachten: een dubbele tik is inzoomen.
 const homeIdle = () => !planning() && $('search').hidden && !msmap && !state.nav && !state.concept && !trailView;
 let tapTimer = 0;
 map.on('click', e => {
@@ -5298,14 +5296,9 @@ map.on('click', e => {
     tapTimer = setTimeout(() => { if (msmap) msGoTo(p, at); }, 250);
     return;
   }
-  if (homeIdle() && !found && !(map.getLayer('tinc') && map.queryRenderedFeatures(e.point, { layers: ['tinc'] }).length)) {
-    // Op een POI of plaatsnaam getikt: meteen die plek
-    const p = snapAt(e.point) || placeAt(e.lngLat.lat, e.lngLat.lng);
-    tapTimer = setTimeout(() => {
-      if (!homeIdle()) return;
-      if (p) { stopFollowing(); showFound(p, false); } else clearLook();
-      peek(false);
-    }, 280);
+  // Het beginscherm: een tik vult het zoekveld niet (dat doen het zoekveld, het pinnetje en lang drukken), hij haalt alleen het kaartje terug
+  if (homeIdle() && !found) {
+    tapTimer = setTimeout(() => { if (homeIdle()) peek(false); }, 280);
     return;
   }
   if (!found) clearLook();
@@ -6890,14 +6883,15 @@ async function fetchRoutes(pts, alternates = 0, mode = travelMode, opts = null) 
 // Daarbij zo mogelijk een andere weg: de snelste van de rest die voor minstens 35% over andere
 // wegen gaat dan alle getoonde, hooguit 20% langzamer is dan de snelste en geen omweg maakt (waar
 // hij afwijkt hooguit 25% langer dan het stuk dat hij vervangt; Vall del Bac–Barcelona langs
-// Manresa: 32%). Of echt de andere kant op: voor minstens 80% over andere wegen en aan de andere
+// Manresa: 32%); niet langzamer dan de voorkeur (hooguit een minuut) is geen omweg, hoe veel km ook
+// (Amsterdam–Doldersum: over de N-wegen voorgekozen, de A28 via Zwolle even snel). Of echt de andere kant op: voor minstens 80% over andere wegen en aan de andere
 // kant van de rechte lijn; die mag 35% langzamer zijn (Vall del Bac–Olot over Sant Pau).
 // Fietsen en lopen: de snelste en de kortste, en ook zo'n andere weg.
 const PICK_SLOWER = 0.10, PICK_RATIO = 0.5, ECO_SLOWER = 0.20, ECO_GAP = 120, SAME_WAY = 0.7;
 const OTHER_SLOWER = 0.20, OTHER_DIFF = 0.35, DETOUR_MAX = 1.25, SIDE_SLOWER = 0.35, SIDE_DIFF = 0.8;
 function otherWay(routes, list, slower) {
   const ok = routes.filter(r => !list.includes(r) && slower(r) <= SIDE_SLOWER && list.every(o => overlap(r, o) <= 1 - OTHER_DIFF)
-    && ((slower(r) <= OTHER_SLOWER && list.every(o => detour(r, o) <= DETOUR_MAX))
+    && ((slower(r) <= OTHER_SLOWER && (r.time <= list[0].time + 60 || list.every(o => detour(r, o) <= DETOUR_MAX)))
       || (list.every(o => overlap(r, o) <= 1 - SIDE_DIFF) && otherSide(r, list))));
   return ok.reduce((a, b) => (b.time < a.time ? b : a), ok[0]);
 }
