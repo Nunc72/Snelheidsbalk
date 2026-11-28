@@ -674,6 +674,8 @@ body.trailview #bottom-idle, body.trailview #recenter { visibility: hidden; }
   padding: 12px 14px; box-shadow: 0 2px 14px rgba(0,0,0,.18); }
 .zcard .z1 { font-size: 17px; font-weight: 700; }
 .zcard .z2 { font-size: 14px; color: #6b6b6b; margin-top: 2px; }
+/* Bekijken (je vergunninggebieden): geen pin en geen ✓, alleen terug */
+.zonepick.view .pin, .zonepick.view .pickme, .zonepick.view .zonelbl, .zonepick.view #zoneok { display: none; }
 
 /* Dark mode: volgt de instelling van de iPhone */
 @media (prefers-color-scheme: dark) {

@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '242';
+const VERSION = '243';
 // Onderin het beginscherm, zodat je ziet of de nieuwste versie geladen is
 document.getElementById('ver').textContent = 'v' + VERSION;
 const VALHALLA = 'https://valhalla1.openstreetmap.de';
@@ -2606,7 +2606,6 @@ const zoomOf = p => (['place', 'boundary'].includes(p.osm_key) ? PLACE_ZOOM[p.os
 
 function choose(f) {
   if (f.airport) { chooseAirport(f.airport); return; }
-  if (f.trail) { chooseTrail(f.trail); return; }
   const p = f.properties;
   const { title, sub } = describe(p);
   const [lon, lat] = f.geometry.coordinates;
@@ -2711,7 +2710,6 @@ async function search() {
   const airports = airportMatches(v).catch(() => []);
   const stationsP = stationMatches(v).catch(() => []);
   const exoP = exonymMatches(v).catch(() => []);
-  const trailP = trailMatches(v).catch(() => []);
   try {
     const res = await fetch(`${PHOTON}?${params}`);
     const data = await res.json();
@@ -2720,7 +2718,6 @@ async function search() {
     // Een stad die Photon zelf ook vond (binnen 30 km) niet nog een keer
     const isPlace = f => ['place', 'boundary'].includes(f.properties.osm_key);
     const exos = (await exoP).filter(x => !data.features.some(f => isPlace(f) && dist(x.geometry.coordinates, f.geometry.coordinates) < 30000));
-    const trails = await trailP;
     if (seq !== searchSeq) return;
     // Hetzelfde gebouw als uit de kaart (zelfde naam, vlakbij) niet nog een keer
     const same = f => local.some(d => d.name.toLowerCase() === describe(f.properties).title.toLowerCase() && dist([d.lon, d.lat], f.geometry.coordinates) < 300);
@@ -2737,9 +2734,7 @@ async function search() {
     const exoExact = exos[0] && fold(exos[0].properties.name) === fold(v.trim());
     const photonExact = features[0] && isPlace(features[0]) && fold(describe(features[0].properties).title) === fold(v.trim());
     if (exoExact && !photonExact) firstResult = exos[0];
-    // Getypt als een pad (GR 1, Pieterpad): Enter kiest het wandelpad
-    if (trails.length && trailish(v)) firstResult = trails[0];
-    if (!features.length && !recents.length && !local.length && !found.length && !trains.length && !exos.length && !trails.length) { ul.innerHTML = '<li class="empty">Niets gevonden</li>'; return; }
+    if (!features.length && !recents.length && !local.length && !found.length && !trains.length && !exos.length) { ul.innerHTML = '<li class="empty">Niets gevonden</li>'; return; }
     // Stations en luchthavens van Photon krijgen ook hun icoontje
     const item = f => (isStationF(f) ? iconItem(f, 'mi-station') : isAirportF(f) ? iconItem(f, 'mi-plane') : plainItem(f));
     if (found.length) {
@@ -2759,11 +2754,6 @@ async function search() {
     // daaronder de buitenlandse stad met die naam in onze taal (Bergen: eerst Bergen NH, dan Mons)
     const city = features[0] && isPlace(features[0]) ? [features.shift()] : [];
     for (const f of [...city, ...exos, ...nearFirst([...trains, ...features], q)]) ul.appendChild(f.station ? iconItem(f, 'mi-station') : item(f));
-    // Wandelpaden: bovenaan als je een pad typt, anders onderaan
-    if (trails.length) {
-      const items = [sectHead('Wandelpaden'), ...trails.map(trailItem)];
-      if (trailish(v)) ul.prepend(...items); else ul.append(...items);
-    }
   } catch (e) {
     if (seq === searchSeq) ul.innerHTML = '<li class="empty">Zoeken lukt nu niet. Controleer je verbinding.</li>';
   }
@@ -2790,41 +2780,9 @@ function resultsMapLink(features) {
 }
 
 // ---------- Wandelpaden (proef): Waymarked Trails, uit OpenStreetMap ----------
-// Zoeken op naam of nummer (GR 1, Pieterpad); kiezen zet het hele pad op de kaart, met het begin als gevonden plek.
+// Niet in de zoekresultaten: paden vind je via In de buurt → Wandel.
 const TRAILS = 'https://hiking.waymarkedtrails.org/api/v1';
-const TRAIL_GROUP = { INT: 'Internationaal wandelpad', NAT: 'Nationaal wandelpad', REG: 'Regionaal wandelpad', LOC: 'Lokaal wandelpad' };
-const trailish = v => /\b(gr|law|lap|sl|pr|e)\s*-?\s*\d|pad\b|trail|sendero|camino|senda|wanderweg|chemin|wandel/i.test(v);
-async function trailMatches(v) {
-  if (v.trim().length < 3) return [];
-  const data = await (await fetch(`${TRAILS}/list/search?${new URLSearchParams({ query: v.trim(), limit: '12' })}`)).json();
-  // Hele paden eerst; etappes en deelstukken (Sendero Histórico: Asturias, Senda Pirenaica - E04) daarna
-  const part = t => /:|\bE\d+\b|\b(deel|etappe|stage|tramo|etapa)\b/i.test(t.name);
-  const rank = t => (part(t) ? 10 : 0) + (['INT', 'NAT', 'REG', 'LOC'].indexOf(t.group) + 1 || 5);
-  const seen = new Set();
-  return (data.results || []).filter(t => t.type === 'relation' && t.name)
-    .sort((a, b) => rank(a) - rank(b))
-    .filter(t => { const k = fold(`${t.ref || ''}|${t.name}`); if (seen.has(k)) return false; seen.add(k); return true; })
-    .slice(0, 3)
-    .map(t => ({ trail: t, properties: { name: trailTitle(t) } }));
-}
 const trailTitle = t => (t.ref && !fold(t.name).includes(fold(t.ref)) ? `${t.ref} · ${t.name}` : t.name);
-function sectHead(text) {
-  const li = document.createElement('li');
-  li.className = 'sect';
-  li.innerHTML = '<span class="st"></span>';
-  li.firstChild.textContent = text;
-  return li;
-}
-function trailItem(f) {
-  const t = f.trail;
-  const li = document.createElement('li');
-  li.className = 'recent airport';
-  li.innerHTML = `<div class="row">${iconHtml('ti-trekking')}<div class="rtext"><div class="r1"></div><div class="r2"></div></div></div>`;
-  li.querySelector('.r1').textContent = trailTitle(t);
-  li.querySelector('.r2').textContent = [TRAIL_GROUP[t.group] || 'Wandelpad', (t.itinerary || []).join(' – ')].filter(Boolean).join(' · ');
-  li.addEventListener('click', () => choose(f));
-  return li;
-}
 // Waymarked Trails geeft de lijnen in webmercator (meters)
 const merc = ([x, y]) => [x / 6378137 * 180 / Math.PI, (2 * Math.atan(Math.exp(y / 6378137)) - Math.PI / 2) * 180 / Math.PI];
 // Losse wegstukken achter elkaar tot doorlopende lijnen: anders blijven er uitgezoomd alleen stipjes over
@@ -2956,29 +2914,6 @@ function trailFlags(info, color, list = trailMarks) {
     const brg = Math.atan2((c[0] - a[0]) * Math.cos(a[1] * Math.PI / 180), c[1] - a[1]) * 180 / Math.PI;
     trailMark(`<div class="tarrow" style="background:${color}"><i class="ti ti-chevron-up"></i></div>`,
       [a[0] + (c[0] - a[0]) * f, a[1] + (c[1] - a[1]) * f], { rotation: brg, rotationAlignment: 'map' }, list);
-  }
-}
-
-async function chooseTrail(t) {
-  field().blur();
-  toast('Wandelpad laden…', 8000);
-  let info;
-  try { info = await trailDetails(t.id); } catch (e) { toast('Wandelpad laden lukt nu niet.'); return; }
-  if (!info.lines.length) { toast('Van dit pad is geen lijn bekend.'); return; }
-  const title = trailTitle(t);
-  const km = info.len ? ` (${fmtDist(info.len)})` : '';
-  toast(`${title}${km}`, 4000);
-  drawTrail(info, '#D7263D');
-  const start = info.start;
-  trail = { name: `Begin ${title}`, lat: start[1], lon: start[0], end: info.end };
-  useChoice({ lat: trail.lat, lon: trail.lon, name: trail.name });
-  // Het hele pad in beeld (niet inzoomen op het begin)
-  if (!planning()) {
-    const all = info.lines.flat();
-    const b = all.reduce((bb, c) => bb.extend(c), new maplibregl.LngLatBounds(all[0], all[0]));
-    // De padding komt bovenop die van de kaart: die eerst op nul (het kaartje onderin zit in de onderste marge)
-    map.jumpTo({ padding: { top: 0, bottom: 0, left: 0, right: 0 } });
-    map.fitBounds(b, { padding: { top: 70, bottom: 230, left: 40, right: 40 }, duration: 1200, maxZoom: 14 });
   }
 }
 
@@ -5801,8 +5736,9 @@ function permitOf(info) {
   const v = info.permit[0];
   return v ? { k: v.k, n: v.n, g: v.g } : { k: areaKey(info.paid), n: info.paid.n, g: info.paid.g };
 }
-function addPermit(p, from) {
-  savePermits([...loadPermits().filter(x => x.k !== p.k), { ...p, from, at: Date.now() }]);
+// c: een punt in het gebied ([lon, lat]), om het later op de kaart te tonen
+function addPermit(p, from, c) {
+  savePermits([...loadPermits().filter(x => x.k !== p.k), { ...p, from, at: Date.now(), ...(c && { c }) }]);
   setNoPermit(false);
 }
 function removePermit(k) { savePermits(loadPermits().filter(x => x.k !== k)); }
@@ -5991,7 +5927,7 @@ function parkToast({ kind = '', title, sub, at, links = null, undo = null, ttl =
     box.innerHTML = '<button type="button" class="yes">Ik heb hier een vergunning</button><button type="button" class="no">Ik heb geen vergunning</button>';
     box.querySelector('.yes').addEventListener('click', () => {
       const p = permitOf(links);
-      addPermit(p, 'melding');
+      addPermit(p, 'melding', at && [at.lon, at.lat]);
       parkToast({ kind: 'done', title: 'Vergunning onthouden', sub: `${[p.g, p.n].filter(Boolean).join(' · ')}. Hier krijg je geen melding meer.`,
         at, undo: () => { removePermit(p.k); hideParkToast(); }, ttl: 6000 });
     });
@@ -6062,6 +5998,14 @@ function openPermitSheet() {
     li.querySelector('.vagain').addEventListener('click', () => { setNoPermit(false); openPermitSheet(); });
     ul.appendChild(li);
   }
+  if (loadPermits().length) {
+    const see = document.createElement('li');
+    see.className = 'vadd';
+    see.setAttribute('role', 'button');
+    see.innerHTML = '<i class="ti ti-map" aria-hidden="true"></i>Bekijk op de kaart';
+    see.addEventListener('click', openPermitMap);
+    ul.appendChild(see);
+  }
   const add = document.createElement('li');
   add.className = 'vadd';
   add.setAttribute('role', 'button');
@@ -6089,8 +6033,13 @@ map.on('click', 'tinc', e => { lp.eatUntil = Date.now() + 400; incidentTap(e.fea
 let zmap = null, zoneHit = null, zoneSeq = 0;
 async function openZonePick() {
   closeParkSheet();
+  $('zonepick').classList.remove('view');
+  $('ztop').textContent = 'Kies je vergunninggebied';
   $('zonepick').hidden = false;
   const at = state.fix ? [state.fix.lon, state.fix.lat] : map.getCenter().toArray();
+  await ensureZmap(at);
+}
+async function ensureZmap(at) {
   if (!zmap) {
     const style = await currentStyle(true);
     zmap = new maplibregl.Map({ container: 'zmap', style, center: at, zoom: 14, attributionControl: false, ...SMALL_MAP });
@@ -6107,7 +6056,7 @@ async function openZonePick() {
   }
 }
 async function zoneUpdate() {
-  if (!zmap || !zmap.getSource('zones')) return;
+  if (!zmap || !zmap.getSource('zones') || $('zonepick').classList.contains('view')) return;
   const seq = ++zoneSeq, c = zmap.getCenter(), pt = [c.lng, c.lat];
   const t = await parkTile(c.lat, c.lng).catch(() => null);
   if (seq !== zoneSeq) return;
@@ -6125,11 +6074,58 @@ async function zoneUpdate() {
   $('zone2').textContent = zoneHit ? (today ? `Vandaag betaald ${today.times} · ${today.rate} per uur` : 'Vandaag gratis') : 'Schuif de kaart naar je straat';
   $('zoneok').disabled = !zoneHit;
 }
+// Je vergunninggebieden samen op de kaart (menu → Parkeervergunning → Bekijk op de kaart).
+// Elk gebied zoeken we in de parkeervakjes rond het bewaarde punt; vergunningen van voor v243 hebben
+// dat punt niet: dan rond je positie, je vertrekpunt en de kaart (en daarna bewaren we het punt alsnog).
+async function permitZones() {
+  const list = loadPermits();
+  const around = ([lon, lat]) => [-1, 0, 1].flatMap(dy => [-1, 0, 1].map(dx => [lon + dx * PARK_GRID, lat + dy * PARK_GRID]));
+  const guess = [state.fix && [state.fix.lon, state.fix.lat], homeStart && homeStart.lat != null && [homeStart.lon, homeStart.lat],
+    map.getCenter().toArray()].filter(Boolean);
+  const found = await Promise.all(list.map(async p => {
+    for (const c of p.c ? [p.c] : guess) {
+      const tiles = await Promise.all(around(c).map(([lon, lat]) => parkTile(lat, lon).catch(() => null)));
+      for (const t of tiles.filter(Boolean)) {
+        const z = [...t.v, ...t.a].find(a => (a.k || areaKey(a)) === p.k);
+        if (z) return { p, z };
+      }
+    }
+    return { p, z: null };
+  }));
+  // Het punt alsnog bewaren, dan gaat het de volgende keer meteen goed
+  const fix = found.filter(f => f.z && !f.p.c);
+  if (fix.length) savePermits(loadPermits().map(p => { const f = fix.find(x => x.p.k === p.k); return f ? { ...p, c: f.z.r[0][0] } : p; }));
+  return found;
+}
+async function openPermitMap() {
+  closeParkSheet();
+  $('zonepick').classList.add('view');
+  $('ztop').textContent = 'Je vergunninggebieden';
+  $('zone1').textContent = 'Gebieden zoeken…';
+  $('zone2').textContent = '';
+  $('zonepick').hidden = false;
+  await ensureZmap(state.fix ? [state.fix.lon, state.fix.lat] : map.getCenter().toArray());
+  const found = await permitZones();
+  if ($('zonepick').hidden || !$('zonepick').classList.contains('view')) return;
+  const ok = found.filter(f => f.z), miss = found.length - ok.length;
+  const show = () => {
+    zmap.getSource('zones').setData({ type: 'FeatureCollection', features: ok.map(({ z }) => ({ type: 'Feature', properties: { hit: true },
+      geometry: { type: 'MultiPolygon', coordinates: z.r.map(r => [r]) } })) });
+    const all = ok.flatMap(({ z }) => z.r.flat());
+    if (all.length) {
+      const b = all.reduce((bb, c) => bb.extend(c), new maplibregl.LngLatBounds(all[0], all[0]));
+      zmap.fitBounds(b, { padding: { top: 90, bottom: 230, left: 40, right: 40 }, duration: 0, maxZoom: 16 });
+    }
+  };
+  if (zmap.getSource('zones')) show(); else zmap.once('style.load', () => setTimeout(show));
+  $('zone1').textContent = ok.length ? ok.map(({ p }) => [p.g, p.n].filter(Boolean).join(' · ')).join(', ') : 'Gebieden niet gevonden';
+  $('zone2').textContent = miss ? `${miss === 1 ? 'Eén gebied' : miss + ' gebieden'} niet gevonden op de kaart` : `${ok.length === 1 ? '1 gebied' : ok.length + ' gebieden'}`;
+}
 $('zoneback').addEventListener('click', () => { $('zonepick').hidden = true; openPermitSheet(); });
 $('zoneok').addEventListener('click', () => {
   if (!zoneHit) return;
   const z = zoneHit;
-  addPermit(z.k ? { k: z.k, n: z.n, g: z.g } : { k: areaKey(z), n: z.n, g: z.g }, 'kaart');
+  addPermit(z.k ? { k: z.k, n: z.n, g: z.g } : { k: areaKey(z), n: z.n, g: z.g }, 'kaart', zmap.getCenter().toArray());
   $('zonepick').hidden = true;
   syncParkMenu();
   openPermitSheet();
